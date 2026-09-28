@@ -1,0 +1,225 @@
+// ============================================================================
+// The Almanac: how the realm works, written for the player. Mechanics only —
+// never named policies. Each chapter is a list of sections with simple markup:
+//   paragraphs separated by blank lines; lines starting with "- " are bullets;
+//   **bold** and `code` are supported by the Almanac renderer.
+// ============================================================================
+
+export interface AlmanacSection {
+  title: string;
+  body: string;
+}
+
+export interface AlmanacChapter {
+  id: string;
+  title: string;
+  sections: AlmanacSection[];
+}
+
+export const ALMANAC: AlmanacChapter[] = [
+  {
+    id: 'you',
+    title: 'You, the Treasury',
+    sections: [
+      {
+        title: 'What you are',
+        body: `You are the Treasury of the realm: the mint, the keeper of the Purse, the bank's banker and the realm's largest possible buyer, seller, employer and builder — all at once.
+
+You cannot command anyone. Households, workshops, the bank and foreign ships each decide for themselves every day. You can only change the world they decide in.
+
+The Purse is the money you hold. Money only enters or leaves the realm's circulation through a handful of doors: you spending or collecting, the bank lending or being repaid, and coin crossing the border at the harbour.`,
+      },
+      {
+        title: 'Your seven levers',
+        body: `- **Mint** — create money in the Purse, or destroy money you hold.
+- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. You can also move goods you hold between towns.
+- **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow.
+- **Limit** — make something illegal: a price, wage or rent above or below a line; a loan rate above a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital.
+- **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
+- **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects.
+- **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank.
+
+Everything else is up to you to discover.`,
+      },
+      {
+        title: 'Auto-mint',
+        body: `If **auto-mint** is on, whenever the Purse cannot cover a payment the Treasury creates the difference. If it is off, payments you promised through levies with negative rates and transfers are suspended while the Purse is empty, and you will be warned.`,
+      },
+    ],
+  },
+  {
+    id: 'markets',
+    title: 'Markets and prices',
+    sections: [
+      {
+        title: 'The daily auction',
+        body: `Every town holds one market for each good, every day, at midday. Buyers bring bids ("I will pay up to ¤5.10 for 3 loaves"), sellers bring asks ("I will sell 40 loaves for at least ¤4.20"). The market finds the single price at which the most goods change hands, and everyone who trades pays or receives that same price.
+
+If more people want to buy at that price than there are goods, the highest bidders are served first. People who needed bread most (because their pantry is empty) bid highest.
+
+The Markets tab shows each auction's demand and supply curves: the clearing point is where they cross.`,
+      },
+      {
+        title: 'What a levy on a sale does',
+        body: `A levy on sales of a good opens a gap between what buyers pay and what sellers receive. Buyers see a higher price, sellers a lower one; the Treasury keeps the difference. Who bears most of it depends on who can walk away more easily — not on who hands over the coin.
+
+A negative rate closes the gap the other way: buyers pay less than sellers receive, and the Treasury pays the difference.
+
+The auction curve in the Markets tab draws the gap.`,
+      },
+      {
+        title: 'Legal price lines',
+        body: `A **Limit** on a price overrides the auction. If the price the market would find is above a legal ceiling, trade happens at the ceiling — but sellers bring only what they are willing to sell at that price, so buyers are rationed: everyone who bid at least the ceiling gets the same share of what is available. The unserved demand is reported as a shortage.
+
+A legal floor works the other way round: unsold goods pile up in the sellers' storehouses unless someone buys them.`,
+      },
+      {
+        title: 'Your orders in the market',
+        body: `Your orders are part of the same auction. A large order to buy pushes the price up for everyone; a large order to sell pushes it down. An order to buy an unlimited quantity at a set price means the price can never fall below it while your Purse lasts. An order to sell unlimited quantities at a set price caps it — while your stores last.
+
+Goods you hold sit in the town where you bought them. Bread, fish and ale go stale in store.`,
+      },
+      {
+        title: 'Seasons',
+        body: `Farms yield far more in summer and autumn than in winter. Homes burn more coal in winter. Grain keeps well, so traders and bakers store it; watch the grain price swing through the year.`,
+      },
+    ],
+  },
+  {
+    id: 'production',
+    title: 'Work and production',
+    sections: [
+      {
+        title: 'Chains of production',
+        body: `- Farms grow **grain**. Bakeries turn grain and a little **coal** into **bread**; breweries turn grain and coal into **ale**.
+- Fisheries catch **fish**, burning **oil** in their boats.
+- Lumber camps fell **wood**; coal mines dig **coal**; ore mines dig **ore**; oil wells pump **oil**.
+- Smelters make **iron** from ore and coal. Toolworks make **tools** from iron, wood and coal. Workshops make **furniture** from wood and iron.
+- Builders turn labour, wood, iron and tools into houses, workshops, roads and piers.`,
+      },
+      {
+        title: 'Tools',
+        body: `Every worker needs tools to work at full strength; without them a worker produces about a third as much. Tools wear out with use, so every workplace keeps buying them. When tools are scarce, every trade in the realm slows down at once.`,
+      },
+      {
+        title: 'How workshops decide',
+        body: `Each day every workshop compares what it expects to sell its goods for with what its materials, tools and wages cost. It hires while an extra worker pays for themselves and while it can sell what it makes; it lays people off when sales fall or costs rise.
+
+Each site has limits — a field only grows so much — so each extra worker adds a little less than the one before. That is why higher prices call forth more output, but only gradually.
+
+A workshop raises its wage when it cannot fill its posts, and lowers it only slowly and reluctantly. It prices its goods around what it expects them to fetch, cutting its asks when unsold stock piles up.`,
+      },
+      {
+        title: 'Profits, owners and failure',
+        body: `Workshops pay their owners part of their spare coin each month. A workshop that cannot pay its workers or its loans for weeks goes under: its people are laid off, its stock is sold off cheaply, the bank loses what it lent, and the building stands empty until someone reopens it.
+
+When a trade earns much more than borrowing costs, someone with savings — or a loan — builds a new workshop. Borrowing costs therefore decide how fast the realm grows.`,
+      },
+    ],
+  },
+  {
+    id: 'people',
+    title: 'People',
+    sections: [
+      {
+        title: 'Spending and saving',
+        body: `Each household keeps a cushion of savings. The cushion it wants grows when money in the bank earns more than prices are rising, and when jobs are scarce in its town. Above the cushion it spends down its savings; below it, it holds back.
+
+It spends first on enough food (bread or fish — it buys more of whichever is cheaper) and, in cold months, coal. What is left goes to extra food, ale, furniture and warmth. Ale and furniture are the first things people give up when times are hard.`,
+      },
+      {
+        title: 'Health and contentment',
+        body: `Hungry or cold people fall ill, and ill workers produce less. Prolonged hunger kills. Contentment follows health, work, a roof, comforts, and whether prices are running away from wages. Towns that stay miserable for long strike, and miserable people leave the realm — taking their money with them.`,
+      },
+      {
+        title: 'Work',
+        body: `Jobless people look for posts every day, mostly in their own town. They take the best offer after the cost of walking to work, if it beats what they will settle for. The longer they are out of work, the less they hold out for — unless they receive a regular payment while jobless, which lets them wait longer.`,
+      },
+      {
+        title: 'Homes',
+        body: `Houses hold four households. Tenants pay rent to their landlord every day; a landlord raises rents when people are queuing for homes and cuts them when rooms stand empty. People who cannot pay are evicted after ten days. Builders put up new houses when rents pay well compared with the cost of borrowing.`,
+      },
+      {
+        title: 'Births, deaths and migration',
+        body: `Healthy, housed people have children; people die of age and of hunger. When a town has more open posts than jobless people and empty rooms to spare, newcomers arrive from abroad with a little coin. When someone dies, their savings, holdings and property pass to an heir.`,
+      },
+    ],
+  },
+  {
+    id: 'money',
+    title: 'Money, credit and the bank',
+    sections: [
+      {
+        title: 'Where money lives',
+        body: `All the coin people and workshops own is held as deposits at the realm's one bank. The bank in turn keeps its own money — its reserves — with you, the Treasury.
+
+When you pay someone, their deposit grows and so do the bank's reserves. When you collect, both shrink.`,
+      },
+      {
+        title: 'Lending creates money',
+        body: `When the bank lends, it simply adds to the borrower's deposit — new money appears. When the loan is repaid, that money disappears again. How much the bank lends depends on what it pays for money (your window rates), on how safe borrowers look, on its own capital, and on how many loans have recently gone bad.`,
+      },
+      {
+        title: 'The window',
+        body: `You pay the bank a rate on the reserves it keeps with you. If its reserves run short it must borrow from you at your lending rate. The bank's own lending and deposit rates follow these two rates. Higher rates make borrowing dearer and saving more attractive — slowly, and through many channels at once.`,
+      },
+      {
+        title: 'IOUs',
+        body: `The Treasury can sell IOUs: each one pays its holder ¤5 a year, forever. Selling them brings coin into the Purse from whoever buys them; buying them back puts coin into the hands of whoever sells. Their price moves with what savers can earn elsewhere: when rates rise, existing IOUs are worth less — and the bank, if it holds many, loses capital.`,
+      },
+      {
+        title: 'When the bank fails',
+        body: `If the bank's losses exceed its capital, it stops lending. If nobody puts coin into it within a month, every depositor's balance is cut to make the books whole again.`,
+      },
+    ],
+  },
+  {
+    id: 'trade',
+    title: 'Shipping and the outside world',
+    sections: [
+      {
+        title: 'Traders and wagons',
+        body: `Every town has a trading house with wagons and carters. When a good is cheap in one town and dear in another by more than it costs to haul it, traders buy, load and ship it. Hauling costs the carters' wages, the oil the wagons burn, and wear on the wagons. Paved roads make wagons faster and hauling cheaper.
+
+The shipping rate on the top bar is what it costs to move one unit ten tiles.`,
+      },
+      {
+        title: 'The port and gold',
+        body: `Foreign ships call at the harbour town every day. They sell goods at world prices plus their costs, and buy at world prices less theirs. World prices are quoted in gold, so the gold price in ¤ decides whether foreign goods look cheap or dear.
+
+Foreigners who earn ¤ at the harbour want gold for it; foreigners who want the realm's goods need ¤ first. Those needs meet in the gold market. When the realm buys more abroad than it sells, gold grows dearer. When the realm's savings pay well, foreigners are happier to keep ¤. You can hold gold, buy it and sell it like anyone else.`,
+      },
+    ],
+  },
+  {
+    id: 'reading',
+    title: 'Reading the ledgers',
+    sections: [
+      {
+        title: 'Indicators',
+        body: `- **Prices** — the cost of a typical household's basket (bread, fish, coal, ale, furniture and rent) at what buyers actually pay, 100 when you took office.
+- **Inflation** — how fast Prices are rising, as a yearly rate (over the last 30 days, and over the last year).
+- **Output** — everything produced in the realm valued at the prices of your first day, so that it measures quantities, not prices.
+- **Jobless** — the share of people without work.
+- **Money** — all deposits at the bank.
+- **Credit** — all loans the bank has outstanding.
+- **Real wage** — the average wage divided by Prices.
+- **Gini** — 0 when everyone owns the same, 1 when one person owns everything.`,
+      },
+      {
+        title: 'Experiments worth running',
+        body: `Pause, change one thing, and watch a year go by. Then undo it and try something else. Some questions to start with:
+
+- What happens to the price of bread — and of fish — if you take a share of every bread sale?
+- What if you pay a share of every bread sale instead?
+- What if you make it illegal to sell bread above half its price?
+- What if you Mint ¤50,000 and Transfer it to everyone? What if you do the same but also sell IOUs?
+- What if you hire every jobless person in Coalridge at a good wage to pave the road to Kingsbridge?
+- What if you raise the window rates to 15%? To 0%?
+- Does it matter whether the worker or the employer hands over a levy on wages?
+- What if you buy every tool in Kingsbridge at twice the price, then sell them back cheaply?
+- What if you stand ready to buy and sell gold at a fixed price?`,
+      },
+    ],
+  },
+];
