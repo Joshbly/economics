@@ -97,6 +97,44 @@ export const HEALTH_EMA = 0.03;
 export const CONTENT_EMA = 0.02;
 export const HUNGRY_BELOW = 0.7; // food satisfaction below this counts as hungry
 export const STARVING_HEALTH = 0.2;
+// -- added by households engineer --
+/** Days ahead averaged for the coal-stocking heat forecast. */
+export const HEAT_AHEAD_DAYS = 20;
+/** Heat satisfaction below this counts as "cold". */
+export const COLD_BELOW = 0.7;
+/** Days of forecast heat kept in the coal store before burning extra coal for comfort. */
+export const HEAT_RESERVE_DAYS = 6;
+/** Ale enjoyment = 1 − exp(−ALE_JOY_SCALE · casks drunk); joy is its EMA. */
+export const ALE_JOY_SCALE = 2.2;
+export const JOY_EMA = 0.1;
+/** Furniture stock at which comfort reaches 0.5 (comfort = F / (F + half)). */
+export const COMFORT_HALF = 8;
+/** Health target: food^HEALTH_FOOD_POW × heat term × housing term × age term. */
+export const HEALTH_FOOD_POW = 1.5;
+export const HEALTH_W_HEAT = 0.3; // max weight of cold (mid-winter)
+export const HOMELESS_HEALTH = 0.85; // health target multiplier while homeless
+export const OLD_AGE_START = 65; // health target declines after this age …
+export const OLD_AGE_SPAN = 80; // … by (age − start)/span, capped at OLD_AGE_MAX_LOSS
+export const OLD_AGE_MAX_LOSS = 0.25;
+/** Contentment weights (sum 1). */
+export const CONTENT_W_HEALTH = 0.2;
+export const CONTENT_W_WORK = 0.15;
+export const CONTENT_W_HOME = 0.15;
+export const CONTENT_W_FOOD = 0.15;
+export const CONTENT_W_COMFORT = 0.08;
+export const CONTENT_W_JOY = 0.1;
+export const CONTENT_W_INCOME = 0.17;
+/** Inflation pain: expected inflation above START costs up to W at START+SPAN. */
+export const INFL_PAIN_START = 0.03;
+export const INFL_PAIN_SPAN = 0.2;
+export const INFL_PAIN_W = 0.12;
+/** Portfolio concentration caps (share of household wealth). */
+export const PORTFOLIO_MAX_IOU_SHARE = 0.6;
+export const PORTFOLIO_MAX_GOLD_SHARE = 0.4;
+/** Smallest portfolio order worth placing (¤). */
+export const PORTFOLIO_MIN_ORDER = 1;
+/** Skip consumer bids whose planned spend is below this (¤) — avoids dust orders. */
+export const MIN_BID_SPEND = 0.01;
 
 // ---- Labour (agents/labor.ts) ------------------------------------------------
 export const JOB_SAMPLE = 6; // vacancies an unemployed person looks at per day
@@ -107,6 +145,16 @@ export const MAX_COMMUTE_TILES = 30;
 export const RES_WAGE_START = 0.9; // reservation wage = this × last wage when newly unemployed
 export const RES_WAGE_FLOOR = 0.55; // … decaying to this after RES_WAGE_DECAY_DAYS
 export const RES_WAGE_DECAY_DAYS = 90;
+// -- added by households engineer --
+/** Share of job-search samples taken in the searcher's own town (rest: towns within commuting range). */
+export const OWN_TOWN_SEARCH_SHARE = 0.75;
+/** Reservation-wage multipliers when hungry / nearly broke (desperation). */
+export const RES_WAGE_HUNGRY_MULT = 0.75;
+export const RES_WAGE_BROKE_MULT = 0.85;
+/** "Nearly broke" = cash below this many days of subsistence. */
+export const BROKE_DAYS = 10;
+/** Max vacancy-list entries per firm (sampling weight ∝ open slots, capped). */
+export const VACANCY_SAMPLE_CAP = 12;
 
 // ---- Firms (agents/firms.ts, production.ts) ---------------------------------
 export const HIRE_RATE = 0.1; // max share of capacity hired per day (at least 1)
@@ -183,6 +231,35 @@ export const HOUSE_LOAN_TERM = 3600;
 export const IOU_COUPON = 5; // ¤ per IOU per year
 export const IOU_PAR = 100;
 
+// ---- Markets & the player's primitives (market/*, policy/*) -------------------
+// -- added by market-policy engineer --
+/** Market reference price EMA: speed when the market traded today / when only an indicative price exists. */
+export const MARKET_EMA_TRADED = 0.15;
+export const MARKET_EMA_INDICATIVE = 0.03;
+/** Smoothing of the daily traded volume (MarketState.volEma). */
+export const MARKET_VOL_EMA = 0.1;
+/** Max points per side kept in the order-book curve snapshot for the UI. */
+export const CURVE_POINTS = 40;
+/** Lowest / highest base price the auction will ever quote (keeps logs and divisions finite). */
+export const PRICE_MIN = 1e-4;
+export const PRICE_MAX = 1e8;
+/** The combined percentage part of a sale wedge is clamped to these (per side) so every
+ *  order still converts to a finite base price. Buyers: gross = base·(1+bPct), sellers: net = base·(1−sPct). */
+export const WEDGE_BPCT_MIN = -0.95; // the Treasury may pay at most 95 % of the base on the buyer's behalf
+export const WEDGE_BPCT_MAX = 20;
+export const WEDGE_SPCT_MIN = -20;
+export const WEDGE_SPCT_MAX = 0.95; // a seller always keeps at least 5 % of the base
+/** Player input ranges (validation in policy/player.ts). */
+export const PLAYER_MAX_MONEY = 1e10; // largest single mint / burn / transfer (¤)
+export const PLAYER_MAX_QTY = 1e7; // largest order quantity per day (units)
+export const PLAYER_MAX_PRICE = 1e7; // highest order price (¤ per unit)
+export const PLAYER_MAX_PCT = 10; // highest percentage levy rate (10 = 1000 %)
+export const PLAYER_MAX_UNIT_RATE = 1e6; // highest ¤ levy rate
+export const PLAYER_MAX_RATE = 1; // highest annual rate at the window / in a loan-rate limit (100 %)
+export const PLAYER_MIN_RATE = -0.1; // lowest annual rate at the window (−10 %)
+export const PLAYER_MAX_RULES = 300; // levies + limits + orders
+export const PLAYER_MAX_WORKERS = 5000; // largest Treasury labour order (workers)
+
 // ---- Foreign (agents/foreign.ts) ---------------------------------------------
 export const IMPORT_MARKUP = 0.18;
 export const EXPORT_DISCOUNT = 0.14;
@@ -201,6 +278,30 @@ export const EMIGRATE_PROB_DAY = 0.003;
 export const EMIGRATE_UNEMP_DAYS = 60;
 export const IMMIGRATION_MAX_SHARE = 0.03; // per month, of town population
 export const MIGRATE_PROB_DAY = 0.02; // long-unemployed consider moving towns
+// -- added by households engineer --
+/** Mortality multiplier by age: DEATH_AGE_BASE + (1 − BASE)·exp((age − PIVOT)/SCALE). ≈1 on average for ages 18–80. */
+export const DEATH_AGE_BASE = 0.3;
+export const DEATH_AGE_PIVOT = 60;
+export const DEATH_AGE_SCALE = 11;
+/** Extra mortality for poor health: × (1 + POOR_HEALTH_MORT · max(0, 0.6 − health)). */
+export const POOR_HEALTH_MORT = 4;
+/** Births: a grown child forms a new household (age ADULT_AGE). Parent must be healthier than this. */
+export const BIRTH_MIN_HEALTH = 0.6;
+export const ADULT_AGE = 18;
+/** Share of the parent's cash given to the new household (capped at BIRTH_GIFT_MAX_DAYS of parent income). */
+export const BIRTH_GIFT_SHARE = 0.1;
+export const BIRTH_GIFT_MAX_DAYS = 30;
+/** Internal migration: unemployed this long consider other towns. */
+export const MIGRATE_UNEMP_DAYS = 30;
+/** Required advantage in (vacancies − unemployed)/pop before moving towns. */
+export const MIGRATE_MIN_GAIN = 0.02;
+/** Immigration runs on this day of the month. Immigrants bring ~this many days of local wages (lognormal). */
+export const IMMIGRATION_DAY = 5;
+export const IMMIGRANT_CASH_DAYS = 25;
+/** Immigrants take at most this share of the foreign desk's coin each. */
+export const IMMIGRANT_COIN_SHARE = 0.05;
+/** Emigration push from misery is scaled down for owners (they have roots). */
+export const OWNER_EMIGRATE_MULT = 0.3;
 
 // ---- Housing (agents/housing.ts) ---------------------------------------------
 export const RENT_UP = 0.03; // monthly adjustment when full with waiting list
@@ -209,6 +310,19 @@ export const EVICT_ARREARS_DAYS = 10;
 export const MOVE_CLOSER_PROB_DAY = 0.01;
 export const MOVE_COMMUTE_TILES = 15;
 export const MAX_RENT_SHARE = 0.45; // won't rent a slot costing more than this × income
+// -- added by households engineer --
+/** Someone with little income may still rent if cash covers this many days of rent. */
+export const RENT_CASH_COVER_DAYS = 30;
+/** Moving in requires cash for this many days of rent up front (so the just-evicted cannot re-rent at once). */
+export const RENT_DEPOSIT_DAYS = 3;
+/** Town vacancy rate below which full houses raise rent by RENT_UP/2 even without homeless. */
+export const VACANCY_TIGHT = 0.03;
+/** Days a slot must stay vacant before the landlord cuts rent. */
+export const RENT_CUT_VACANT_DAYS = 30;
+/** Floor on any rent (¤/slot/day). */
+export const MIN_RENT = 0.05;
+/** A long commuter moves only if (rent + commute cost) falls by at least this share. */
+export const MOVE_MIN_SAVING = 0.05;
 
 // ---- Unrest / events ------------------------------------------------------------
 export const UNREST_CONTENT = 0.3;
