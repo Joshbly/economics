@@ -23,9 +23,9 @@ export const SAND_WET: RGB = [186, 170, 128];
 export const GRASS_LUSH: RGB = [98, 146, 72];
 export const GRASS_DRY: RGB = [150, 158, 92];
 export const FOREST_FLOOR: RGB = [66, 104, 58];
-export const HILLS_LO: RGB = [128, 140, 86];
-export const HILLS_HI: RGB = [148, 138, 100];
-export const MOUNTAIN: RGB = [128, 121, 110];
+export const HILLS_LO: RGB = [116, 130, 78];
+export const HILLS_HI: RGB = [128, 122, 88];
+export const MOUNTAIN: RGB = [118, 112, 102];
 export const MARSH: RGB = [92, 114, 80];
 /** Trodden earth around settlements. */
 export const TOWN_GROUND: RGB = [160, 150, 104];
@@ -42,16 +42,18 @@ export const TREE = {
   trunk: '#5a4430',
 };
 export const PEAK = {
-  lit: '#b4ab9d',
-  shade: '#7a7066',
-  deep: '#665d55',
-  snow: '#eef1f2',
-  snowShade: '#c3cdd9',
-  line: 'rgba(40,34,30,0.35)',
+  lit: '#b3aa9c',
+  litLow: '#a0978a',
+  shade: '#766c63',
+  deep: '#6a6158',
+  snow: '#f0f2f2',
+  snowShade: '#c2ccd8',
+  line: 'rgba(52,44,38,0.32)',
 };
 export const HILL = {
-  lit: 'rgba(214,214,160,0.34)',
-  shade: 'rgba(52,56,30,0.30)',
+  body: 'rgba(150,154,96,0.55)',
+  lit: 'rgba(228,226,176,0.55)',
+  shade: 'rgba(62,66,36,0.34)',
 };
 export const MARSH_F = {
   pool: '#3f6b6e',
@@ -66,8 +68,8 @@ export const RIVER = {
   light: 'rgba(170,215,222,0.55)',
 };
 export const ROAD = {
-  dirtEdge: 'rgba(96,72,44,0.55)',
-  dirt: '#b99a68',
+  dirtEdge: 'rgba(84,64,40,0.5)',
+  dirt: '#ad9168',
   dirtRut: 'rgba(120,92,58,0.45)',
   pavedEdge: '#5b5a55',
   pavedLine: '#d4cfc2',

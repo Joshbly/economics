@@ -268,7 +268,7 @@ export function createTerrainLayer(): TerrainLayer {
     const vx1 = tx0 + tw + M;
     const vy1 = ty0 + th + M;
     const px = 1 / L; // one device pixel in tile units
-    drawPlazas(ctx, vx0, vy0, vx1, vy1);
+    drawPlazas(ctx, m, vx0, vy0, vx1, vy1);
     drawRivers(ctx, rivers, vx0, vy0, vx1, vy1, px);
     drawRoads(ctx, roads, sites, vx0, vy0, vx1, vy1, px, L);
     drawBridges(ctx, bridges, vx0, vy0, vx1, vy1, px, L);
@@ -281,23 +281,36 @@ export function createTerrainLayer(): TerrainLayer {
     return ch;
   }
 
-  function drawPlazas(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number): void {
+  function drawPlazas(ctx: CanvasRenderingContext2D, m: MapData, x0: number, y0: number, x1: number, y1: number): void {
     for (const p of plazas) {
-      // the market square: hall (2×2 at p) plus the ring of track around it
+      // the market square: the hall (2×2 at p) and the ring of track around it, minus river and water
       const px0 = p.x - 1;
       const py0 = p.y - 1;
       if (px0 > x1 || py0 > y1 || px0 + 4 < x0 || py0 + 4 < y0) continue;
+      const cells: [number, number][] = [];
+      for (let yy = py0; yy < py0 + 4; yy++) for (let xx = px0; xx < px0 + 4; xx++) {
+        if (xx < 0 || yy < 0 || xx >= m.w || yy >= m.h) continue;
+        const i = yy * m.w + xx;
+        if (m.river[i] || isWaterTile(m, i)) continue;
+        const o = m.occ[i];
+        const hall = o >= 0 && xx >= p.x && xx < p.x + 2 && yy >= p.y && yy < p.y + 2;
+        if (!hall && (o >= 0 || m.road[i] < 1)) continue;
+        cells.push([xx, yy]);
+      }
       ctx.fillStyle = ROAD.plazaEdge;
-      roundRect(ctx, px0 + 0.08, py0 + 0.1, 3.9, 3.9, 0.7);
-      ctx.fill();
+      for (const [xx, yy] of cells) {
+        roundRect(ctx, xx - 0.04, yy - 0.02, 1.08, 1.1, 0.22);
+        ctx.fill();
+      }
       ctx.fillStyle = ROAD.plaza;
-      roundRect(ctx, px0 + 0.12, py0 + 0.12, 3.76, 3.76, 0.65);
-      ctx.fill();
+      for (const [xx, yy] of cells) {
+        roundRect(ctx, xx - 0.02, yy - 0.02, 1.04, 1.04, 0.2);
+        ctx.fill();
+      }
       // a hint of cobbles
-      ctx.fillStyle = 'rgba(90,76,56,0.16)';
-      for (let yy = 0; yy < 7; yy++) for (let xx = 0; xx < 7; xx++) {
-        if ((xx + yy) % 2) continue;
-        ctx.fillRect(px0 + 0.3 + xx * 0.5, py0 + 0.3 + yy * 0.5, 0.22, 0.22);
+      ctx.fillStyle = 'rgba(90,76,56,0.14)';
+      for (const [xx, yy] of cells) {
+        for (let k = 0; k < 4; k++) ctx.fillRect(xx + 0.12 + (k % 2) * 0.5, yy + 0.12 + (k >> 1) * 0.5, 0.24, 0.24);
       }
     }
   }
@@ -553,13 +566,14 @@ function drawRoads(ctx: CanvasRenderingContext2D, chains: Chain[], sites: Site[]
     }
   };
   const W = (tiles: number, minPx: number) => Math.max(tiles, minPx * px);
-  // dirt tracks: soft brown edge, core, faint ruts when close
+  // dirt tracks: soft brown edge, core, faint ruts when close (thinner when seen from afar)
+  const core = L >= 32 ? 0.27 : L >= 16 ? 0.21 : 0.24;
   path(dirt, true);
   ctx.strokeStyle = ROAD.dirtEdge;
-  ctx.lineWidth = W(0.4, 2.6);
+  ctx.lineWidth = W(core + 0.12, 2.2);
   ctx.stroke();
   ctx.strokeStyle = ROAD.dirt;
-  ctx.lineWidth = W(0.27, 1.6);
+  ctx.lineWidth = W(core, 1.2);
   ctx.stroke();
   if (L >= 32) {
     ctx.strokeStyle = ROAD.dirtRut;
@@ -779,99 +793,170 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
     for (let x = x0; x < x1; x++) {
       const i = y * w + x;
       if (m.terrain[i] !== Terrain.Mountain || m.occ[i] >= 0 || m.road[i] >= 1) continue;
-      drawPeak(ctx, seed, x, y, m.elev[i] ?? 0.85, L, px);
+      drawPeak(ctx, m, seed, x, y, m.elev[i] ?? 0.85, L, px);
     }
   }
 }
 
 function drawHill(ctx: CanvasRenderingContext2D, seed: number, x: number, y: number, e: number, px: number): void {
-  const n = ihash(seed ^ 0x4a11, x, y) < 0.45 ? 2 : 1;
+  const n = ihash(seed ^ 0x4a11, x, y) < 0.4 ? 2 : 1;
   for (let k = 0; k < n; k++) {
     const h1 = ihash(seed + 31 * k, x, y);
     const h2 = ihash(seed + 57 * k + 3, x, y);
-    const cx = x + (n === 1 ? 0.5 : k === 0 ? 0.32 : 0.7) + (h1 - 0.5) * 0.2;
-    const cy = y + (n === 1 ? 0.66 : k === 0 ? 0.5 : 0.82) + (h2 - 0.5) * 0.14;
-    const rx = (n === 1 ? 0.44 : 0.32) * (0.85 + 0.3 * h2);
-    const ry = rx * (0.5 + 0.25 * Math.min(1, (e - 0.55) * 3));
+    if (n === 1 && h1 < 0.18) continue; // leave some ground bare
+    const cx = x + (n === 1 ? 0.5 : k === 0 ? 0.3 : 0.72) + (h1 - 0.5) * 0.22;
+    const cy = y + (n === 1 ? 0.7 : k === 0 ? 0.52 : 0.86) + (h2 - 0.5) * 0.14;
+    const rx = (n === 1 ? 0.5 : 0.36) * (0.8 + 0.35 * h2);
+    const ry = rx * (0.46 + 0.3 * Math.min(1, Math.max(0, (e - 0.55) * 3)));
+    // shadow to the south-east
+    ctx.fillStyle = 'rgba(38,42,22,0.22)';
+    ctx.beginPath();
+    ctx.ellipse(cx + rx * 0.18, cy + 0.02, rx * 1.02, ry * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // the dome
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, Math.PI, 2 * Math.PI);
     ctx.closePath();
-    ctx.fillStyle = HILL.lit;
+    ctx.fillStyle = HILL.body;
     ctx.fill();
+    // shaded eastern half
     ctx.beginPath();
-    ctx.moveTo(cx + rx * 0.05, cy - ry);
-    ctx.ellipse(cx, cy, rx, ry, 0, 1.52 * Math.PI, 2 * Math.PI);
-    ctx.lineTo(cx + rx * 0.05, cy);
+    ctx.moveTo(cx + rx * 0.08, cy - ry);
+    ctx.ellipse(cx, cy, rx, ry, 0, 1.53 * Math.PI, 2 * Math.PI);
+    ctx.quadraticCurveTo(cx + rx * 0.3, cy - ry * 0.2, cx + rx * 0.08, cy - ry);
     ctx.closePath();
     ctx.fillStyle = HILL.shade;
     ctx.fill();
+    // sunlit rim
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx * 0.92, ry * 0.9, 0, 1.08 * Math.PI, 1.48 * Math.PI);
+    ctx.strokeStyle = HILL.lit;
+    ctx.lineWidth = Math.max(px, 0.035);
+    ctx.stroke();
   }
 }
 
-function drawPeak(ctx: CanvasRenderingContext2D, seed: number, x: number, y: number, e: number, L: number, px: number): void {
+/** Number of Mountain tiles among the 8 neighbours (inner range tiles carry the big peaks). */
+function mountainNeighbours(m: MapData, x: number, y: number): number {
+  let n = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const xx = x + dx;
+    const yy = y + dy;
+    if (xx < 0 || yy < 0 || xx >= m.w || yy >= m.h) continue;
+    if (m.terrain[yy * m.w + xx] === Terrain.Mountain) n++;
+  }
+  return n;
+}
+
+/**
+ * One mountain tile: most tiles carry a peak whose size grows with elevation
+ * and with how deep inside the range the tile lies, so the range reads as a
+ * few big summits over foothills rather than a grid of cones. Silhouettes
+ * have shoulders; the west face is lit, the east face shaded; the highest
+ * peaks carry snow with a ragged lower edge.
+ */
+function drawPeak(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x: number, y: number, e: number, L: number, px: number): void {
   const h1 = ihash(seed ^ 0x9ea1, x, y);
   const h2 = ihash(seed ^ 0x9ea2, x, y);
   const h3 = ihash(seed ^ 0x9ea3, x, y);
-  const hi = Math.max(0, Math.min(1, (e - 0.76) / 0.24));
-  const cx = x + 0.5 + (h1 - 0.5) * 0.3;
-  const by = y + 0.86 + (h2 - 0.5) * 0.12;
-  const bw = 0.62 + 0.16 * h3;
-  const hgt = (0.72 + 0.62 * hi) * (0.85 + 0.3 * h2);
-  const ax = cx + (h1 - 0.5) * 0.25;
+  const h4 = ihash(seed ^ 0x9ea4, x, y);
+  const nb = mountainNeighbours(m, x, y);
+  const hi = Math.max(0, Math.min(1, (e - 0.77) / 0.23));
+  // a third of the tiles only carry rocks (the neighbours' peaks overlap them)
+  if (h4 < 0.3 && nb >= 5) {
+    ctx.fillStyle = 'rgba(90,82,74,0.55)';
+    for (let k = 0; k < 3; k++) {
+      const a = ihash(seed + 13 * k, x, y);
+      const b = ihash(seed + 17 * k + 1, x, y);
+      ctx.beginPath();
+      ctx.moveTo(x + 0.2 + 0.6 * a - 0.07, y + 0.3 + 0.6 * b);
+      ctx.lineTo(x + 0.2 + 0.6 * a, y + 0.3 + 0.6 * b - 0.09);
+      ctx.lineTo(x + 0.2 + 0.6 * a + 0.08, y + 0.3 + 0.6 * b);
+      ctx.closePath();
+      ctx.fill();
+    }
+    return;
+  }
+  const size = (0.55 + 0.55 * hi + 0.35 * (nb / 8)) * (0.8 + 0.4 * h3);
+  const cx = x + 0.5 + (h1 - 0.5) * 0.45;
+  const by = y + 0.9 + (h2 - 0.5) * 0.2;
+  const bw = 0.52 * size + 0.12;
+  const hgt = 0.95 * size;
+  const ax = cx + (h1 - 0.5) * 0.3 * size;
   const ay = by - hgt;
-  const mx = cx + (ax - cx) * 0.4 + 0.08;
-  // shadow at the foot
-  ctx.fillStyle = 'rgba(40,36,32,0.22)';
+  const lsx = cx - bw * (0.5 + 0.15 * h2);
+  const lsy = by - hgt * (0.42 + 0.15 * h3);
+  const rsx = cx + bw * (0.48 + 0.12 * h3);
+  const rsy = by - hgt * (0.36 + 0.14 * h1);
+  const mx = cx + (ax - cx) * 0.35 + bw * 0.12;
+  const rgx = (ax + mx) / 2 - bw * 0.06;
+  const rgy = (ay + by) / 2;
+  // soft shadow at the foot
+  ctx.fillStyle = 'rgba(36,32,28,0.22)';
   ctx.beginPath();
-  ctx.ellipse(cx + 0.12, by + 0.02, bw * 1.05, 0.14, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx + bw * 0.2, by + 0.02, bw * 1.1, 0.12 + 0.04 * size, 0, 0, Math.PI * 2);
   ctx.fill();
-  // lit (west) face
-  ctx.fillStyle = PEAK.lit;
+  // lit west face
+  ctx.fillStyle = hi > 0.35 ? PEAK.lit : PEAK.litLow;
   ctx.beginPath();
   ctx.moveTo(cx - bw, by);
+  ctx.lineTo(lsx, lsy);
   ctx.lineTo(ax, ay);
-  ctx.lineTo(mx, by);
+  ctx.quadraticCurveTo(rgx, rgy, mx, by);
   ctx.closePath();
   ctx.fill();
-  // shaded (east) face
-  ctx.fillStyle = hi > 0.5 ? PEAK.shade : PEAK.deep;
+  // shaded east face
+  ctx.fillStyle = hi > 0.35 ? PEAK.shade : PEAK.deep;
   ctx.beginPath();
   ctx.moveTo(mx, by);
-  ctx.lineTo(ax, ay);
+  ctx.quadraticCurveTo(rgx, rgy, ax, ay);
+  ctx.lineTo(rsx, rsy);
+  ctx.lineTo(cx + bw, by);
+  ctx.closePath();
+  ctx.fill();
+  // darker skirt blending the foot into the ground
+  ctx.fillStyle = 'rgba(70,64,56,0.35)';
+  ctx.beginPath();
+  ctx.moveTo(cx - bw, by);
+  ctx.lineTo(cx - bw * 0.7, by - hgt * 0.16);
+  ctx.lineTo(cx + bw * 0.7, by - hgt * 0.12);
   ctx.lineTo(cx + bw, by);
   ctx.closePath();
   ctx.fill();
   if (L >= 16) {
-    // a ridge line down the lit face
+    // strata on the lit face
     ctx.strokeStyle = PEAK.line;
-    ctx.lineWidth = Math.max(px, 0.025);
+    ctx.lineWidth = Math.max(px, 0.02);
     ctx.beginPath();
-    ctx.moveTo(ax, ay);
-    ctx.lineTo(ax - (ax - (cx - bw)) * 0.35 + 0.02, ay + hgt * 0.45);
+    ctx.moveTo(lsx + (ax - lsx) * 0.35, lsy + (ay - lsy) * 0.35);
+    ctx.lineTo(lsx + (ax - lsx) * 0.35 + bw * 0.25, lsy + (ay - lsy) * 0.35 + hgt * 0.22);
+    ctx.moveTo(cx - bw * 0.55, by - hgt * 0.2);
+    ctx.lineTo(cx - bw * 0.2, by - hgt * 0.1);
     ctx.stroke();
   }
-  // snow on the higher peaks
-  if (hi > 0.18) {
-    const f = 0.28 + 0.2 * hi;
-    const sy = ay + hgt * f;
-    const lx = ax + ((cx - bw) - ax) * f;
-    const rx = ax + ((cx + bw) - ax) * f;
-    const mxs = ax + (mx - ax) * f;
+  // snow on the high summits
+  if (hi > 0.42 && size > 0.75) {
+    const f = Math.min(0.55, 0.26 + 0.3 * (hi - 0.42));
+    const sl = (px0: number, py0: number) => [ax + (px0 - ax) * f, ay + (py0 - ay) * f];
+    const [lx, ly] = sl(lsx, lsy);
+    const [mxs, mys] = [ax + (rgx - ax) * f * 1.6, ay + (rgy - ay) * f * 1.6];
+    const [rx, ry] = sl(rsx, rsy);
     ctx.fillStyle = PEAK.snow;
     ctx.beginPath();
     ctx.moveTo(ax, ay);
-    ctx.lineTo(lx, sy);
-    ctx.lineTo(lx + (mxs - lx) * 0.35, sy - hgt * 0.06);
-    ctx.lineTo(lx + (mxs - lx) * 0.7, sy + hgt * 0.03);
-    ctx.lineTo(mxs, sy - hgt * 0.02);
+    ctx.lineTo(lx, ly);
+    ctx.lineTo(lx + (mxs - lx) * 0.35, ly - hgt * 0.05 + (mys - ly) * 0.35);
+    ctx.lineTo(lx + (mxs - lx) * 0.7, ly + hgt * 0.04 + (mys - ly) * 0.7);
+    ctx.lineTo(mxs, mys);
     ctx.closePath();
     ctx.fill();
     ctx.fillStyle = PEAK.snowShade;
     ctx.beginPath();
     ctx.moveTo(ax, ay);
-    ctx.lineTo(mxs, sy - hgt * 0.02);
-    ctx.lineTo(mxs + (rx - mxs) * 0.5, sy - hgt * 0.07);
-    ctx.lineTo(rx, sy);
+    ctx.lineTo(mxs, mys);
+    ctx.lineTo(mxs + (rx - mxs) * 0.45, mys - hgt * 0.06 + (ry - mys) * 0.45);
+    ctx.lineTo(rx, ry);
     ctx.closePath();
     ctx.fill();
   }

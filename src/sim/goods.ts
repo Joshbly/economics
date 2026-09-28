@@ -36,7 +36,7 @@ export interface GoodDef {
 
 export const GOODS: GoodDef[] = [
   { id: 0, key: 'grain', name: 'Grain', unit: 'sack', color: '#e3c26b', spoil: 0.0005, consumer: false, tradable: true, blurb: 'Grown on farms. Bakers and brewers need it. Harvests swell in summer and shrink in winter.' },
-  { id: 1, key: 'fish', name: 'Fish', unit: 'basket', color: '#6fb7d6', spoil: 0.10, consumer: true, tradable: false, blurb: 'Caught off the coast by boats that burn oil. A food that competes with bread. Rots quickly.' },
+  { id: 1, key: 'fish', name: 'Fish', unit: 'basket', color: '#6fb7d6', spoil: 0.04, consumer: true, tradable: false, blurb: 'Caught off the coast by boats that burn oil. A food that competes with bread. Rots quickly.' },
   { id: 2, key: 'wood', name: 'Wood', unit: 'log', color: '#9a6b3f', spoil: 0, consumer: false, tradable: true, blurb: 'Felled in forests. Used for tools, furniture and every construction.' },
   { id: 3, key: 'coal', name: 'Coal', unit: 'ton', color: '#5b5f66', spoil: 0, consumer: true, tradable: true, blurb: 'Dug from the hills. Heats homes in winter, fires ovens, kilns and forges.' },
   { id: 4, key: 'oil', name: 'Oil', unit: 'barrel', color: '#3c3350', spoil: 0, consumer: false, tradable: true, blurb: 'Pumped from marsh seeps. Fuel for wagons and fishing boats — the cost of moving things.' },
@@ -91,16 +91,16 @@ type Row = [
 ];
 //  key          name                  worker        out           inputs                                   alpha prod  size tpw  cap toolUse season  site       foot    buildCost              color
 const ROWS: Row[] = [
-  ['farm',      'Farm',               'farmhand',   G.grain,     [],                                       0.78, 5.0,  8,  1.0, 12, 0.020, 'farm', 'grass',    [2, 2], M(3080, 675, 81, 31), '#c8b04a'],
-  ['fishery',   'Fishery',            'fisher',     G.fish,      [[G.oil, 0.08]],                          0.78, 4.2,  6,  1.0,  8, 0.025, 'fish', 'coast',    [1, 1], M(2310, 510, 61, 23), '#4f9fc9'],
+  ['farm',      'Farm',               'farmhand',   G.grain,     [],                                       0.78, 8.0,  8,  1.0, 12, 0.020, 'farm', 'grass',    [2, 2], M(3080, 675, 81, 31), '#c8b04a'],
+  ['fishery',   'Fishery',            'fisher',     G.fish,      [[G.oil, 0.08]],                          0.78, 6.0,  6,  1.0,  8, 0.025, 'fish', 'coast',    [1, 1], M(2310, 510, 61, 23), '#4f9fc9'],
   ['lumber',    'Lumber Camp',        'woodcutter', G.wood,      [],                                       0.78, 5.0,  5,  1.0,  8, 0.025, 'none', 'forest',   [1, 1], M(1930, 425, 51, 20), '#6e8b3d'],
   ['coalmine',  'Coal Mine',          'miner',      G.coal,      [],                                       0.78, 5.0,  8,  1.2, 12, 0.030, 'none', 'hills',    [1, 1], M(3080, 675, 81, 31), '#50545c'],
   ['oilwell',   'Oil Well',           'driller',    G.oil,       [],                                       0.78, 6.0,  4,  1.5,  6, 0.030, 'none', 'marsh',    [1, 1], M(1540, 340, 41, 16), '#3c3350'],
   ['oremine',   'Ore Mine',           'miner',      G.ore,       [],                                       0.78, 4.0,  6,  1.2, 10, 0.030, 'none', 'mountain', [1, 1], M(2310, 510, 61, 23), '#a0604c'],
   ['smelter',   'Smelter',            'smelter',    G.iron,      [[G.ore, 2], [G.coal, 1]],                0.85, 3.0,  5,  0.8, 10, 0.020, 'none', 'town',     [2, 1], M(1210, 265, 32, 12), '#b35a3a'],
   ['toolworks', 'Toolworks',          'smith',      G.tools,     [[G.iron, 1], [G.wood, 0.5], [G.coal, 0.5]], 0.85, 1.5, 5, 0.8, 10, 0.020, 'none', 'town',     [1, 1], M(1210, 265, 32, 12), '#c9a227'],
-  ['bakery',    'Bakery',             'baker',      G.bread,     [[G.grain, 1], [G.coal, 0.2]],            0.85, 14,   5,  0.5,  8, 0.015, 'none', 'town',     [1, 1], M(1210, 265, 32, 12), '#d9934a'],
-  ['brewery',   'Brewery',            'brewer',     G.ale,       [[G.grain, 0.6], [G.coal, 0.1]],          0.85, 12,   5,  0.5,  8, 0.015, 'none', 'town',     [1, 1], M(1210, 265, 32, 12), '#b5772b'],
+  ['bakery',    'Bakery',             'baker',      G.bread,     [[G.grain, 1], [G.coal, 0.2]],            0.85, 20,   5,  0.5,  8, 0.015, 'none', 'town',     [1, 1], M(1210, 265, 32, 12), '#d9934a'],
+  ['brewery',   'Brewery',            'brewer',     G.ale,       [[G.grain, 0.6], [G.coal, 0.1]],          0.85, 16,   5,  0.5,  8, 0.015, 'none', 'town',     [1, 1], M(1210, 265, 32, 12), '#b5772b'],
   ['furniture', 'Furniture Workshop', 'joiner',     G.furniture, [[G.wood, 2], [G.iron, 0.2]],             0.85, 0.8,  6,  0.8, 10, 0.020, 'none', 'town',     [1, 1], M(1450, 320, 38, 15), '#7d5a8c'],
   // service sectors: alpha/prod unused; toolsPerWorker = equipment; builders also consume tools as project materials
   ['builder',   "Builders' Yard",     'builder',    -1,          [],                                       1,    1,   10,  0.5, 30, 0.010, 'none', 'town',     [2, 1], M(900, 200, 20, 10),  '#a88b5b'],

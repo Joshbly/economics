@@ -188,7 +188,7 @@ function paintLand(F: Fields, m: MapData): void {
       const fert = m.fert[i] ?? 0.5;
       // broad colour patches (two octaves of value noise over tiles)
       const broad = 0.65 * vnoise(F.seed ^ 0x1234, x / 7, y / 7) + 0.35 * vnoise(F.seed ^ 0x4321, x / 3, y / 3);
-      let k = 4.2; // hill-shading strength
+      let k = 2.4; // hill-shading strength
       switch (t) {
         case Terrain.Sand:
           set(SAND);
@@ -196,9 +196,9 @@ function paintLand(F: Fields, m: MapData): void {
           break;
         case Terrain.Grass: {
           set(GRASS_DRY);
-          mix(GRASS_LUSH, clamp01(0.25 + fert * 0.95 + (broad - 0.5) * 0.35));
+          mix(GRASS_LUSH, clamp01(0.3 + fert * 0.85 + (broad - 0.5) * 0.3));
           // uplands a touch drier and browner
-          mix(HILLS_HI, clamp01((e - 0.42) * 1.4) * 0.35);
+          mix(HILLS_LO, clamp01((e - 0.45) * 1.6) * 0.3);
           break;
         }
         case Terrain.Forest:
@@ -208,12 +208,12 @@ function paintLand(F: Fields, m: MapData): void {
         case Terrain.Hills:
           set(HILLS_LO);
           mix(HILLS_HI, clamp01((e - 0.58) / 0.25 + (broad - 0.5) * 0.4));
-          k = 6;
+          k = 4.5;
           break;
         case Terrain.Mountain:
           set(MOUNTAIN);
-          mix([176, 170, 160], clamp01((e - 0.8) / 0.2) * 0.45);
-          k = 5;
+          mix([150, 144, 134], clamp01((e - 0.8) / 0.2) * 0.4);
+          k = 5.5;
           break;
         case Terrain.Marsh:
           set(MARSH);
@@ -232,7 +232,7 @@ function paintLand(F: Fields, m: MapData): void {
       const dzdx = ((el[y * w + xr] ?? e) - (el[y * w + xl] ?? e)) / Math.max(1, xr - xl);
       const dzdy = ((el[yd * w + x] ?? e) - (el[yu * w + x] ?? e)) / Math.max(1, yd - yu);
       let sh = 1 + k * (dzdx + dzdy);
-      sh = sh < 0.72 ? 0.72 : sh > 1.25 ? 1.25 : sh;
+      sh = sh < 0.78 ? 0.78 : sh > 1.16 ? 1.16 : sh;
       // settlement ground
       const u = F.urban[i];
       if (u > 0 && t !== Terrain.Mountain && t !== Terrain.Marsh) mix(TOWN_GROUND, u * 0.55);

@@ -383,10 +383,10 @@ export const ROAD_INVALIDATE_TILES = 5;
 export const PROJECT_KEEP_DONE = 24;
 
 // ---- Traders (agents/traders.ts) ---------------------------------------------
-export const SPEED_OFFROAD = 6; // tiles per day
-export const SPEED_DIRT = 20;
-export const SPEED_PAVED = 45;
-export const WAGON_CAPACITY = 40; // units per wagon
+export const SPEED_OFFROAD = 8; // tiles per day
+export const SPEED_DIRT = 30;
+export const SPEED_PAVED = 70;
+export const WAGON_CAPACITY = 120; // units per wagon
 export const OIL_PER_TILE = 0.04; // oil per wagon per tile
 export const TOOLS_PER_WAGON = 3; // a wagon is bought as this many tools
 export const WAGON_WEAR_DAY = 0.01; // tools worn per wagon-day on the road
