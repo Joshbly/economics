@@ -147,6 +147,8 @@ export function createBuildingLayer(): BuildingLayer {
   const queue: { info: BInfo; variant: Variant; L: number; key: string }[] = [];
   const queued = new Set<string>();
   let tmp: HTMLCanvasElement | null = null;
+  let ghostC: HTMLCanvasElement | null = null;
+  let ghostKey = '';
 
   function sync(s: SimState): void {
     const v = rt(s).buildingVersion;
@@ -220,11 +222,11 @@ export function createBuildingLayer(): BuildingLayer {
   }
 
   function evict(): void {
-    // keep the cache within a count and ~48M pixels (~190 MB) budget; least recently drawn first
-    if (cache.size <= SPRITE_CACHE_MAX && pixels <= 48e6) return;
+    // keep the cache within a count and ~24M pixels (~96 MB) budget; least recently drawn first
+    if (cache.size <= SPRITE_CACHE_MAX && pixels <= 24e6) return;
     const arr = [...cache.values()].sort((a, b) => a.used - b.used);
     let k = 0;
-    while ((cache.size > SPRITE_CACHE_MAX || pixels > 36e6) && k < arr.length) {
+    while ((cache.size > SPRITE_CACHE_MAX || pixels > 18e6) && k < arr.length) {
       const e = arr[k++];
       if (e.used === frame) break;
       cache.delete(e.key);
@@ -264,7 +266,7 @@ export function createBuildingLayer(): BuildingLayer {
   function draw(ctx: CanvasRenderingContext2D, L: number, k: number, ox: number, oy: number, vw: number, vh: number): void {
     frame++;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingQuality = 'low';
     for (const info of infos) {
       const b = info.b;
       const x0 = ox + (b.x - SPRITE_MX) * k;
@@ -321,11 +323,16 @@ export function createBuildingLayer(): BuildingLayer {
   }
 
   function ghost(ctx: CanvasRenderingContext2D, look: Look, L: number, k: number, ox: number, oy: number, x: number, y: number, alpha: number): void {
-    const [cw, ch] = spriteSize(look, L);
-    const canvas = newCanvas(cw, ch);
-    const c = canvas.getContext('2d')!;
-    c.setTransform(L, 0, 0, L, SPRITE_MX * L, SPRITE_MTOP * L);
-    paintBuilding(c, look, L);
+    const key = `${sigOf(look, 'a')}|${look.townKind}|${look.town}|${L}`;
+    if (!ghostC || ghostKey !== key) {
+      const [cw, ch] = spriteSize(look, L);
+      ghostC = newCanvas(cw, ch);
+      const c = ghostC.getContext('2d')!;
+      c.setTransform(L, 0, 0, L, SPRITE_MX * L, SPRITE_MTOP * L);
+      paintBuilding(c, look, L);
+      ghostKey = key;
+    }
+    const canvas = ghostC;
     ctx.globalAlpha = alpha;
     ctx.drawImage(canvas, ox + (x - SPRITE_MX) * k, oy + (y - SPRITE_MTOP) * k, (look.w + 2 * SPRITE_MX) * k, (look.h + SPRITE_MTOP + SPRITE_MBOT) * k);
     ctx.globalAlpha = 1;

@@ -6,6 +6,9 @@ import { GOODS } from '../../sim/goods';
 import { h, setText, toggleClass } from '../dom';
 import { on, setOverlay, ui, type OverlayId } from '../uiState';
 import { selectInput } from '../widgets/controls';
+import { attachTip, tipNote, tipRow, tipTitle } from '../widgets/tooltip';
+import { SECTORS } from '../../sim/goods';
+import { HOMELESS_COLOR, SECTOR_DOT, TREASURY_COLOR, UNEMPLOYED_COLOR } from './constants';
 import { overlayLegend, overlayTitle } from './overlay';
 import './map.css';
 
@@ -77,6 +80,22 @@ export function createControls(container: HTMLElement, act: { zoomIn(): void; zo
     },
   );
   const layers = h('div', { class: 'mapc-group mapc-layers' }, people.el, carts.el);
+  // what the colours of the little people mean
+  attachTip(
+    people.el,
+    () => [
+      tipTitle('People', 'coloured by where they work'),
+      ...Object.keys(SECTOR_DOT)
+        .filter((k) => k !== 'stateworks')
+        .map((k) => tipRow(SECTOR_DOT[k], SECTORS[k as keyof typeof SECTORS]?.name ?? k, '', 'dot')),
+      tipRow(TREASURY_COLOR, 'Treasury workers', '', 'dot'),
+      tipRow(UNEMPLOYED_COLOR, 'Looking for work', '', 'dot'),
+      tipRow(HOMELESS_COLOR, 'Sleeping rough', '', 'dot'),
+      tipNote('Workers walk to work each morning and home each evening; the jobless gather on the market square at midday.'),
+    ],
+    { placement: 'above' },
+  );
+  attachTip(carts.el, () => [tipTitle('Wagons', 'goods on the roads'), tipNote('Each cart carries the colour of its cargo; a gold pennant marks the Treasury’s own goods. Handcarts take fresh output from workshops to the market hall.')], { placement: 'above' });
   const ovl = h('div', { class: 'mapc-group mapc-ovl' }, overlaySel.el, goodSel.el);
   const legTitle = h('div', { class: 'mapc-leg-t' });
   const legA = h('span');

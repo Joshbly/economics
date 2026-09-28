@@ -36,6 +36,8 @@ import {
   DOT_MIN_PX,
   DOT_R,
   PATH_BUDGET_MS,
+  HOMELESS_COLOR,
+  SECTOR_DOT,
   SMOKE_MAX,
   SMOKE_RATE,
   TREASURY_COLOR,
@@ -76,6 +78,8 @@ export interface LifeLayer {
   drawCarts(ctx: CanvasRenderingContext2D, s: SimState, v: View, dayFrac: number, showDeliveries: boolean): void;
   drawSmoke(ctx: CanvasRenderingContext2D, v: View): void;
   drawLights(ctx: CanvasRenderingContext2D, s: SimState, infos: readonly BInfo[], v: View, night: number, time: number): void;
+  /** Foreign ships riding at anchor off the port (more when port trade is brisk). */
+  drawShips(ctx: CanvasRenderingContext2D, s: SimState, infos: readonly BInfo[], v: View, time: number): void;
   /** Person dot nearest to a device-px point within `r`, or -1. */
   hitPerson(x: number, y: number, r: number): number;
   /** Shipment (id) nearest to a device-px point within `r`, or -1. */
@@ -90,11 +94,11 @@ export interface LifeLayer {
 
 // bucket colours: one per sector, then unemployed / homeless
 const SECTOR_KEYS = Object.keys(SECTORS);
-const BUCKET_COLORS: string[] = SECTOR_KEYS.map((k) => (k === 'stateworks' ? TREASURY_COLOR : liftColor(SECTORS[k as keyof typeof SECTORS].color)));
+const BUCKET_COLORS: string[] = SECTOR_KEYS.map((k) => (k === 'stateworks' ? TREASURY_COLOR : SECTOR_DOT[k] ?? liftColor(SECTORS[k as keyof typeof SECTORS].color)));
 const B_UNEMP = BUCKET_COLORS.length;
 BUCKET_COLORS.push(UNEMPLOYED_COLOR);
 const B_HOMELESS = BUCKET_COLORS.length;
-BUCKET_COLORS.push('#7c776e');
+BUCKET_COLORS.push(HOMELESS_COLOR);
 const SECTOR_BUCKET: Record<string, number> = Object.fromEntries(SECTOR_KEYS.map((k, i) => [k, i]));
 
 /** Lighten dark sector colours so dots stay visible on the map. */
@@ -141,12 +145,13 @@ export function createLifeLayer(): LifeLayer {
   let hitX = new Float32Array(2048);
   let hitY = new Float32Array(2048);
   let hitId = new Int32Array(2048);
+  let hitWX = new Float32Array(2048); // world position of each drawn walker
+  let hitWY = new Float32Array(2048);
   let wagN = 0;
   const wagX = new Float32Array(1024);
   const wagY = new Float32Array(1024);
   const wagId = new Int32Array(1024);
   let cartsDrawn = 0;
-  const posOf = new Map<number, { x: number; y: number }>();
   // buckets
   const NB = BUCKET_COLORS.length;
   let bx: Float32Array[] = Array.from({ length: NB }, () => new Float32Array(512));
@@ -167,13 +172,13 @@ export function createLifeLayer(): LifeLayer {
   };
   let pCount = 0;
   let pNext = 0;
-  const emitAcc = new Map<string, number>();
+  const emitAcc = new Map<number, number>();
   let puffs: HTMLCanvasElement[] | null = null;
   let glowSprite: HTMLCanvasElement | null = null;
 
   function ensureSprites(): void {
     if (puffs) return;
-    puffs = [puff([70, 66, 64], 0.45), puff([196, 194, 188], 0.5), puff([240, 242, 244], 0.4)];
+    puffs = [puff([96, 92, 90], 0.5), puff([206, 204, 198], 0.5), puff([244, 246, 248], 0.42)];
     const c = document.createElement('canvas');
     c.width = c.height = 64;
     const g = c.getContext('2d')!;
@@ -298,8 +303,14 @@ export function createLifeLayer(): LifeLayer {
     bn[b] = n + 1;
   }
 
-  function recordHit(id: number, x: number, y: number): void {
+  function recordHit(id: number, x: number, y: number, wx: number, wy: number): void {
     if (hitN >= hitX.length) {
+      const a = new Float32Array(hitWX.length * 2);
+      a.set(hitWX);
+      hitWX = a;
+      const b = new Float32Array(hitWY.length * 2);
+      b.set(hitWY);
+      hitWY = b;
       const nx = new Float32Array(hitX.length * 2);
       nx.set(hitX);
       hitX = nx;
@@ -313,12 +324,13 @@ export function createLifeLayer(): LifeLayer {
     hitX[hitN] = x;
     hitY[hitN] = y;
     hitId[hitN] = id;
+    hitWX[hitN] = wx;
+    hitWY[hitN] = wy;
     hitN++;
   }
 
   function drawWalkers(ctx: CanvasRenderingContext2D, s: SimState, v: View, dayFrac: number, alpha: number): void {
     hitN = 0;
-    posOf.clear();
     bn.fill(0);
     if (alpha <= 0) return;
     const t0 = performance.now();
@@ -376,8 +388,7 @@ export function createLifeLayer(): LifeLayer {
       const dy = v.oy + wyp * k;
       if (dx < -margin || dy < -margin || dx > v.vw + margin || dy > v.vh + margin) continue;
       pushDot(w.color, dx, dy);
-      recordHit(id, dx, dy);
-      posOf.set(id, { x: wxp, y: wyp });
+      recordHit(id, dx, dy, wxp, wyp);
     }
     // draw: dark halo pass, then colours
     const r = Math.max(DOT_MIN_PX, Math.min(DOT_MAX_PX, DOT_R * v.scale)) * v.dpr;
@@ -470,12 +481,14 @@ export function createLifeLayer(): LifeLayer {
       const poly = routePoly(s, sh.from, sh.to);
       if (poly.len <= 0) continue;
       const prog = shipmentProgress(s.day, dayFrac, sh.depart, sh.arrive);
+      // not yet on the road, or already in town (unloaded at the next dawn): not drawn
+      if (prog <= 0.002 || prog >= 0.998) continue;
       const n = Math.max(1, Math.min(CONVOY_MAX, Math.round(sh.wagons) || 1));
       const cargo = GOODS[sh.good]?.color ?? '#999';
       const treasury = sh.owner === STATE;
       for (let j = 0; j < n; j++) {
         const d = prog * poly.len - j * 0.75;
-        if (d < 0 && prog < 1) continue;
+        if (d < 0.6 || d > poly.len - 0.6) continue; // inside the town square
         samplePoly(poly, Math.max(0, d), smp);
         const off = 0.17; // keep right
         const x = smp.x - smp.dy * off;
@@ -610,12 +623,12 @@ export function createLifeLayer(): LifeLayer {
       }
       if (rate <= 0) continue;
       for (let e = 0; e + 2 < meta.smoke.length; e += 3) {
-        const key = b.id + ':' + e;
+        const key = b.id * 16 + e / 3;
         let acc = (emitAcc.get(key) ?? Math.random()) + rate * fewer * d;
         while (acc >= 1) {
           acc -= 1;
           const kind = meta.smoke[e + 2];
-          emit(b.x + meta.smoke[e], b.y + meta.smoke[e + 1], kind, b.kind === 'house' ? 0.16 : kind === 0 ? 0.24 : 0.2);
+          emit(b.x + meta.smoke[e], b.y + meta.smoke[e + 1], kind, b.kind === 'house' ? 0.16 : kind === 0 ? 0.3 : 0.24);
         }
         emitAcc.set(key, acc);
       }
@@ -629,12 +642,12 @@ export function createLifeLayer(): LifeLayer {
     for (let i = 0; i < SMOKE_MAX; i++) {
       if (!P.alive[i]) continue;
       const f = P.age[i] / P.life[i];
-      const size = P.size[i] * (0.6 + 1.9 * f) * k;
+      const size = P.size[i] * (0.7 + 2.3 * f) * k;
       const x = v.ox + P.x[i] * k;
       const y = v.oy + P.y[i] * k;
       if (x < -size || y < -size || x > v.vw + size || y > v.vh + size) continue;
       const kind = P.kind[i];
-      const a = (kind === 0 ? 0.5 : kind === 1 ? 0.42 : 0.5) * (f < 0.12 ? f / 0.12 : 1 - (f - 0.12) / 0.88);
+      const a = (kind === 0 ? 0.62 : kind === 1 ? 0.55 : 0.6) * (f < 0.1 ? f / 0.1 : 1 - (f - 0.1) / 0.9);
       if (a <= 0.01) continue;
       ctx.globalAlpha = a;
       ctx.drawImage(puffs![kind] ?? puffs![1], x - size / 2, y - size / 2, size, size);
@@ -711,6 +724,85 @@ export function createLifeLayer(): LifeLayer {
     ctx.restore();
   }
 
+  function drawShips(ctx: CanvasRenderingContext2D, s: SimState, infos: readonly BInfo[], v: View, time: number): void {
+    const fo = s.foreign;
+    if (!fo) return;
+    let cap = 0;
+    for (const c of fo.shipCap ?? []) cap += c > 0 ? c : 0;
+    if (!(cap > 0)) return; // no trade with the outside world
+    const trade = Math.max(fo.tradeEma || 0, ((fo.importValue || 0) + (fo.exportValue || 0)) / 2);
+    const n = Math.max(1, Math.min(3, 1 + Math.floor(trade / 120)));
+    const m = s.map;
+    const k = v.k;
+    const WDX = [1, -1, 0, 0];
+    const WDY = [0, 0, 1, -1];
+    for (const info of infos) {
+      const b = info.b;
+      if (b.kind !== 'port' || info.look.onWater || b.status !== 'active') continue;
+      const d = info.look.waterDir >= 0 ? info.look.waterDir : 2;
+      const dx = WDX[d];
+      const dy = WDY[d];
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      for (let j = 0; j < n; j++) {
+        const along = 2.2 + 1.3 * (j % 2) + 0.4 * j;
+        const side = (j - (n - 1) / 2) * 1.6;
+        const x = cx + dx * along - dy * side;
+        const y = cy + dy * along + dx * side;
+        const tx = Math.floor(x);
+        const ty = Math.floor(y);
+        if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) continue;
+        const t = m.terrain[ty * m.w + tx];
+        if (t !== 0 && t !== 1) continue; // must ride on water
+        const bob = Math.sin(time * 1.3 + j * 2.1) * 0.035;
+        const sx = v.ox + x * k;
+        const sy = v.oy + (y + bob) * k;
+        if (sx < -2 * k || sy < -2 * k || sx > v.vw + 2 * k || sy > v.vh + 2 * k) continue;
+        const rot = Math.sin(time * 0.9 + j) * 0.035 + (dx !== 0 ? 0 : 0.0);
+        const c = Math.cos(rot) * k;
+        const sn = Math.sin(rot) * k;
+        ctx.setTransform(c, sn, -sn, c, sx, sy);
+        // reflection / shadow on the water
+        ctx.fillStyle = 'rgba(8,24,40,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0.06, 0.12, 0.5, 0.12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // hull
+        ctx.fillStyle = '#5a3c26';
+        ctx.beginPath();
+        ctx.moveTo(-0.48, -0.06);
+        ctx.lineTo(0.4, -0.06);
+        ctx.quadraticCurveTo(0.56, -0.02, 0.44, 0.08);
+        ctx.lineTo(-0.42, 0.08);
+        ctx.quadraticCurveTo(-0.52, 0.02, -0.48, -0.06);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#8b6440';
+        ctx.fillRect(-0.4, -0.06, 0.8, 0.05);
+        // masts and sails
+        ctx.fillStyle = '#3a2a1c';
+        ctx.fillRect(-0.16, -0.62, 0.025, 0.58);
+        ctx.fillRect(0.14, -0.54, 0.025, 0.5);
+        ctx.fillStyle = '#efe6d2';
+        ctx.fillRect(-0.3, -0.56, 0.3, 0.2);
+        ctx.fillRect(-0.28, -0.32, 0.26, 0.18);
+        ctx.fillRect(0.02, -0.48, 0.26, 0.18);
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.fillRect(-0.15, -0.56, 0.15, 0.2);
+        ctx.fillRect(0.15, -0.48, 0.13, 0.18);
+        // a foreign pennant
+        ctx.fillStyle = '#3aa0a8';
+        ctx.beginPath();
+        ctx.moveTo(-0.14, -0.62);
+        ctx.lineTo(0.02, -0.59);
+        ctx.lineTo(-0.14, -0.56);
+        ctx.closePath();
+        ctx.fill();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    }
+  }
+
   function nearest(xs: Float32Array, ys: Float32Array, ids: Int32Array, n: number, x: number, y: number, r: number): number {
     let best = -1;
     let bd = r * r;
@@ -731,9 +823,13 @@ export function createLifeLayer(): LifeLayer {
     drawCarts,
     drawSmoke,
     drawLights,
+    drawShips,
     hitPerson: (x, y, r) => nearest(hitX, hitY, hitId, hitN, x, y, r),
     hitWagon: (x, y, r) => nearest(wagX, wagY, wagId, wagN, x, y, r),
-    personAt: (id) => posOf.get(id) ?? null,
+    personAt(id) {
+      for (let i = 0; i < hitN; i++) if (hitId[i] === id) return { x: hitWX[i], y: hitWY[i] };
+      return null;
+    },
     personPath(s, id) {
       const p = s.people[id];
       if (!p || !p.alive) return null;

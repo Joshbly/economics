@@ -73,7 +73,7 @@ export const DELIVERY_MIN_PATH = 3;
 // ---- smoke ------------------------------------------------------------------
 export const SMOKE_MAX = 1400;
 /** Puffs per real second from a building producing at its usual rate. */
-export const SMOKE_RATE = 2.2;
+export const SMOKE_RATE = 3;
 
 // ---- day & night ------------------------------------------------------------
 /** Night tint (multiplied) and dusk/dawn warm tint. */
@@ -88,7 +88,29 @@ export const GOLD_HI = '#f2cd72';
 export const INK = '#f1e9d8';
 export const HALO = 'rgba(9,11,15,0.78)';
 export const UNEMPLOYED_COLOR = '#9a978f';
-export const TREASURY_COLOR = '#e6be5a';
+export const HOMELESS_COLOR = '#6f6b64';
+export const TREASURY_COLOR = '#f0c75a';
+/**
+ * Walker dot colour by workplace sector. Distinct hues on the map's greens and
+ * browns; grey is reserved for the jobless and gold for Treasury workers, so no
+ * private trade uses either (coal and iron's own colours are grey, tools' gold).
+ */
+export const SECTOR_DOT: Record<string, string> = {
+  farm: '#ead06a',
+  fishery: '#62bde6',
+  lumber: '#86c45a',
+  coalmine: '#e3866a',
+  oilwell: '#b394f0',
+  oremine: '#e06d8c',
+  smelter: '#f09a3e',
+  toolworks: '#52c7b4',
+  bakery: '#f5b98f',
+  brewery: '#c98d4e',
+  furniture: '#c77dd6',
+  builder: '#e3d2a8',
+  trader: '#9cc3dc',
+  stateworks: TREASURY_COLOR,
+};
 export const GOOD_TONE = '#57b8a5';
 export const BAD_TONE = '#e8845a';
 export const SERIF = '"Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif';

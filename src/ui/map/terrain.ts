@@ -40,6 +40,8 @@ interface Chunk {
   tw: number;
   th: number;
   used: number;
+  /** Superseded by a road/building change: still drawn until its replacement is ready. */
+  stale: boolean;
 }
 
 /** Per-building data the terrain needs (footprint, door stub). */
@@ -66,12 +68,15 @@ export interface TerrainLayer {
   reset(s: SimState): void;
   /** Number of chunks waiting. */
   pending(): number;
+  /** Mean render time (ms) of a chunk, per level of detail rendered so far. */
+  renderStats(): Record<number, number>;
   fields(): Fields | null;
   chains(): Chain[];
 }
 
+/** Tiles per chunk side: CHUNK_PX / L, but at most 32 so a coarse chunk re-renders quickly after a change. */
 function chunkTiles(L: number): number {
-  return Math.max(1, Math.floor(CHUNK_PX / L));
+  return Math.max(1, Math.min(32, Math.floor(CHUNK_PX / L)));
 }
 
 function newCanvas(w: number, h: number): HTMLCanvasElement {
@@ -98,6 +103,9 @@ export function createTerrainLayer(): TerrainLayer {
   let bldVer = -1;
   let frame = 0;
   let scratch: HTMLCanvasElement | null = null;
+  let lastL: number = LODS[0];
+  const renderMs: Record<number, number> = {};
+  const renderN: Record<number, number> = {};
   let scratchCtx: CanvasRenderingContext2D | null = null;
 
   function derive(s: SimState): void {
@@ -136,7 +144,14 @@ export function createTerrainLayer(): TerrainLayer {
       const o = m.occ[i];
       return o >= 0 && s.buildings[o]?.kind === 'market';
     };
-    roads = roadChains(w, m.h, m.road, hallTile, 2);
+    // every track (paved ones included) as the dirt base, then the paved network on top
+    roads = roadChains(w, m.h, m.road, hallTile, 2, 1);
+    let anyPaved = false;
+    for (let i = 0; i < w * m.h; i++) if (m.road[i] >= 2 && !hallTile(i)) {
+      anyPaved = true;
+      break;
+    }
+    if (anyPaved) roads = roads.concat(roadChains(w, m.h, m.road, hallTile, 2, 2));
     rivers = riverCourses(w, m.h, m.river, m.elev, (i) => isWaterTile(m, i), 2);
     bridges = [];
     for (let i = 0; i < w * m.h; i++) {
@@ -171,7 +186,11 @@ export function createTerrainLayer(): TerrainLayer {
           break;
         }
       }
-      if (hit) cache.delete(key);
+      if (!hit) continue;
+      // the level on screen keeps its old picture until the new one is ready; the coarsest
+      // level is the universal fallback, so it is kept (stale) too; other levels are dropped
+      if (ch.L === lastL || ch.L === LODS[0]) ch.stale = true;
+      else cache.delete(key);
     }
   }
 
@@ -234,6 +253,7 @@ export function createTerrainLayer(): TerrainLayer {
   }
 
   function render(L: number, cx: number, cy: number): Chunk | null {
+    const t0 = performance.now();
     const s = S;
     const fl = F;
     if (!s || !fl) return null;
@@ -275,9 +295,12 @@ export function createTerrainLayer(): TerrainLayer {
     drawFeatures(ctx, m, fl.seed, Math.max(0, vx0), Math.max(0, vy0), Math.min(m.w, vx1), Math.min(m.h, vy1), L, px);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const key = L + ':' + cx + ':' + cy;
-    const ch: Chunk = { key, L, cx, cy, canvas, tx0, ty0, tw, th, used: frame };
+    const ch: Chunk = { key, L, cx, cy, canvas, tx0, ty0, tw, th, used: frame, stale: false };
     cache.set(key, ch);
     evict();
+    const ms = performance.now() - t0;
+    renderN[L] = (renderN[L] ?? 0) + 1;
+    renderMs[L] = (renderMs[L] ?? ms) + (ms - (renderMs[L] ?? ms)) / renderN[L];
     return ch;
   }
 
@@ -322,6 +345,7 @@ export function createTerrainLayer(): TerrainLayer {
     const s = S;
     if (!s) return;
     frame++;
+    lastL = L;
     const m = s.map;
     const n = chunkTiles(L);
     const k = TILE_PX * cam.z * cam.dpr; // device px per tile
@@ -333,7 +357,7 @@ export function createTerrainLayer(): TerrainLayer {
     const y1 = Math.min(m.h, Math.ceil((cam.vh * cam.dpr - oy) / k));
     if (x1 <= x0 || y1 <= y0) return;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = k < L * 0.8 ? 'medium' : 'high';
+    ctx.imageSmoothingQuality = 'low';
     const cx0 = Math.floor(x0 / n);
     const cy0 = Math.floor(y0 / n);
     const cx1 = Math.floor((x1 - 1) / n);
@@ -347,6 +371,7 @@ export function createTerrainLayer(): TerrainLayer {
         if (ch) {
           ch.used = frame;
           blit(ctx, ch, ox, oy, k);
+          if (ch.stale) want.push({ cx, cy, d: -1 }); // refresh first
         } else {
           fallback(ctx, L, cx, cy, n, ox, oy, k, m.w, m.h);
           const ccx = (cx + 0.5) * n;
@@ -423,7 +448,8 @@ export function createTerrainLayer(): TerrainLayer {
     while (queue.length) {
       const q = queue.shift()!;
       queued.delete(q.key);
-      if (cache.has(q.key)) continue;
+      const have = cache.get(q.key);
+      if (have && !have.stale) continue;
       render(q.L, q.cx, q.cy);
       done++;
       if (performance.now() - t0 >= budgetMs) break;
@@ -443,7 +469,8 @@ export function createTerrainLayer(): TerrainLayer {
     const x1 = Math.min(s.map.w, Math.ceil((cam.vw * cam.dpr - ox) / k));
     const y1 = Math.min(s.map.h, Math.ceil((cam.vh * cam.dpr - oy) / k));
     for (let cy = Math.floor(y0 / n); cy * n < y1; cy++) for (let cx = Math.floor(x0 / n); cx * n < x1; cx++) {
-      if (!cache.has(L + ':' + cx + ':' + cy)) render(L, cx, cy);
+      const have = cache.get(L + ':' + cx + ':' + cy);
+      if (!have || have.stale) render(L, cx, cy);
     }
     queue.length = 0;
     queued.clear();
@@ -456,6 +483,7 @@ export function createTerrainLayer(): TerrainLayer {
     flush,
     reset,
     pending: () => queue.length,
+    renderStats: () => ({ ...renderMs }),
     fields: () => F,
     chains: () => roads,
   };

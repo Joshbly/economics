@@ -15,8 +15,13 @@
 //   sel=building:12 | person:40 | town:0 | market:1
 //   mx=, my=      pointer position (CSS px) for a hover tooltip
 //   step=30       try to simulate this many days first (ignored if the sim throws)
+//   day=300       jump the calendar to this day (seasons: farm fields, winter frost, chimney smoke)
 //   bench=300     measure this many frames; result in window.__bench and the console
 //   dpr=2         override devicePixelRatio
+//   pave=0-1      pave the road between towns 0 and 1 (tests paved roads, bridges, chunk invalidation)
+//   constr=6      put this many buildings under construction (fake projects, random progress)
+//   vacant=4      leave this many workshops standing empty
+//   sync=1        (with bench) force rasterisation every frame so timings include drawing
 // window.__map exposes { view, debug, ui, s } for scripted checks.
 // ============================================================================
 import '../styles.css';
@@ -27,6 +32,8 @@ import { N_GOODS, SECTORS } from '../../sim/goods';
 import { STATE, type SimState } from '../../sim/types';
 import { createWorld } from '../../sim/world/init';
 import { routeBetweenTowns } from '../../sim/world/paths';
+import { newProject } from '../../sim/factory';
+import { invalidateRoutes, touchBuildings } from '../../sim/runtime';
 import { initToasts } from '../modal';
 import { initUi, select, setOverlay, setPlacing, ui, type OverlayId } from '../uiState';
 import { createMapViewImpl } from './view';
@@ -82,6 +89,35 @@ function enrich(s: SimState): void {
     newShipment(s, r() < 0.12 ? STATE : 1_000_000 + (s.firms.find((f) => f && f.sector === 'trader' && f.town === a)?.id ?? 0), a, b, Math.floor(r() * N_GOODS), 5 + r() * 40, 3, depart, depart + days, 1 + Math.floor(r() * 3));
     n++;
   }
+  // paved roads
+  const pave = q.get('pave');
+  if (pave) {
+    for (const pair of pave.split(',')) {
+      const [a, b] = pair.split('-').map(Number);
+      if (!(a >= 0 && b >= 0 && a < nt && b < nt && a !== b)) continue;
+      for (const i of routeBetweenTowns(s, a, b).tiles) if (s.map.occ[i] < 0) s.map.road[i] = 2;
+    }
+    invalidateRoutes(s);
+  }
+  // construction and vacancy
+  const pickB = (pred: (b: SimState['buildings'][number]) => boolean, n: number) => {
+    const list = s.buildings.filter((b) => b && pred(b));
+    const out: typeof list = [];
+    for (let k = 0; k < n && list.length; k++) out.push(list.splice(Math.floor(r() * list.length), 1)[0]);
+    return out;
+  };
+  for (const b of pickB((b) => b.status === 'active' && (b.kind === 'house' || (b.kind === 'firm' && b.sector !== 'builder' && b.sector !== 'trader')), num('constr', 0))) {
+    const p = newProject(s, b.kind === 'house' ? 'house' : 'firm', b.town, b.owner, -1, 'test');
+    p.building = b.id;
+    p.need = { labor: 1000, wood: 200, iron: 20, tools: 10 };
+    const f = r();
+    p.done = { labor: 1000 * f, wood: 200 * f, iron: 20 * f, tools: 10 * f };
+    p.status = 'active';
+    b.project = p.id;
+    b.status = 'construction';
+  }
+  for (const b of pickB((b) => b.status === 'active' && b.kind === 'firm' && b.sector !== 'builder' && b.sector !== 'trader', num('vacant', 0))) b.status = 'vacant';
+  touchBuildings(s);
   void SECTORS;
 }
 
@@ -99,6 +135,7 @@ for (let i = 0; i < steps; i++) {
   }
 }
 enrich(s);
+if (q.has('day')) s.day = Math.max(0, Math.floor(num('day', s.day)));
 const game = new Game(s);
 initUi(game);
 initToasts();
@@ -132,6 +169,8 @@ if (q.has('mx')) view.debug.pointAt(num('mx', 0), num('my', 0));
 console.log(`[mapdev] world ${s.settings.realmName} seed ${s.seed}: ${s.people.length} people, ${s.buildings.length} buildings, ${s.shipments.length} shipments, stepped ${stepped} days; ready in ${(performance.now() - t0).toFixed(0)} ms`);
 
 const anim = num('anim', 0);
+const syncRaster = num('sync', 0) > 0;
+const rasterCtx = (wrap.querySelector('canvas') as HTMLCanvasElement | null)?.getContext('2d') ?? null;
 let last = 0;
 const bench = num('bench', 0);
 let frames = 0;
@@ -144,6 +183,8 @@ function loop(t: number): void {
   if (anim) ui.dayFrac = (ui.dayFrac + anim * dt) % 1;
   const c0 = performance.now();
   view.frame(dt);
+  // sync=1: force the canvas to rasterise now, so the timing includes drawing (not just JS)
+  if (syncRaster) rasterCtx?.getImageData(0, 0, 1, 1);
   const c1 = performance.now();
   if (bench > 0 && frames < bench) {
     if (frames === 0) benchStart = t;

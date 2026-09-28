@@ -380,8 +380,8 @@ function boat(ctx: Ctx, px: number, x: number, y: number, horiz: boolean, sail: 
   ctx.save();
   ctx.translate(x, y);
   if (!horiz) ctx.rotate(Math.PI / 2);
-  ellipse(ctx, 0.03, 0.04, 0.2, 0.07, 'rgba(10,30,40,0.35)');
-  ctx.fillStyle = '#6e4b30';
+  ellipse(ctx, 0.03, 0.05, 0.22, 0.07, 'rgba(10,30,40,0.4)');
+  ctx.fillStyle = '#5e3f28';
   ctx.beginPath();
   ctx.moveTo(-0.2, -0.05);
   ctx.lineTo(0.2, -0.05);
@@ -412,16 +412,18 @@ function fishery(ctx: Ctx, L: Look, meta: SpriteMeta, px: number): void {
   const d = L.waterDir >= 0 ? L.waterDir : 2;
   const dx = WDX[d];
   const dy = WDY[d];
-  // jetty into the water
+  // jetty into the water, a boat moored alongside its end (kept inside the sprite margins)
   const jx0 = 0.5 + dx * 0.25;
   const jy0 = 0.62 + dy * 0.2;
-  const jx1 = 0.5 + dx * 1.0;
-  const jy1 = 0.62 + dy * 0.85;
+  const jx1 = 0.5 + dx * 0.86;
+  const jy1 = 0.62 + dy * 0.6;
   ctx.lineCap = 'butt';
   line(ctx, jx0 + 0.03, jy0 + 0.04, jx1 + 0.03, jy1 + 0.04, 'rgba(10,30,40,0.35)', 0.13);
   line(ctx, jx0, jy0, jx1, jy1, '#8b6a45', 0.12);
   line(ctx, jx0, jy0, jx1, jy1, 'rgba(60,40,24,0.5)', Math.max(px, 0.015));
-  boat(ctx, px, jx1 + (dy !== 0 ? 0.2 : 0) + dx * 0.05, jy1 + (dx !== 0 ? 0.16 : 0) + dy * 0.05, dx === 0, hash01(L.id, 3) < 0.6);
+  const bxp = dy !== 0 ? jx1 + 0.25 : jx1 - dx * 0.02;
+  const byp = dy !== 0 ? jy1 - 0.04 : jy1 + 0.2;
+  boat(ctx, px, bxp, byp, true, hash01(L.id, 3) < 0.6);
   meta.top = Math.min(meta.top, -0.2);
   // drying rack
   const rx = d === 0 ? 0.12 : 0.62;

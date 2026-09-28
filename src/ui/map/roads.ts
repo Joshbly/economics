@@ -93,15 +93,19 @@ function bbox(pts: number[]): [number, number, number, number] {
 }
 
 /**
- * Road network → smoothed chains. `road[i]` ≥ 1 marks a road tile; tiles for
- * which `skip(i)` is true (e.g. under a market hall) are left out.
+ * Road network → smoothed chains. Tiles with `road[i] ≥ minLevel` form the
+ * network (so minLevel 1 = every track, paved ones included; minLevel 2 = the
+ * paved network alone, drawn on top — paving follows the travel route, which
+ * cuts the corners of staircase tracks diagonally, so the paved graph must be
+ * linked on its own); tiles for which `skip(i)` is true (e.g. under a market
+ * hall) are left out. Chains break at junctions (degree ≠ 2).
  */
-export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?: (i: number) => boolean, smooth = 2): Chain[] {
+export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?: (i: number) => boolean, smooth = 2, minLevel = 1): Chain[] {
   const n = w * h;
   const lvl = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const r = road[i];
-    if (r >= 1 && !(skip && skip(i))) lvl[i] = r >= 2 ? 2 : 1;
+    if (r >= minLevel && !(skip && skip(i))) lvl[i] = 1;
   }
   const mask = new Uint8Array(n);
   for (let y = 0; y < h; y++) {
@@ -127,18 +131,7 @@ export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?:
       mask[i] = m;
     }
   }
-  const isJunction = (i: number): boolean => {
-    const m = mask[i];
-    if (popcount8(m) !== 2) return true;
-    const x = i % w;
-    const y = (i - x) / w;
-    for (let d = 0; d < 8; d++) {
-      if (!(m & (1 << d))) continue;
-      const j = (y + DY[d]) * w + (x + DX[d]);
-      if (lvl[j] !== lvl[i]) return true;
-    }
-    return false;
-  };
+  const isJunction = (i: number): boolean => popcount8(mask[i]) !== 2;
   const junction = new Uint8Array(n);
   for (let i = 0; i < n; i++) if (lvl[i] && isJunction(i)) junction[i] = 1;
   const seen = new Uint8Array(n); // visited-edge bits per tile
@@ -146,12 +139,10 @@ export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?:
 
   const walk = (start: number, dir: number): void => {
     const pts: number[] = [];
-    const levels: number[] = [];
     let cur = start;
     let d = dir;
     let guard = 0;
     pts.push((cur % w) + 0.5, Math.floor(cur / w) + 0.5);
-    levels.push(lvl[cur]);
     for (;;) {
       const x = cur % w;
       const y = (cur - x) / w;
@@ -159,7 +150,6 @@ export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?:
       seen[cur] |= 1 << d;
       seen[nxt] |= 1 << OPP[d];
       pts.push((nxt % w) + 0.5, Math.floor(nxt / w) + 0.5);
-      levels.push(lvl[nxt]);
       cur = nxt;
       if (junction[cur] || cur === start || guard++ > n) break;
       // degree-2 tile: continue along the other link
@@ -173,11 +163,7 @@ export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?:
       d = nd;
     }
     const closed = cur === start && !junction[start];
-    let level = 1;
-    if (levels.length > 2) {
-      level = 2;
-      for (let k = 1; k < levels.length - 1; k++) if (levels[k] < 2) level = 1;
-    } else level = Math.min(levels[0], levels[levels.length - 1]);
+    const level = minLevel;
     const sm = chaikin(pts, smooth, closed);
     const [x0, y0, x1, y1] = bbox(sm);
     chains.push({ level, pts: sm, closed, x0, y0, x1, y1 });
@@ -199,7 +185,7 @@ export function roadChains(w: number, h: number, road: ArrayLike<number>, skip?:
     if (lvl[i] && mask[i] === 0) {
       const x = (i % w) + 0.5;
       const y = Math.floor(i / w) + 0.5;
-      chains.push({ level: lvl[i], pts: [x - 0.2, y, x + 0.2, y], closed: false, x0: x - 0.2, y0: y, x1: x + 0.2, y1: y });
+      chains.push({ level: minLevel, pts: [x - 0.2, y, x + 0.2, y], closed: false, x0: x - 0.2, y0: y, x1: x + 0.2, y1: y });
     }
   }
   return chains;

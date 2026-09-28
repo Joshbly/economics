@@ -14,15 +14,17 @@
 // house); in placement mode valid sites are tinted and a click commissions
 // the building through ui.game.dispatch.
 // ============================================================================
-import { SECTORS } from '../../sim/goods';
 import { isFirm, refId } from '../../sim/ledger';
 import { rt } from '../../sim/runtime';
 import { Terrain, type PlayerAction, type Sector, type SimState } from '../../sim/types';
 import { footprintOf, isResourceSector, isValidSite, nearestTown, siteQuality, type SiteWhat } from '../../sim/world/layout';
+import { dayOfYear } from '../../sim/calendar';
+import { DAYS_PER_YEAR } from '../../sim/config';
 import { isTyping } from '../dom';
-import { act, emit, on, select, setPlacing, toast, ui, type Selection } from '../uiState';
+import { isModalOpen } from '../modal';
+import { act, on, select, setPlacing, toast, ui, type Selection } from '../uiState';
 import { hideTip, showTip } from '../widgets/tooltip';
-import { createBuildingLayer, lookOf, type BInfo } from './buildings';
+import { createBuildingLayer, type BInfo } from './buildings';
 import { clampCamera, fitZoom, newCamera, panBy, pickLod, smoothK, wx, wy, zoomAround, clampZoom, type Camera } from './camera';
 import {
   DUSK_TINT,
@@ -44,7 +46,6 @@ import { hoverContent, sameTarget, type HoverTarget } from './hover';
 import { createLifeLayer, type View } from './life';
 import { overlayValues, relColor, type TownValue } from './overlay';
 import type { MapView } from './renderer';
-import { samplePoly, type PolySample } from './schedule';
 import type { Look } from './sprites';
 import { createTerrainLayer } from './terrain';
 
@@ -52,12 +53,14 @@ export interface MapDebug {
   cam: Camera;
   /** Render every chunk and sprite the current view needs (synchronously). */
   flush(): void;
-  perf(): { frameMs: number; fps: number; walkers: number; carts: number; particles: number; chunksPending: number; pathsPending: number };
+  perf(): { frameMs: number; fps: number; walkers: number; carts: number; particles: number; chunksPending: number; pathsPending: number; chunkMs: Record<number, number> };
   /** Simulate the pointer at a CSS-px point (hover + tooltip). */
   pointAt(x: number, y: number): void;
   /** Simulate a click at a CSS-px point. */
   clickAt(x: number, y: number): void;
   setCamera(x: number, y: number, z: number): void;
+  /** Profiling: layers to skip (terrain, shimmer, buildings, ships, carts, walkers, smoke, tint, lights, labels). */
+  skip: Record<string, boolean>;
 }
 
 const KIND_LABEL: Record<string, string> = { capital: 'Capital', farm: 'Farming town', mining: 'Mining town', harbor: 'Harbour' };
@@ -98,6 +101,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   let velX = 0;
   let velY = 0;
   let needFit = true;
+  /** The player has moved the camera (until then a resize re-fits the realm). */
+  let userMoved = false;
 
   let S: SimState | null = null;
   let time = 0;
@@ -113,6 +118,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   let hover: HoverTarget = null;
   let hoverNote = '';
   let tipAt = 0;
+  let hoverSince = 0;
+  let tipShown = false;
   let hoverCheckAt = 0;
   // label hit boxes (CSS px): [x0, y0, x1, y1, town]
   let labelBoxes: number[] = [];
@@ -124,10 +131,11 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   let plKey = '';
   let plArea: HTMLCanvasElement | null = null;
   let plValid: Uint8Array | null = null;
+  let plEdges: Float32Array | null = null;
   // vignette & shimmer
   let vignette: HTMLCanvasElement | null = null;
   let sparkles: Float32Array | null = null; // x, y, phase, speed, len
-  const smp: PolySample = { x: 0, y: 0, dx: 1, dy: 0 };
+  let landMask: HTMLCanvasElement | null = null;
 
   const controls = createControls(container, {
     zoomIn: () => zoomStep(1),
@@ -150,19 +158,22 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
     vignette = null;
-    if (S) clampCamera(cam, S.map.w, S.map.h);
+    if (!userMoved) needFit = true;
+    else if (S) clampCamera(cam, S.map.w, S.map.h);
   }
 
-  function makeVignette(): HTMLCanvasElement {
+  /** Edge darkening at the canvas's own resolution (a 1:1 blit per frame, never a scaled one). */
+  function makeVignette(w: number, h: number): HTMLCanvasElement {
     const c = document.createElement('canvas');
-    c.width = 256;
-    c.height = 256;
+    c.width = Math.max(1, w);
+    c.height = Math.max(1, h);
     const g = c.getContext('2d')!;
-    const grd = g.createRadialGradient(128, 128, 60, 128, 128, 182);
+    const r = Math.hypot(w, h) / 2;
+    const grd = g.createRadialGradient(w / 2, h / 2, r * 0.45, w / 2, h / 2, r * 1.02);
     grd.addColorStop(0, 'rgba(0,0,0,0)');
     grd.addColorStop(1, 'rgba(6,8,12,0.42)');
     g.fillStyle = grd;
-    g.fillRect(0, 0, 256, 256);
+    g.fillRect(0, 0, w, h);
     return c;
   }
 
@@ -202,6 +213,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   }
 
   function zoomStep(dir: number, ax?: number, ay?: number): void {
+    userMoved = true;
     tz = clampZoom((dir > 0 ? ZOOM_STEP : 1 / ZOOM_STEP) * tz);
     zAnchor = ax !== undefined && ay !== undefined ? { x: ax, y: ay } : { x: cam.vw / 2, y: cam.vh / 2 };
     panTo = null;
@@ -209,6 +221,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
 
   function centerOn(x: number, y: number, z?: number): void {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    userMoved = true;
+    needFit = false;
     panTo = { x, y };
     velX = velY = 0;
     if (z !== undefined && Number.isFinite(z)) {
@@ -232,9 +246,14 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     } else zAnchor = null;
     if (panTo) {
       const k = smoothK(dt, 9);
+      const bx = cam.x;
+      const by = cam.y;
       cam.x += (panTo.x - cam.x) * k;
       cam.y += (panTo.y - cam.y) * k;
-      if (Math.abs(panTo.x - cam.x) < 0.01 && Math.abs(panTo.y - cam.y) < 0.01) panTo = null;
+      clampCamera(cam, s.map.w, s.map.h);
+      // arrived — or held at the map's edge, where the target cannot be reached
+      const stuck = dt > 0 && Math.abs(cam.x - bx) < 1e-4 && Math.abs(cam.y - by) < 1e-4;
+      if (stuck || (Math.abs(panTo.x - cam.x) < 0.01 && Math.abs(panTo.y - cam.y) < 0.01)) panTo = null;
     }
     // inertia after a drag
     if (!drag && (Math.abs(velX) > 5 || Math.abs(velY) > 5)) {
@@ -257,9 +276,11 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     ovKey = '';
     plKey = '';
     sparkles = null;
+    landMask = null;
     hover = null;
     hideTip(canvas);
     needFit = true;
+    userMoved = false;
   }
 
   function buildSparkles(s: SimState): Float32Array {
@@ -298,7 +319,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       c.height = m.h;
       const g = c.getContext('2d')!;
       const img = g.createImageData(m.w, m.h);
-      const cols = ovVals.map((v) => parseRgba(relColor(v.rel, 1)));
+      const cols = ovVals.map((v) => parseRgba(relColor(v.rel >= 0 ? Math.max(0.6, v.rel) : Math.min(-0.6, v.rel), 1)));
       for (let i = 0; i < m.w * m.h; i++) {
         const d = m.district[i];
         const t = m.terrain[i];
@@ -308,7 +329,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         img.data[4 * i] = c4[0];
         img.data[4 * i + 1] = c4[1];
         img.data[4 * i + 2] = c4[2];
-        img.data[4 * i + 3] = Math.round(255 * (0.1 + 0.32 * Math.min(1, rel)));
+        img.data[4 * i + 3] = Math.round(255 * (0.04 + 0.34 * Math.min(1, rel * 1.3)));
       }
       g.putImageData(img, 0, 0);
       ovTint = c;
@@ -365,14 +386,29 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     c.height = m.h;
     const g = c.getContext('2d')!;
     const img = g.createImageData(m.w, m.h);
+    const edges: number[] = [];
     for (let i = 0; i < m.w * m.h; i++) {
-      if (!(area[i] > 0)) continue;
-      img.data[4 * i] = 120;
-      img.data[4 * i + 1] = 220;
-      img.data[4 * i + 2] = 150;
-      img.data[4 * i + 3] = Math.round(40 + 90 * area[i]);
+      if (!(area[i] > 0)) {
+        // dim the ground where nothing can be built
+        img.data[4 * i] = 8;
+        img.data[4 * i + 1] = 10;
+        img.data[4 * i + 2] = 14;
+        img.data[4 * i + 3] = 92;
+        continue;
+      }
+      img.data[4 * i] = 132;
+      img.data[4 * i + 1] = 226;
+      img.data[4 * i + 2] = 158;
+      img.data[4 * i + 3] = Math.round(22 + 62 * area[i]);
+      const x = i % m.w;
+      const y = (i - x) / m.w;
+      if (x === 0 || !(area[i - 1] > 0)) edges.push(x, y, x, y + 1);
+      if (x === m.w - 1 || !(area[i + 1] > 0)) edges.push(x + 1, y, x + 1, y + 1);
+      if (y === 0 || !(area[i - m.w] > 0)) edges.push(x, y, x + 1, y);
+      if (y === m.h - 1 || !(area[i + m.w] > 0)) edges.push(x, y + 1, x + 1, y + 1);
     }
     g.putImageData(img, 0, 0);
+    plEdges = Float32Array.from(edges);
     plArea = c;
     plValid = valid;
   }
@@ -380,6 +416,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   function placementAt(s: SimState, cssX: number, cssY: number): { x: number; y: number; ok: boolean; town: number; w: number; h: number; what: SiteWhat } | null {
     const pw = placingWhat();
     if (!pw) return null;
+    placementMask(s); // no-op unless the placing kind, buildings or roads changed
     const fx = wx(cam, cssX);
     const fy = wy(cam, cssY);
     const x = Math.floor(fx - pw.w / 2 + 0.5);
@@ -439,7 +476,11 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     const r = act(a, true);
     setPlacing(null);
     plKey = '';
-    if (r.ok) emit('select', ui.selection);
+    // show the new building site in the inspector
+    if (r.ok && r.id !== undefined) {
+      const pr = s.projects.find((q) => q && q.id === r.id);
+      if (pr && pr.building >= 0 && s.buildings[pr.building]) select({ kind: 'building', id: pr.building });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -447,7 +488,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   // ---------------------------------------------------------------------------
   function hitTest(s: SimState, cssX: number, cssY: number): HoverTarget {
     // town labels
-    for (let i = 0; i + 4 < labelBoxes.length + 1; i += 5) {
+    for (let i = 0; i + 4 < labelBoxes.length; i += 5) {
       if (cssX >= labelBoxes[i] && cssX <= labelBoxes[i + 2] && cssY >= labelBoxes[i + 1] && cssY <= labelBoxes[i + 3]) return { kind: 'town', id: labelBoxes[i + 4] };
     }
     const d = cam.dpr;
@@ -490,6 +531,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }
     const now = performance.now();
     const changed = !sameTarget(t, hover) || note !== hoverNote;
+    if (changed) hoverSince = now;
     hover = t;
     hoverNote = note;
     canvas.classList.toggle('pointer', !ui.placing && !!t && t.kind !== 'tile');
@@ -497,7 +539,14 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       hideTip(canvas);
       return;
     }
-    if (changed || force || now - tipAt > 450) {
+    // plain ground only after the pointer rests a moment (buildings and people at once)
+    if (t.kind === 'tile' && !ui.placing && !force && now - hoverSince < 650) {
+      hideTip(canvas);
+      tipShown = false;
+      return;
+    }
+    if (changed || force || !tipShown || now - tipAt > 450) {
+      tipShown = true;
       tipAt = now;
       const c = hoverContent(s, t, ui.dayFrac, note || undefined);
       const r = canvas.getBoundingClientRect();
@@ -563,6 +612,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     if (e.button !== 0) return;
     const [x, y] = local(e);
     drag = { id: e.pointerId, x, y, lx: x, ly: y, moved: false, t: performance.now() };
+    userMoved = true;
     velX = velY = 0;
     panTo = null;
     try {
@@ -632,6 +682,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     (ev) => {
       const e = ev as WheelEvent;
       e.preventDefault();
+      userMoved = true;
       const [x, y] = local(e);
       if (e.ctrlKey) {
         if (gesture !== null) return; // Safari reports the pinch as gesture events
@@ -654,6 +705,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   // Safari trackpad pinch
   listen(canvas, 'gesturestart', (e) => {
     e.preventDefault();
+    userMoved = true;
     gesture = cam.z;
   });
   listen(canvas, 'gesturechange', (ev) => {
@@ -672,7 +724,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   listen(window, 'keydown', (ev) => {
     const e = ev as KeyboardEvent;
     if (e.defaultPrevented || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (document.querySelector('.modal-backdrop, .modal')) return;
+    if (isModalOpen()) return;
     const k = e.key;
     if (k === '+' || k === '=') {
       zoomStep(1);
@@ -681,6 +733,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       zoomStep(-1);
       e.preventDefault();
     } else if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+      userMoved = true;
       const step = 140 / (TILE_PX * cam.z);
       const base = panTo ?? { x: cam.x, y: cam.y };
       panTo = { x: base.x + (k === 'ArrowLeft' ? -step : k === 'ArrowRight' ? step : 0), y: base.y + (k === 'ArrowUp' ? -step : k === 'ArrowDown' ? step : 0) };
@@ -694,6 +747,9 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }),
     on('placing', () => {
       plKey = '';
+      plValid = null;
+      plArea = null;
+      plEdges = null;
       canvas.classList.toggle('place', !!ui?.placing);
       updateHover(true);
     }),
@@ -742,6 +798,46 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       ctx.strokeStyle = `rgba(225,242,240,${alphas[b]})`;
       ctx.stroke(paths[b]);
     }
+  }
+
+  /**
+   * Winter frost: land (not the sea) pales and loses colour around midwinter,
+   * fading in through late autumn and out by early spring.
+   */
+  function drawSeason(s: SimState, v: View): void {
+    const doy = dayOfYear(s.day + (ui?.dayFrac ?? 0));
+    const c = Math.cos((2 * Math.PI * (doy - 315)) / DAYS_PER_YEAR);
+    const f = c > 0.35 ? Math.pow((c - 0.35) / 0.65, 1.5) : 0;
+    if (f <= 0.01) return;
+    if (!landMask) {
+      const m = s.map;
+      const cv = document.createElement('canvas');
+      cv.width = m.w;
+      cv.height = m.h;
+      const g = cv.getContext('2d')!;
+      const img = g.createImageData(m.w, m.h);
+      for (let i = 0; i < m.w * m.h; i++) {
+        const t = m.terrain[i];
+        if (t === Terrain.Water || t === Terrain.DeepWater) continue;
+        img.data[4 * i] = 236;
+        img.data[4 * i + 1] = 242;
+        img.data[4 * i + 2] = 250;
+        img.data[4 * i + 3] = 255;
+      }
+      g.putImageData(img, 0, 0);
+      landMask = cv;
+    }
+    const k = v.k;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'low';
+    ctx.globalCompositeOperation = 'soft-light';
+    ctx.globalAlpha = 0.42 * f;
+    ctx.drawImage(landMask, v.ox, v.oy, s.map.w * k, s.map.h * k);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.1 * f;
+    ctx.drawImage(landMask, v.ox, v.oy, s.map.w * k, s.map.h * k);
+    ctx.restore();
   }
 
   function drawRoadWorks(s: SimState, v: View): void {
@@ -907,48 +1003,6 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }
   }
 
-  function drawPlacement(s: SimState, v: View, L: number): void {
-    if (!ui?.placing) return;
-    placementMask(s);
-    const k = v.k;
-    if (plArea) {
-      ctx.save();
-      ctx.imageSmoothingEnabled = false;
-      ctx.globalAlpha = 0.55 + 0.15 * Math.sin(time * 3);
-      ctx.drawImage(plArea, v.ox, v.oy, s.map.w * k, s.map.h * k);
-      ctx.restore();
-    }
-    if (!inside) return;
-    const pl = placementAt(s, px, py);
-    if (!pl) return;
-    const x = v.ox + pl.x * k;
-    const y = v.oy + pl.y * k;
-    const p = ui.placing;
-    const kind = p.kind === 'pier' ? 'port' : p.kind;
-    const look: Look = {
-      id: 999_999,
-      kind,
-      sector: p.kind === 'firm' ? ((p.sector || 'bakery') as Sector) : '',
-      w: pl.w,
-      h: pl.h,
-      level: 1,
-      townKind: s.towns[pl.town]?.kind ?? 'capital',
-      town: pl.town,
-      treasury: true,
-      season: 0,
-      waterDir: 2,
-      onWater: p.kind === 'pier',
-    };
-    blds.ghost(ctx, look, Math.min(64, L), k, v.ox, v.oy, pl.x, pl.y, pl.ok ? 0.85 : 0.35);
-    ctx.save();
-    ctx.lineWidth = 2 * v.dpr;
-    ctx.strokeStyle = pl.ok ? 'rgba(130,230,160,0.95)' : 'rgba(240,120,90,0.95)';
-    ctx.fillStyle = pl.ok ? 'rgba(130,230,160,0.14)' : 'rgba(240,120,90,0.14)';
-    ctx.fillRect(x, y, pl.w * k, pl.h * k);
-    ctx.strokeRect(x + 1, y + 1, pl.w * k - 2, pl.h * k - 2);
-    ctx.restore();
-  }
-
   function drawProgressBars(v: View, infos: readonly BInfo[]): void {
     const k = v.k;
     if (v.scale < 9) return;
@@ -986,9 +1040,9 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       ctx.fillRect(0, 0, v.vw, v.vh);
       ctx.globalCompositeOperation = 'source-over';
     }
-    if (!vignette) vignette = makeVignette();
+    if (!vignette || vignette.width !== v.vw || vignette.height !== v.vh) vignette = makeVignette(v.vw, v.vh);
     ctx.globalAlpha = 0.75 + 0.25 * n;
-    ctx.drawImage(vignette, 0, 0, v.vw, v.vh);
+    ctx.drawImage(vignette, 0, 0);
     ctx.globalAlpha = 1;
     return n;
   }
@@ -1006,13 +1060,18 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     ctx.lineJoin = 'round';
     const spacing = Math.max(1, nameSize * 0.14);
     const hasSpacing = 'letterSpacing' in ctx;
+    // close up, names step back so the buildings under them stay readable
+    const labelAlpha = z <= 2 ? 1 : Math.max(0.55, 1 - (z - 2) * 0.22);
     for (const t of s.towns) {
       const lift = Math.max(2.6, Math.min(4.6, t.radius * 0.45)) + 0.4;
       const cx = v.ox + (t.x) * k;
       let cy = v.oy + (t.y - lift) * k;
-      cy = Math.max(nameSize + 6 * d, cy);
+      // keep the name of a town whose centre is in view on screen
+      const ty = v.oy + t.y * k;
+      if (ty > 0 && ty < v.vh) cy = Math.max(nameSize + 6 * d, cy);
       if (cx < -200 * d || cx > v.vw + 200 * d || cy < -40 * d || cy > v.vh + 80 * d) continue;
       const name = t.name.toUpperCase();
+      ctx.globalAlpha = labelAlpha;
       ctx.font = `600 ${nameSize}px ${SERIF}`;
       if (hasSpacing) (ctx as unknown as { letterSpacing: string }).letterSpacing = `${spacing}px`;
       const tw = ctx.measureText(name).width;
@@ -1036,6 +1095,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         ctx.fillStyle = 'rgba(221,210,186,0.92)';
         ctx.fillText(sub, cx, y);
       }
+      ctx.globalAlpha = 1;
       const v2 = vals?.[t.id];
       if (v2) {
         // overlay badge
@@ -1113,15 +1173,11 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#0b0e12';
     ctx.fillRect(0, 0, v.vw, v.vh);
-    // soft shadow framing the map board
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.6)';
-    ctx.shadowBlur = 24 * cam.dpr;
-    ctx.fillStyle = '#16304f';
-    ctx.fillRect(v.ox, v.oy, s.map.w * k, s.map.h * k);
-    ctx.restore();
-    terrain.draw(ctx, cam, L);
-    drawShimmer(v);
+    const skip = debug.skip;
+    if (!skip.terrain) terrain.draw(ctx, cam, L);
+    drawBoardEdges(v, s.map.w * k, s.map.h * k);
+    if (!skip.season) drawSeason(s, v);
+    if (!skip.shimmer) drawShimmer(v);
     const vals = overlay(s);
     if (ovTint) {
       ctx.save();
@@ -1133,25 +1189,26 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     drawRoadWorks(s, v);
     drawSelection(s, v, true);
     const infos = blds.list();
-    blds.draw(ctx, L, k, v.ox, v.oy, v.vw, v.vh, time);
+    if (!skip.buildings) blds.draw(ctx, L, k, v.ox, v.oy, v.vw, v.vh, time);
     drawProgressBars(v, infos);
+    if (!skip.ships) life.drawShips(ctx, s, infos, v, time);
     const speed = ui?.speed ?? 0;
-    if (ui?.showCarts !== false) life.drawCarts(ctx, s, v, ui?.dayFrac ?? 0.5, speed < PEOPLE_HIDE_SPEED);
+    if (ui?.showCarts !== false && !skip.carts) life.drawCarts(ctx, s, v, ui?.dayFrac ?? 0.5, speed < PEOPLE_HIDE_SPEED);
     const showPeople = ui?.showPeople !== false && speed < PEOPLE_HIDE_SPEED && cam.z >= PEOPLE_MIN_ZOOM;
     const pAlpha = showPeople ? (speed >= 3 ? 0.6 : 1) * Math.min(1, (cam.z - PEOPLE_MIN_ZOOM) / 0.15 + 0.2) : 0;
-    life.drawWalkers(ctx, s, v, ui?.dayFrac ?? 0.5, pAlpha);
+    life.drawWalkers(ctx, s, v, ui?.dayFrac ?? 0.5, skip.walkers ? 0 : pAlpha);
     life.update(d, s, infos, v, time, speed);
-    life.drawSmoke(ctx, v);
-    const night = tint(s, v);
-    life.drawLights(ctx, s, infos, v, night, time);
+    if (!skip.smoke) life.drawSmoke(ctx, v);
+    const night = skip.tint ? 0 : tint(s, v);
+    if (!skip.lights) life.drawLights(ctx, s, infos, v, night, time);
     drawSelection(s, v, false);
     drawHover(s, v);
     drawPlacementCursor(s, v, L);
-    drawLabels(s, v, vals);
+    if (!skip.labels) drawLabels(s, v, vals);
     // background work, within budget
     const spent = performance.now() - t0;
     const budget = Math.max(2, 12 - spent);
-    const n = terrain.work(Math.min(8, budget));
+    terrain.work(Math.min(8, budget));
     blds.work(Math.max(1.5, budget - (performance.now() - t0 - spent)));
     if (s.day !== lastDay) {
       lastDay = s.day;
@@ -1167,10 +1224,30 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       controlsAt = now;
       controls.sync();
     }
-    void n;
     frameMs = frameMs * 0.9 + (performance.now() - t0) * 0.1;
   }
   let controlsAt = 0;
+
+  /** A soft dark falloff just outside the map's edges (only the edges in view are drawn). */
+  function drawBoardEdges(v: View, mw: number, mh: number): void {
+    const e = 22 * v.dpr;
+    const x0 = v.ox;
+    const y0 = v.oy;
+    const x1 = v.ox + mw;
+    const y1 = v.oy + mh;
+    const strip = (ax: number, ay: number, bx: number, by: number, rx: number, ry: number, rw: number, rh: number) => {
+      if (rx + rw < 0 || ry + rh < 0 || rx > v.vw || ry > v.vh || rw <= 0 || rh <= 0) return;
+      const g = ctx.createLinearGradient(ax, ay, bx, by);
+      g.addColorStop(0, 'rgba(0,0,0,0.55)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(rx, ry, rw, rh);
+    };
+    strip(x0, 0, x0 - e, 0, x0 - e, y0 - e, e, mh + 2 * e);
+    strip(x1, 0, x1 + e, 0, x1, y0 - e, e, mh + 2 * e);
+    strip(0, y0, 0, y0 - e, x0, y0 - e, mw, e);
+    strip(0, y1, 0, y1 + e, x0, y1, mw, e);
+  }
 
   function drawPlacementArea(s: SimState, v: View): void {
     if (!ui?.placing) return;
@@ -1178,8 +1255,24 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     if (!plArea) return;
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    ctx.globalAlpha = 0.5 + 0.15 * Math.sin(time * 3);
+    ctx.globalAlpha = 0.85 + 0.15 * Math.sin(time * 3);
     ctx.drawImage(plArea, v.ox, v.oy, s.map.w * v.k, s.map.h * v.k);
+    ctx.globalAlpha = 1;
+    const e = plEdges;
+    if (e && e.length) {
+      const k = v.k;
+      ctx.beginPath();
+      for (let i = 0; i < e.length; i += 4) {
+        ctx.moveTo(v.ox + e[i] * k, v.oy + e[i + 1] * k);
+        ctx.lineTo(v.ox + e[i + 2] * k, v.oy + e[i + 3] * k);
+      }
+      ctx.strokeStyle = 'rgba(160,240,180,0.85)';
+      ctx.lineWidth = 1.2 * v.dpr;
+      ctx.setLineDash([4 * v.dpr, 3 * v.dpr]);
+      ctx.lineDashOffset = -time * 10 * v.dpr;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.restore();
   }
 
@@ -1218,16 +1311,12 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     ctx.strokeRect(x + v.dpr, y + v.dpr, pl.w * k - 2 * v.dpr, pl.h * k - 2 * v.dpr);
     ctx.restore();
   }
-  void drawPlacement;
-  void samplePoly;
-  void smp;
-  void lookOf;
-  void SECTORS;
 
   resize();
 
   const debug: MapDebug = {
     cam,
+    skip: {},
     flush() {
       const s = ui?.game?.s;
       if (!s) return;
@@ -1249,7 +1338,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     },
     perf: () => {
       const st = life.stats();
-      return { frameMs, fps, walkers: st.walkers, carts: st.carts, particles: st.particles, chunksPending: terrain.pending(), pathsPending: st.pending };
+      return { frameMs, fps, walkers: st.walkers, carts: st.carts, particles: st.particles, chunksPending: terrain.pending(), pathsPending: st.pending, chunkMs: terrain.renderStats() };
     },
     pointAt(x, y) {
       px = x;
@@ -1267,6 +1356,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       cam.y = y;
       cam.z = tz = clampZoom(z);
       needFit = false;
+      userMoved = true;
       panTo = null;
       zAnchor = null;
     },
@@ -1277,9 +1367,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     resize,
     centerOn: (x, y) => centerOn(x, y),
     reset() {
+      // rebuilt lazily on the next frame (the shell also emits 'newgame'; one rebuild is enough)
       S = null;
-      const s = ui?.game?.s;
-      if (s) doReset(s);
     },
     destroy() {
       for (const f of cleanups) f();
