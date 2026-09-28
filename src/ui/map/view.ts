@@ -1261,6 +1261,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       click(x, y);
     },
     setCamera(x, y, z) {
+      const s = ui?.game?.s;
+      if (s && s !== S) doReset(s);
       cam.x = x;
       cam.y = y;
       cam.z = tz = clampZoom(z);
