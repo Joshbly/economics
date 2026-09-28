@@ -82,9 +82,17 @@ function credit(s: SimState, r: Ref, a: number): void {
   else if (r === FOREIGN) s.foreign.coin += a;
 }
 
+/** Precomputed stats keys (avoids a string concat on every payment — this is a hot path). */
+const FLOW_KEY: Record<Flow, string> = {
+  wage: 'flow_wage', buy: 'flow_buy', levy: 'flow_levy', give: 'flow_give', interest: 'flow_interest',
+  coupon: 'flow_coupon', dividend: 'flow_dividend', rent: 'flow_rent', transfer: 'flow_transfer',
+  build: 'flow_build', freight: 'flow_freight', estate: 'flow_estate', migrate: 'flow_migrate',
+  bailin: 'flow_bailin', recap: 'flow_recap', fee: 'flow_fee', asset: 'flow_asset', misc: 'flow_misc',
+};
+
 function recordFlow(s: SimState, from: Ref, to: Ref, a: number, flow: Flow): void {
   const acc = s.stats.acc;
-  const k = 'flow_' + flow;
+  const k = FLOW_KEY[flow] ?? 'flow_' + flow;
   acc[k] = (acc[k] || 0) + a;
   const t = s.treasury;
   if (to === STATE) {
