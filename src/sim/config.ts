@@ -47,10 +47,13 @@ export const INIT_GOLD_PRICE = 100; // ¤ per oz
 export const INIT_RESERVE_RATE = 0.02;
 export const INIT_LEND_RATE = 0.05;
 // -- added by world engineer --
-// Note on INIT_OWNER_CASH_DAYS: owners' deposits are set at the stationary point of the
-// buffer-stock rule (where their planned spending equals their income — food and ale caps make
-// the well-off hold more than m*); INIT_OWNER_CASH_DAYS × BASE_WAGE caps that extra. Cash above
-// the stationary level would be spent down within ~SPEND_DOWN_DAYS as a demand boom.
+// Note on INIT_CASH_DAYS / INIT_CASH_SIGMA / INIT_OWNER_CASH_DAYS: world/init sets every
+// household's deposits at the stationary point of the household rules for its shopping phase
+// (world/init.householdSteady: the balance at which spending over the year equals income — for
+// workers ≈ INIT_CASH_DAYS of income, for owners more, because food and ale caps and lumpy
+// purchases make them hold more than m*), with a lognormal spread of INIT_CASH_SIGMA / 2;
+// owners' extra is capped at INIT_OWNER_CASH_DAYS × BASE_WAGE. Cash above the stationary level
+// would be spent down within ~SPEND_DOWN_DAYS as a demand boom, cash below it as a slump.
 /** Workers on each town's founding construction project (a house nearly finished). */
 export const INIT_BUILDERS = 3;
 /** Building capacity over the calibrated workforce (farms get more for the harvest peak). */
@@ -58,6 +61,8 @@ export const INIT_CAPACITY_HEADROOM = 1.3;
 export const INIT_FARM_CAPACITY_HEADROOM = 1.6;
 /** Largest building level used at founding. */
 export const INIT_MAX_LEVEL = 5;
+/** Trading houses' working capital at founding, in days of their merchandise purchases (goods bought, on the road, on sale). */
+export const INIT_TRADER_WC_DAYS = 6;
 /** Trading houses at founding: wagons and drivers per wagon in use. */
 export const INIT_WAGON_SLACK = 1.35;
 export const INIT_DRIVER_SLACK = 1.2;
@@ -254,6 +259,12 @@ export const ASK_QS_MAX = 2.5;
 export const ASK_COMPETE_STEP = 0.05;
 /** Firms judge output at the price they can reach within this many days of ask steps (price setters pass costs on). */
 export const PRICE_PLAN_DAYS = 5;
+/** A firm with under CASH_LOW_DAYS of wages in cash plans no more workers than its expected takings plus its cash spread over this many days can pay. */
+export const LIQUIDITY_DAYS = 5;
+/** …and keeps this many days of that payroll in hand (wages are paid before the day's takings arrive). */
+export const LIQUIDITY_RESERVE_DAYS = 1.5;
+/** Owners top up a cash-starved firm (firms.ts ownerSupport) unless its profit EMA has been negative this many days. */
+export const OWNER_SUPPORT_MAX_LOSS_DAYS = 60;
 /** Output inventory gaps are closed over this many days (perishables: faster). */
 export const INV_ADJUST_DAYS = 20;
 export const INV_ADJUST_DAYS_PERISHABLE = 2;
@@ -340,6 +351,11 @@ export const FINANCING_WAIT_DAYS = 3;
 /** Voluntary exit: a firm older than EXIT_MIN_AGE days whose profit EMA has been negative for EXIT_LOSS_DAYS closes. */
 export const EXIT_LOSS_DAYS = 90;
 export const EXIT_MIN_AGE = 180;
+/** Monthly probability that an eligible loss-maker actually closes; owners holding this many days of costs in cash wait longer. */
+export const EXIT_PROB = 0.3;
+export const EXIT_PATIENT_CASH_DAYS = 60;
+/** At most this many voluntary exits per trade and town a month (the worst loss-makers first). */
+export const EXIT_MAX_PER_TRADE = 1;
 export const BUILD_MARGIN = 1.12; // builders bill cost × this
 export const BUILD_TARGET_DAYS = 60; // builders size workforce to clear queue in this many days
 export const MAX_ACTIVE_PROJECTS = 3;
@@ -359,6 +375,8 @@ export const BUILDER_MAX_BID_MULT = 1.6;
 export const BUILDER_BLOCKED_SHARE = 0.3;
 /** Effective labour of a Treasury worker on construction (no tools of their own). */
 export const STATEWORKS_BUILD_EFF = 0.8;
+/** Builders hire at most this many workers beyond those their tools can equip (construction.ts constructionPlan). */
+export const BUILDER_TOOLLESS_HANDS = 2;
 /** Routes are recomputed after this many newly paved tiles (and on completion). */
 export const ROAD_INVALIDATE_TILES = 5;
 /** Finished/cancelled projects kept in s.projects for the UI (most recent). */
@@ -391,7 +409,7 @@ export const TRADE_AGE_MAX_CUT = 0.25;
 export const TRADE_HOLD_DAYS = 3;
 /** A wagon leaves at once when loaded to at least this share of WAGON_CAPACITY (else it may wait, see TRADE_HOLD_DAYS). */
 export const TRADE_MIN_LOAD = 0.5;
-/** Merchandise at home that no route pays for is sold back locally after this many days. */
+/** Merchandise stuck at home (no route pays, or no wagon/fuel to move it) is sold back locally after this many days. */
 export const TRADE_HOME_SELL_DAYS = 6;
 /** Routes slower than this (one way, days) are not served. */
 export const TRADE_MAX_ROUTE_DAYS = 20;
@@ -479,7 +497,7 @@ export const BANK_PAY_TOLERANCE = 0.98;
 export const BANK_DEFAULT_KEEP_DAYS = 5;
 /** Dividends only while the capital ratio exceeds this. */
 export const BANK_DIVIDEND_CAPITAL = 0.12;
-/** Bail-in restores the capital ratio to the legal/own minimum plus this margin (so the bank can lend again). */
+/** Bail-in restores the capital ratio to the legal/own minimum + BANK_STANCE_CAPITAL + this margin (so the bank can lend again). */
 export const BANK_BAILIN_TARGET = 0.02;
 /** Loans that finance new capital (invest, start-up, house, project) must leave this much capital headroom
  *  above what working-capital credit needs: existing customers' working capital comes first. */
@@ -560,7 +578,7 @@ export const WORLD_RATE = 0.01;
 export const DESK_RATE_SENS = 8;
 /** Dealer quotes extend ±DEALER_BANDS % around V' (DEALER_DEPTH oz per 1 % band). */
 export const DEALER_BANDS = 10;
-/** Dealer value follows the traded gold price at this daily speed. */
+/** Dealer value follows the traded gold price (net of the desk's own inventory premium) at this daily speed. */
 export const DEALER_PRICE_PULL = 0.02;
 /** Share of the desk's coin it may commit per day to buying exports / buying gold. */
 export const DESK_EXPORT_COIN_SHARE = 0.5;

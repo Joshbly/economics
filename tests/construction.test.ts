@@ -23,7 +23,7 @@ vi.mock('../src/sim/world/layout', async () => {
 import { cancelProject, constructionPlan, constructionProgress, estimateCost, startProject } from '../src/sim/agents/construction';
 import { settleFinancing } from '../src/sim/agents/entry';
 import { createFirm, firmsEndDay, firmsPayWages } from '../src/sim/agents/firms';
-import { BUILD_MARGIN, LABOR_AHEAD_MAX } from '../src/sim/config';
+import { BUILD_MARGIN, BUILDER_TOOLLESS_HANDS, LABOR_AHEAD_MAX } from '../src/sim/config';
 import { newBuilding, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, HOUSE_COST, HOUSE_SLOTS, N_GOODS, SECTORS } from '../src/sim/goods';
 import { checkLedger, disburse, firmRef, reconcileBank } from '../src/sim/ledger';
@@ -164,6 +164,29 @@ describe('construction projects', () => {
     expect(b.target).toBeLessThan(20);
   });
 
+  it('a builder arms its crew from stock first and hires no more hands than it can equip', () => {
+    const s = world();
+    const b = builder(s, 20);
+    b.tools = 0; // an unequipped crew …
+    b.inv[G.wood] = HOUSE_COST.wood;
+    b.inv[G.iron] = HOUSE_COST.iron;
+    b.inv[G.tools] = 6; // … and a few tools in store
+    const owner = person(s, 60000);
+    reconcile(s);
+    const p = startProject(s, { kind: 'house', town: 0, owner: owner.id }) as Project;
+    day(s);
+    // the crew took the tools the house does not need yet (it needs ~10 % of its tools per 10 % of work)
+    expect(b.tools).toBeGreaterThan(4);
+    expect(b.inv[G.tools]).toBeLessThan(2);
+    expect(p.done.labor).toBeGreaterThan(0);
+    // with tools for ~12 workers, the plan shrinks toward that (+ BUILDER_TOOLLESS_HANDS)
+    for (let d = 0; d < 20; d++) constructionPlan(s);
+    const equip = (b.tools + b.inv[G.tools]) / (0.95 * SECTORS.builder.toolsPerWorker);
+    expect(b.target).toBeLessThan(equip + BUILDER_TOOLLESS_HANDS + 1);
+    expect(b.target).toBeGreaterThan(1);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+
   it('an advance is billed first; the owner pays only beyond it', () => {
     const s = world();
     const b = builder(s, 10);
@@ -245,6 +268,7 @@ describe('construction projects', () => {
   it('a financed workshop opens as a firm that owns the loan and gets the unspent advance', () => {
     const s = world();
     const b = builder(s, 30, 5000);
+    b.tools = 30; // equipment with a wear buffer (no tools market in this test)
     const need = SECTORS.bakery.buildCost;
     b.inv[G.wood] = need.wood;
     b.inv[G.iron] = need.iron;

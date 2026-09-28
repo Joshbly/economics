@@ -5,7 +5,7 @@ import { G, N_GOODS, PRODUCER_SECTORS, SECTORS } from '../src/sim/goods';
 import { checkLedger, deposits, loansOutstanding } from '../src/sim/ledger';
 import { rt } from '../src/sim/runtime';
 import { Terrain, STATE, type SimState } from '../src/sim/types';
-import { createWorld } from '../src/sim/world/init';
+import { createWorld, foundingCurve, householdSteady, stationaryPlan } from '../src/sim/world/init';
 import { findSite, footprintOf, isValidSite, placeBuilding, removeBuilding, siteMultiplier } from '../src/sim/world/layout';
 import { generateMap, tileResource } from '../src/sim/world/mapgen';
 import { commutePath, deliveryPath, findPath, pathDays, roadPlan, routeBetweenTowns } from '../src/sim/world/paths';
@@ -448,6 +448,52 @@ describe('layout', () => {
       if (b.status === 'ruin') continue;
       expect(s.map.district[b.y * s.map.w + b.x]).toBe(b.town);
     }
+  });
+});
+
+describe('founding state helpers', () => {
+  it('seeds every market with an order-book snapshot at its price', () => {
+    for (const m of s.markets) {
+      expect(m.curve).not.toBeNull();
+      const c = m.curve!;
+      expect(c.price).toBe(m.price);
+      // bids descending in price with rising cumulative quantity; asks ascending
+      for (let i = 2; i + 1 < c.bids.length; i += 2) {
+        expect(c.bids[i]).toBeLessThan(c.bids[i - 2]);
+        expect(c.bids[i + 1]).toBeGreaterThanOrEqual(c.bids[i - 1]);
+      }
+      for (let i = 2; i + 1 < c.asks.length; i += 2) {
+        expect(c.asks[i]).toBeGreaterThan(c.asks[i - 2]);
+        expect(c.asks[i + 1]).toBeGreaterThanOrEqual(c.asks[i - 1]);
+      }
+    }
+    const c = foundingCurve(10, 50, 40, 1);
+    expect(c.bids.length).toBe(16);
+    expect(c.bids[0]).toBeCloseTo(25);
+    expect(c.asks[c.asks.length - 1]).toBeCloseTo(40);
+  });
+
+  it('household mini-simulation reaches the stationary point of the buffer rule', () => {
+    const P = [3.7, 6.8, 3.4, 3.4, 3.1, 3.7, 13.7, 25, 5.2, 3.5, 25];
+    const w = householdSteady(P, 9.5, 1.6, 400);
+    // Over the year a household spends what it earns (net of rent).
+    expect(w.spend).toBeGreaterThan(0.95 * (9.5 - 1.6));
+    expect(w.spend).toBeLessThan(1.05 * (9.5 - 1.6));
+    expect(w.cash.length).toBe(20);
+    for (const c of w.cash) expect(c).toBeGreaterThan(0);
+    for (const pan of w.pantry) for (const x of pan) expect(Number.isFinite(x) && x >= 0).toBe(true);
+    // Everyone eats: bread + fish ≥ subsistence; well-off owners buy more luxuries.
+    expect(w.q[G.bread] + w.q[G.fish]).toBeGreaterThan(1);
+    const o = householdSteady(P, 40, 0, 2500);
+    expect(o.q[G.furniture]).toBeGreaterThan(w.q[G.furniture]);
+    expect(o.q[G.ale]).toBeGreaterThan(w.q[G.ale]);
+    // The analytic plan is the upper envelope of what the rules buy for luxuries.
+    const plan = stationaryPlan(P, 9.5, 1.6).q;
+    expect(w.q[G.furniture]).toBeLessThanOrEqual(plan[G.furniture] * 1.05);
+    // Founding households hold cash at that stationary point (scaled to income).
+    const worker = s.people.find((p) => p.job >= 0 && p.owns.length === 0 && p.houses.length === 0)!;
+    expect(worker.cash).toBeGreaterThan(50);
+    expect(worker.pantry[G.bread]).toBeGreaterThan(0);
   });
 });
 

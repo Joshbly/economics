@@ -112,6 +112,8 @@ const {
 
 /** The most requests kept in the daily queue (protects against a runaway requester). */
 const MAX_REQUESTS = 1000;
+/** Equity within this of zero counts as zero (floating-point dust must not flip failure). */
+const EQUITY_EPS = 1e-6;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -446,13 +448,14 @@ function payHolders(s: SimState): void {
   let coupons = 0;
 
   // Coupons: if the Purse cannot cover them in full (auto-mint off), every holder gets the same share.
+  // (Holdings are only counted when the Purse might fall short.)
   let couponFrac = 1;
-  let holders = Math.max(0, b.iou);
-  for (const p of s.people) if (p && p.alive && p.iou > 0) holders += p.iou;
-  const due = holders * cDay;
-  if (due > 0 && !t.autoMint) {
+  if (!t.autoMint && t.purse < 2 * cDay * (Math.max(0, t.iouOutstanding) + Math.max(0, b.iou)) + 1) {
+    let holders = Math.max(0, b.iou);
+    for (const p of s.people) if (p && p.alive && p.iou > 0) holders += p.iou;
+    const due = holders * cDay;
     const avail = Math.max(0, t.purse);
-    if (avail < due) {
+    if (due > 0 && avail < due) {
       couponFrac = avail / due;
       newsOnce(s, 'coupon', `The Purse could not cover today's IOU coupons: holders received ${pctText(couponFrac)} of what they are owed.`, 'crisis');
     }
@@ -645,7 +648,7 @@ export function bankBeginDay(s: SimState): void {
   serviceLoans(s, cap);
   payHolders(s);
   payWindowInterest(s);
-  manageReserves(s, deposits(s));
+  manageReserves(s, dep0); // (morning deposits: today's interest moves them by a hair)
 }
 
 /** Queue a loan request (processed in bankEndDay). A repeated request (same borrower, purpose and project) replaces the earlier one. */
@@ -1005,14 +1008,14 @@ function payDividends(s: SimState): void {
 function failureStep(s: SimState): void {
   const b = s.bank;
   if (!b.failed) {
-    if (b.equity < 0) {
+    if (b.equity < -EQUITY_EPS) {
       b.failed = true;
       b.failedDays = 0;
       news(s, `The Bank's losses now exceed its own capital (${money(b.equity)}). It has stopped making new loans; its depositors are uneasy.`, 'crisis');
     }
     return;
   }
-  if (b.equity >= 0) {
+  if (b.equity >= -EQUITY_EPS) {
     b.failed = false;
     b.failedDays = 0;
     news(s, 'The Bank\'s own capital is positive again and it has resumed lending.', 'good');
@@ -1023,11 +1026,12 @@ function failureStep(s: SimState): void {
   // No new capital arrived: depositors absorb the loss, and enough of their balances is
   // converted into the bank's capital for it to meet its minimum again (and lend).
   const L = loansOutstanding(s);
-  const need = (minCapital(s) + BANK_BAILIN_TARGET) * Math.max(0, L) - b.equity;
+  // (above the stance buffer too: after heavy losses the stance is tight for a long while)
+  const need = Math.max(1, (minCapital(s) + BANK_STANCE_CAPITAL + BANK_BAILIN_TARGET) * Math.max(0, L)) - b.equity;
   const dep = deposits(s);
   const frac = dep > 0 ? clamp(need / dep, 0, 1) : 0;
   const cut = frac > 0 ? bailIn(s, frac) : 0;
-  b.failed = b.equity < 0;
+  b.failed = b.equity < -EQUITY_EPS;
   b.failedDays = 0;
   b.stance = 1;
   news(
@@ -1045,7 +1049,7 @@ function failureStep(s: SimState): void {
  * Stance tightens with defaultEma, loosens slowly. Monthly dividends to the owner when
  * capital ratio > 12 %. Failure: equity < 0 → failed (no new loans, news 'crisis');
  * after BANK_FAIL_GRACE_DAYS still < 0 → bailIn to restore capital (to the minimum ratio +
- * BANK_BAILIN_TARGET, so the bank can lend again), news.
+ * the full stance buffer + BANK_BAILIN_TARGET, so the bank can lend again), news.
  * Recovery when equity > 0 (e.g. the player transfers to the bank).
  * Also: overnight reserve management at the window and pruning of inactive loans.
  * stats.acc: loans_new (¤ lent today), loans_rationed, bank_dividends.

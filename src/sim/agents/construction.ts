@@ -36,6 +36,7 @@ import {
   BUILDER_BLOCKED_SHARE,
   BUILDER_MAX_BID_MULT,
   BUILDER_STOCK_SHARE,
+  BUILDER_TOOLLESS_HANDS,
   CASH_TARGET_DAYS,
   LABOR_AHEAD_MAX,
   MAX_ACTIVE_PROJECTS,
@@ -251,6 +252,8 @@ export function constructionPlan(s: SimState): void {
     const active = eligible(s, b, MAX_ACTIVE_PROJECTS);
     let rem = 0;
     let swLeft = b.town >= 0 && b.town < sw.length ? sw[b.town] * BUILD_TARGET_DAYS : 0;
+    const prices = active.length ? townGrossPrices(s, b.town) : undefined;
+    const wDay = Math.max(0, fin(b.wage)) / 0.9;
     for (const p of active) {
       let r = Math.max(0, p.need.labor - p.done.labor);
       if (!(r > EPS)) continue;
@@ -261,6 +264,17 @@ export function constructionPlan(s: SimState): void {
       }
       const fl = p.need.labor > 0 ? p.done.labor / p.need.labor : 1;
       const blocked = materialReach(p, b.inv) < fl + 0.5 * LABOR_AHEAD_MAX;
+      // Only the work its owner can pay for keeps a crew busy.
+      if (prices) {
+        const left = {
+          labor: Math.max(0, p.need.labor - p.done.labor),
+          wood: Math.max(0, p.need.wood - p.done.wood),
+          iron: Math.max(0, p.need.iron - p.done.iron),
+          tools: Math.max(0, p.need.tools - p.done.tools),
+        };
+        const value = materialsValue(left, prices, wDay, BUILD_MARGIN);
+        if (value > EPS) r *= clamp(billingCapacity(s, p) / value, 0, 1);
+      }
       rem += blocked ? r * BUILDER_BLOCKED_SHARE : r;
     }
     const nW = b.workers.length;
@@ -268,6 +282,13 @@ export function constructionPlan(s: SimState): void {
     const cap = Math.max(0, b.capacity);
     let raw = rem / BUILD_TARGET_DAYS / eff;
     if (rem > EPS && raw < 1) raw = 1;
+    // No more hands than the crew has tools for (plus a few): toolless labour costs the
+    // owners about three times as much. The builder bids for the tools it lacks.
+    const tpw = SECTORS.builder.toolsPerWorker;
+    if (tpw > 0) {
+      const equip = (Math.max(0, fin(b.tools)) + Math.max(0, b.inv[G.tools] - projectToolsSoon(active))) / (0.95 * tpw);
+      raw = Math.min(raw, equip + BUILDER_TOOLLESS_HANDS);
+    }
     raw = clamp(fin(raw), 0, cap);
     const cur = clamp(fin(b.target), 0, cap);
     let next = cur;
@@ -295,14 +316,27 @@ function equipBuilder(s: SimState, b: Firm, active: Project[]): void {
   const want = d.toolsPerWorker * n * 0.95 + TOOLS_BUFFER_DAYS * d.toolUse * n;
   const gap = want - Math.max(0, fin(b.tools));
   if (!(gap > EPS)) return;
-  let reserved = 0;
-  for (const p of active) reserved += Math.max(0, p.need.tools - p.done.tools);
-  const spare = Math.max(0, b.inv[G.tools] - reserved);
+  // The crew's own tools come first (a crew without tools does a third of the work for the
+  // same wages, and the owners pay for it); stock is held back only for the tools the
+  // active projects will build in over their next stretch of work.
+  const spare = Math.max(0, b.inv[G.tools] - projectToolsSoon(active));
   const take = Math.min(gap, spare);
   if (take > EPS) {
     b.inv[G.tools] -= take;
     b.tools = Math.max(0, fin(b.tools)) + take;
   }
+}
+
+/** Tools the active projects will build in over their next LABOR_AHEAD_MAX of progress. */
+function projectToolsSoon(active: Project[]): number {
+  let r = 0;
+  for (const p of active) {
+    const need = p.need.tools;
+    if (!(need > EPS)) continue;
+    const fl = p.need.labor > EPS ? clamp(p.done.labor / p.need.labor, 0, 1) : 1;
+    r += clamp(need * Math.min(1, fl + LABOR_AHEAD_MAX) - p.done.tools, 0, Math.max(0, need - p.done.tools));
+  }
+  return r;
 }
 
 /** Pave the first `frac` of a road project's tiles; recompute routes every few tiles. */
@@ -673,7 +707,7 @@ export function builderOrders(s: SimState, books: Books): void {
         want[m] += Math.min(rem, Math.max(p.need[m] * BUILDER_STOCK_SHARE, 0));
       }
     }
-    const crew = Math.max(b.workers.length, fin(b.target));
+    const crew = Math.max(b.workers.length, fin(b.target) + (active.length ? BUILDER_TOOLLESS_HANDS : 0));
     if (crew > 0) want.tools += Math.max(0, dB.toolsPerWorker * crew * 0.95 + TOOLS_BUFFER_DAYS * dB.toolUse * crew - Math.max(0, fin(b.tools)));
     const prices = townGrossPrices(s, t);
     // Advances for queued projects the builder is not working on yet stay untouched.

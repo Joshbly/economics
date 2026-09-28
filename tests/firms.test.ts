@@ -298,6 +298,49 @@ describe('workforce planning', () => {
     expect(f.target).toBeGreaterThanOrEqual(5);
   });
 
+  it('a firm whose cash drains lays off before it defaults, even while its books show a profit', () => {
+    const s = world();
+    const f = firm(s, 'coalmine', { workers: 30, cash: 200, wage: 10 });
+    f.capacity = 48;
+    f.tools = 30 * SECTORS.coalmine.toolsPerWorker;
+    f.sales = 60;
+    f.output = 120; // building stock: an accounting profit, a cash drain
+    f.profit = 20;
+    f.pExp = PRICES[G.coal] * 1.5; // a good price: unconstrained, it would keep ~20 workers
+    reconcile(s);
+    firmsPlan(s);
+    // 200 ¤ in hand pays ~13 workers' wages with a day and a half in reserve: cut at once
+    expect(f.target).toBeLessThan(15);
+    expect(f.target).toBeGreaterThan(5);
+  });
+
+  it('an owner with spare cash tops up a viable firm that is short of cash; the Treasury does not', () => {
+    const s = world();
+    const owner = person(s, 10000);
+    const f = firm(s, 'bakery', { workers: 5, cash: 30, owner: owner.id });
+    const g = firm(s, 'bakery', { workers: 5, cash: 30 }); // Treasury-owned
+    for (const x of [f, g]) {
+      x.capacity = 8;
+      x.sales = 70;
+      x.output = 70;
+      x.inv[G.bread] = 20;
+      x.pExp = PRICES[G.bread] * 1.05;
+      x.profit = 5;
+    }
+    reconcile(s);
+    const purse0 = s.treasury.purse;
+    newDay(s);
+    firmsPlan(s);
+    firmsEndDay(s);
+    expect(f.cash).toBeGreaterThan(100);
+    expect(owner.cash).toBeLessThan(10000);
+    expect(owner.cash).toBeGreaterThan(9000); // it keeps its own reserve
+    expect(s.stats.acc.owner_support).toBeCloseTo(10000 - owner.cash, 6);
+    expect(g.cash).toBeLessThan(31);
+    expect(s.treasury.purse).toBeCloseTo(purse0, 9);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+
   it('a price that no longer covers materials sends the target to zero', () => {
     const s = world();
     const f = firm(s, 'bakery', { workers: 5 });

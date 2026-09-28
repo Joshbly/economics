@@ -278,12 +278,15 @@ function siteScore(s: SimState, what: SiteWhat, town: TownId, x: number, y: numb
  * ore deposit, oil wells on Marsh with oil deposit, town sectors/houses/piers near the centre
  * (piers: coast tile of the harbor town). Footprint must be free (occ = -1), within
  * ~town.radius+10 tiles (resource sites up to 16), not water. Returns null if none.
+ * `maxReach` (optional) narrows the search radius (world init fills towns outward).
  */
-export function findSite(s: SimState, what: SiteWhat, town: TownId): { x: number; y: number } | null {
+export function findSite(s: SimState, what: SiteWhat, town: TownId, maxReach?: number): { x: number; y: number } | null {
   const t = s.towns[town];
   if (!t) return null;
   const m = s.map;
-  const reach = Math.ceil(reachOf(s, what, town)) + 2;
+  const fullReach = reachOf(s, what, town);
+  const lim = maxReach !== undefined && maxReach > 0 ? Math.min(maxReach, fullReach) : fullReach;
+  const reach = Math.ceil(lim) + 2;
   const x0 = Math.max(1, t.x - reach);
   const x1 = Math.min(m.w - 2, t.x + reach);
   const y0 = Math.max(1, t.y - reach);
@@ -291,8 +294,7 @@ export function findSite(s: SimState, what: SiteWhat, town: TownId): { x: number
   let best: { x: number; y: number } | null = null;
   let bestScore = -1e18;
   const [fw, fh] = footprintForWhat(what);
-  const maxD = reachOf(s, what, town);
-  const maxD2 = maxD * maxD;
+  const maxD2 = lim * lim;
   for (let y = y0; y <= y1; y++) {
     const dy = y + fh / 2 - t.y;
     for (let x = x0; x <= x1; x++) {

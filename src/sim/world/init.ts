@@ -3,75 +3,93 @@
 // OWNER: world agent. See DESIGN §1 and the calibration notes below.
 //
 // Algorithm:
-//  1. generateMap(seed); create the 4 towns (names from names.ts), market halls,
-//     the Palace (capital), the Bank building (capital), the Port (harbor), and
-//     inter-town dirt tracks (a spanning set from the capital + useful shortcuts).
+//  1. generateMap(seed); the 4 towns (names from names.ts), market halls with a
+//     market-square ring, inter-town dirt tracks (capital to every town + shortcuts
+//     that save ≥ 25 %), the Palace and the Bank (capital), the Port (harbor).
 //  2. Prices start from production.basePrices(); rent0 = BASE_RENT_SHARE × BASE_WAGE.
-//  3. Calibration fixed point (see `calibrate`), iterated to convergence:
-//       * local prices per town: a host town sells a good at its own unit cost
-//         (materials at local prices + tool wear + the sector's equilibrium margin M);
-//         other towns pay the cheapest landed price from a host (price + freight +
-//         the traders' minimum margin, grossed up for spoilage in transit);
-//       * household demand per town from demandModel.steadyStateDemand at each class's
-//         stationary budget (workers: income − rent; owners: wages + profits + rents,
-//         with food/ale caps binding) plus intermediate demand through recipes
-//         (Leontief), tool replacement (toolUse × effective labour + idle wear), trader
-//         oil and wagon wear, and foreign trade at the port (imports displace harbour
-//         demand, exports add to it);
-//       * each (sector, host town) is served by n firms on the best available sites;
-//         n is the count that puts the equilibrium margin nearest the founding margin
-//         M0 = w_e/(α·prodPerWorker) — firms then sit at their profit-maximising size
-//         (L_i = (α·M·A·m_i/w_e)^(1/(1−α))) producing exactly what is bought;
+//  3. Calibration fixed point (`calibrate`, two passes):
+//       * local prices: a host town sells a good at its own unit cost (materials at
+//         local prices + tool cost as firms reckon it + the sector's equilibrium margin
+//         M); other towns pay the cheapest landed price from a host — the lowest price
+//         at which the traders' own rule would ship it (spoilage over the trip + a day,
+//         freight incl. idle drivers, the minimum margin on the selling price);
+//       * household demand: demandModel.steadyStateDemand at each class's stationary
+//         budget (workers: income − rent; owners: wages + profits + rents), corrected in
+//         the second pass by realised ÷ planned ratios from `householdSteady`, a
+//         mini-simulation of the household module's own rules (rotating bid rungs,
+//         lumpy coal/furniture shopping, pantry spoilage, essentials first); plus
+//         intermediate demand through recipes (Leontief), tool replacement, trader oil
+//         and wagon wear, and foreign trade at the port;
+//       * each (sector, host town) is served by n firms on the best sites; n puts the
+//         equilibrium margin nearest M0 = w_e/(α·prodPerWorker), and every firm sits at
+//         its profit-maximising size L_i = (α·M·A·S·m_i/w_e)^(1/(1−α)) (w_e = wage per
+//         effective worker, effective labour (0.5 + 0.5·health)·skill as firms count it;
+//         S = the season firms plan with: annual mean for farms, founding day otherwise);
 //       * traders' wagons/drivers follow the inter-town flows; town populations follow
-//         the jobs (people live near their work), with the realm's total fixed at
-//         Σ TOWN_POP and a small income-scale factor κ pinning employment at
-//         1 − INIT_UNEMPLOYMENT.
-//     Sites for resource firms are estimated before calibration (greedy best sites)
-//     and the same sites are then used for placement.
-//     Deviations from the original sketch (economics, not taste): no smelter in the
-//     capital (importing 3 units of ore+coal per unit of iron cannot compete with the
-//     mining town's smelter, so it would open at a loss) and no farms in the capital
-//     (the farm town is the breadbasket; entry may add capital farms later if the
-//     grain freight makes them pay).
-//  4. Buildings: firms placed via layout.findSite/placeBuilding, levels so capacity ≈
-//     INIT_CAPACITY_HEADROOM × workers; one builder (with a nearly finished house as
-//     its founding project), one trader (wagons sized to flows) and one stateworks
-//     (building -1, owner STATE, target 0) per town.
-//  5. Houses for pop × (1 + INIT_HOUSING_VACANCY), all privately owned; owners live in
-//     their own houses; everyone else rents the free slot nearest their workplace.
-//  6. Jobs: exactly the calibrated workforce per firm (owners work in their own shops
-//     first), the rest (≈ INIT_UNEMPLOYMENT) unemployed.
-//  7. Money: workers' deposits lognormal around their buffer target m* (≈ INIT_CASH_DAYS
-//     of income), owners at the stationary point of the buffer rule, firms
-//     INIT_FIRM_CASH_DAYS of costs, loans (principal only; the historical proceeds
-//     paid for the capital stock and now sit in deposits across the realm) for
-//     INIT_LOAN_SHARE of producers; bank reserves so that equity ≈ max(INIT_BANK_EQUITY_MIN,
-//     INIT_BANK_EQUITY_RATIO × loans), then ledger.reconcileBank; Treasury purse, gold and
-//     rates; foreign coin ≈ INIT_FOREIGN_COIN_DAYS of port trade.
-//  8. Inventories: firms at their own stock targets (INV_TARGET_DAYS, perishables
-//     INV_TARGET_DAYS_PERISHABLE, plus the seasonal carry: it is early spring, so farms
-//     still hold the tail of last year's harvest), INPUT_BUFFER_DAYS of inputs, tools for
-//     full productivity + TOOLS_BUFFER_DAYS of wear; pantries 1–2 days; wagons in transit
-//     and a little stock already delivered at the destinations.
-//  9. Markets: every town × good at the calibrated local price, volEma = expected
-//     local purchases (traders need it from day one); IOU at par; gold at INIT_GOLD_PRICE.
+//         the jobs, the realm's total fixed at Σ TOWN_POP, and an income-scale factor κ
+//         (≈ 1) pins employment at 1 − INIT_UNEMPLOYMENT.
+//     Deviations from the first sketch (economics, not taste): no smelter in the capital
+//     (importing 3 units of ore+coal per unit of iron cannot compete with the mining
+//     town's smelter) and no farms in the capital (the farm town is the breadbasket;
+//     entry may add capital farms if grain freight makes them pay).
+//  4. Buildings: resource firms on the calibrated sites (their tracks laid only after
+//     all are placed, so no track cuts across a chosen site), town workshops, levels so
+//     capacity ≈ INIT_CAPACITY_HEADROOM × workers; per town one builder (with a nearly
+//     finished house as its founding project), one trader, one stateworks (building -1,
+//     owner STATE, target 0). Firms are founded years before day 0.
+//  5. Houses for pop × (1 + INIT_HOUSING_VACANCY), all private; OWNER_SHARE of people own
+//     the firms and houses (weighted by rank); owners live in their own houses, everyone
+//     else in the free slot nearest their work.
+//  6. Jobs: exactly the calibrated workforce per firm; owners work in their own shops;
+//     the employed are dealt to firms so each gets a representative efficiency mix.
+//  7. Money: households hold the cash of their shopping phase at the stationary point of
+//     the household rules (scaled to their income, small spread); firms
+//     INIT_FIRM_CASH_DAYS of costs; loans (principal only: the historical proceeds paid
+//     for the capital stock and now sit in deposits across the realm) for INIT_LOAN_SHARE
+//     of producers, sized to their profit; bank reserves so that equity ≈
+//     max(INIT_BANK_EQUITY_MIN, INIT_BANK_EQUITY_RATIO × loans), then ledger.reconcileBank;
+//     Treasury purse, gold and rates; foreign coin ≈ INIT_FOREIGN_COIN_DAYS of port trade.
+//  8. Stocks: firms at their own inventory targets (+ the seasonal carry: it is early
+//     spring, farms still hold last year's harvest), INPUT_BUFFER_DAYS of inputs, tools
+//     for full productivity + TOOLS_BUFFER_DAYS of wear; pantries from householdSteady;
+//     wagons in transit and a little stock already waiting at the destinations.
+//  9. Markets: every town × good at its calibrated price, volEma = expected purchases,
+//     and a founding order-book snapshot (traders read destination demand from
+//     yesterday's book); IOU at par; gold at INIT_GOLD_PRICE.
 // 10. Foreign: world prices = harbour price / gold price × a seeded factor (a few goods
-//     cheap abroad, a few dear), shipCap = SHIP_CAP_SHARE × national use, world0.
+//     cheap abroad, a few dear), shipCap = SHIP_CAP_SHARE × national use, world0, tradeEma.
 // 11. stats.initStats(s); scenarios.applyScenario; a founding news item.
 // ============================================================================
 import {
+  ALE_JOY_SCALE,
+  ASK_RUNGS,
+  ASK_WEIGHTS,
+  BANK_RISK_PREMIUM,
   BASE_RENT_SHARE,
   BASE_WAGE,
+  BID_RUNGS,
   BUILD_MARGIN,
   BUILD_TARGET_DAYS,
+  COAL_COMFORT_DAYS,
+  COAL_HEAT_SHARE,
+  COAL_SHOP_DAYS,
   DAYS_PER_YEAR,
+  DESK_WORKING_COIN,
+  ELASTICITY,
+  EXPORT_DISCOUNT,
+  FOOD_MAX,
+  FOOD_NEED,
+  FURNITURE_SHOP_DAYS,
   FURNITURE_WEAR_DAY,
   HEAT_MEAN,
+  HEAT_RESERVE_DAYS,
+  HH_RUNGS,
+  HUNGRY_BELOW,
+  IMPORT_MARKUP,
   INIT_BANK_EQUITY_MIN,
   INIT_BANK_EQUITY_RATIO,
   INIT_BUILDERS,
   INIT_CAPACITY_HEADROOM,
-  INIT_CASH_DAYS,
   INIT_CASH_SIGMA,
   INIT_DRIVER_SLACK,
   INIT_FARM_CAPACITY_HEADROOM,
@@ -91,50 +109,49 @@ import {
   INIT_RESERVE_MIN_SHARE,
   INIT_RESERVE_RATE,
   INIT_SKILL_SIGMA,
+  INIT_TRADER_WC_DAYS,
   INIT_TREASURY_GOLD,
   INIT_UNEMPLOYMENT,
   INIT_WAGON_SLACK,
   INIT_WORLD_CHEAP,
   INIT_WORLD_DEAR,
+  INIT_WORLD_NEUTRAL,
   INIT_WORLD_N_CHEAP,
   INIT_WORLD_N_DEAR,
-  INIT_WORLD_NEUTRAL,
   INPUT_BUFFER_DAYS,
   INV_TARGET_DAYS,
   INV_TARGET_DAYS_PERISHABLE,
-  COAL_HEAT_SHARE,
-  EXPORT_DISCOUNT,
-  IMPORT_MARKUP,
+  JOY_EMA,
+  MIN_BID_SPEND,
   OIL_PER_TILE,
   OWNER_SHARE,
   SHIP_CAP_SHARE,
-  SPEND_DOWN_DAYS,
   STARTUP_LOAN_TERM,
   TOOLS_BUFFER_DAYS,
   TOOLS_IDLE_WEAR_DAY,
   TOOLS_PER_WAGON,
   TOWN_POP,
+  TRADE_HOLD_DAYS,
+  TRADE_MIN_LOAD,
   TRADE_MIN_MARGIN_ABS,
   TRADE_MIN_MARGIN_PCT,
   WAGON_CAPACITY,
   WAGON_WEAR_DAY,
-  BANK_RISK_PREMIUM,
-  DESK_WORKING_COIN,
 } from '../config';
 import { farmSeason, heatNeed, seasonFactor } from '../calendar';
 import { newFirm, newLoan, newMarket, newPerson, newProject, newShipment, newSimState, newTown, newTreasury } from '../factory';
-import { G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
+import { CONSUMER_GOODS, G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
 import { deposits, firmRef, loansOutstanding, personRef, reconcileBank } from '../ledger';
-import { bufferTarget, steadyStateDemand } from '../agents/demandModel';
+import { bufferTarget, foodIndex, goodsBudget, steadyStateDemand } from '../agents/demandModel';
 import { basePrices, materialCostPerUnit, materialsValue, tfp, toolCostPerUnit, unitVariableCost } from '../agents/production';
-import { healthTarget } from '../agents/households';
+import { heatAheadMean, healthTarget, ladderInto, newPlanScratch, planInto, rungSets } from '../agents/households';
 import { commuteTiles } from '../agents/labor';
-import { rt } from '../runtime';
+import { invalidateRoutes, rt } from '../runtime';
 import { lognormal, rand, randRange, shuffle, type RngHolder } from '../rng';
 import { news } from '../stats/events';
 import { initStats } from '../stats/stats';
-import { STATE, BANK, type Building, type Firm, type Person, type Sector, type SimState, type TownId, type TownKind } from '../types';
-import { clamp, fin } from '../util';
+import { STATE, BANK, type Building, type CurveSnapshot, type Firm, type Person, type Sector, type SimState, type TownId, type TownKind } from '../types';
+import { clamp, ema, fin } from '../util';
 import { generateMap, type TownSite } from './mapgen';
 import {
   computeDistricts,
@@ -153,7 +170,6 @@ import {
 import { planTrack, routeBetweenTowns } from './paths';
 import { firmName, personName, realmName, townName } from './names';
 import { applyScenario, scenarioDef } from './scenarios';
-import { invalidateRoutes } from '../runtime';
 
 export interface WorldOptions {
   seed: number;
@@ -255,6 +271,141 @@ export function stationaryPlan(P: readonly number[], income: number, rent: numbe
   }
   const B = 0.5 * (lo + hi);
   return { q: steadyStateDemand(P, B, 0), budget: B };
+}
+
+// ---------------------------------------------------------------------------
+// Household steady state: a mini-simulation of the household rules
+// ---------------------------------------------------------------------------
+// The analytic plan (stationaryPlan) is what a household would like to buy. What the
+// household module actually buys at a given expected price is less, for two reasons
+// that are part of its design: each household bids on a rotating subset of the price
+// rungs, so at the expected price it fills only down to the lowest rung at or above it;
+// and coal and furniture are bought in lumps (every COAL_SHOP_DAYS / FURNITURE_SHOP_DAYS),
+// with luxuries cut on days when essentials take the budget — until the household holds
+// enough cash above m* to smooth them. This runs the module's own planning code
+// (households.planInto / ladderInto / rungSets) for a set of households over a full
+// seasonal year at fixed prices and income, and reports the realised annual demand and
+// the cash and pantries each shopping phase holds on the first day of the year.
+
+/** Households simulated per type: every combination of the coal (4) and furniture (5) shopping phases. */
+const HH_SIM_PHASES = 20;
+/** Burn-in before the recorded year (days); cash converges on the spend-down time scale. */
+const HH_SIM_BURN = 150;
+
+interface HouseholdSteady {
+  q: number[]; // mean purchases per household per day over the year (length N_GOODS)
+  spend: number; // mean spending per day on goods
+  cash: number[]; // by phase: cash at the start of the year (day 0)
+  pantry: number[][]; // by phase: pantry at the start of day 0
+  joy: number; // mean ale enjoyment EMA at day 0
+}
+
+const RUNG_SETS_INIT: number[][][] = Array.from({ length: N_GOODS }, (_, g) => rungSets(HH_RUNGS[g] ?? BID_RUNGS.length));
+const simPlan = newPlanScratch();
+const simLadder: number[] = [];
+
+/**
+ * Simulate `phases` households (ids 0..phases-1, or the single id `onlyId`) with daily
+ * disposable income `income`, rent `rent`, facing gross prices P, from 150 days before
+ * the start of a year to its end. Returns the year's mean purchases and the state on day 0.
+ */
+export function householdSteady(P: readonly number[], income: number, rent: number, cash0: number, onlyId = -1): HouseholdSteady {
+  const ids = onlyId >= 0 ? [onlyId] : Array.from({ length: HH_SIM_PHASES }, (_, k) => k);
+  const K = ids.length;
+  const fi = foodIndex(P[G.bread], P[G.fish]);
+  const qb = fi.shareBread / P[G.bread];
+  const qf = fi.shareFish / P[G.fish];
+  const phi = qb + qf > 0 ? qb / (qb + qf) : 0.68;
+  const m = bufferTarget(income, Math.max(0, INIT_RESERVE_RATE - 0.01), INIT_UNEMPLOYMENT);
+  const cash = new Array<number>(K).fill(Math.max(0, cash0));
+  const pantry: number[][] = Array.from({ length: K }, () => new Array<number>(N_GOODS).fill(0));
+  const hungry = new Array<boolean>(K).fill(false);
+  const joy = new Array<number>(K).fill(0.4);
+  const qSum = new Array<number>(N_GOODS).fill(0);
+  let spendSum = 0;
+  const start = 2 * DAYS_PER_YEAR - DAYS_PER_YEAR - HH_SIM_BURN;
+  const end = 2 * DAYS_PER_YEAR; // the state after the last day is that of day 0 of a year
+  let recDays = 0;
+  for (let d = start; d < end; d++) {
+    const heat = heatNeed(d);
+    const ahead = heatAheadMean(d);
+    const sub = FOOD_NEED * fi.index + heat * P[G.coal];
+    const comfort = heat + COAL_COMFORT_DAYS * ahead;
+    const rec = d >= end - DAYS_PER_YEAR;
+    if (rec) recDays++;
+    for (let k = 0; k < K; k++) {
+      const id = ids[k];
+      const pan = pantry[k];
+      let c = cash[k] + income; // wages and other income arrive before the markets
+      const budget = Math.min(Math.max(0, goodsBudget(income, c, m, rent, sub)), c);
+      const plan = planInto(simPlan, budget, c, P, pan, heat, ahead, hungry[k], fi.index, fi.shareBread, fi.shareFish);
+      const q = plan.qty;
+      const ms = plan.maxSpend;
+      if (FURNITURE_SHOP_DAYS > 1) {
+        if ((id + d) % FURNITURE_SHOP_DAYS === 0) {
+          q[G.furniture] *= FURNITURE_SHOP_DAYS;
+          ms[G.furniture] *= FURNITURE_SHOP_DAYS;
+          let other = 0;
+          for (const g of CONSUMER_GOODS) if (g !== G.furniture) other += ms[g];
+          ms[G.furniture] = Math.max(0, Math.min(ms[G.furniture], c - other));
+        } else {
+          q[G.furniture] = 0;
+          ms[G.furniture] = 0;
+        }
+      }
+      if (COAL_SHOP_DAYS > 1 && pan[G.coal] >= comfort && (id + d) % COAL_SHOP_DAYS !== 0) {
+        q[G.coal] = 0;
+        ms[G.coal] = 0;
+      }
+      // Uniform-price clearing at the expected price: every rung at or above it fills.
+      let spent = 0;
+      for (const g of CONSUMER_GOODS) {
+        if (!(q[g] > 1e-5) || !(ms[g] >= MIN_BID_SPEND)) continue;
+        const sets = RUNG_SETS_INIT[g];
+        ladderInto(q[g], P[g], ms[g], g, sets[(id + d) % sets.length], simLadder);
+        let fill = 0;
+        for (let j = 0; j + 1 < simLadder.length; j += 2) if (simLadder[j] >= P[g] * (1 - 1e-9)) fill += simLadder[j + 1];
+        fill = Math.max(0, Math.min(fill, (c - spent) / P[g]));
+        pan[g] += fill;
+        spent += fill * P[g];
+        if (rec) qSum[g] += fill;
+      }
+      c -= spent + rent;
+      cash[k] = Math.max(0, c);
+      if (rec) spendSum += spent;
+      // ---- consumption (households.householdsConsume) ----
+      const want = clamp(plan.foodPlan, 0, FOOD_MAX);
+      let eatB = Math.min(pan[G.bread], want * phi);
+      let eatF = Math.min(pan[G.fish], want - want * phi);
+      let short = want - eatB - eatF;
+      if (short > 1e-12) {
+        const x = Math.min(pan[G.bread] - eatB, short);
+        eatB += x;
+        short -= x;
+        eatF += Math.min(pan[G.fish] - eatF, short);
+      }
+      pan[G.bread] -= eatB;
+      pan[G.fish] -= eatF;
+      hungry[k] = (eatB + eatF) / FOOD_NEED < HUNGRY_BELOW;
+      const burn = Math.min(pan[G.coal], heat);
+      let left = pan[G.coal] - burn;
+      left -= Math.min(plan.coalExtra, Math.max(0, left - HEAT_RESERVE_DAYS * ahead));
+      pan[G.coal] = Math.max(0, left);
+      const drink = Math.min(pan[G.ale], plan.alePlan);
+      pan[G.ale] -= drink;
+      joy[k] = ema(joy[k], 1 - Math.exp(-ALE_JOY_SCALE * drink), JOY_EMA);
+      pan[G.furniture] *= 1 - FURNITURE_WEAR_DAY;
+      for (let g = 0; g < N_GOODS; g++) if (GOODS[g].spoil > 0 && pan[g] > 0) pan[g] *= 1 - GOODS[g].spoil;
+    }
+  }
+  const n = Math.max(1, recDays * K);
+  return {
+    q: qSum.map((x) => x / n),
+    spend: spendSum / n,
+    cash: cash.slice(),
+    pantry: pantry.map((r) => r.slice()),
+    joy: joy.reduce((a, x) => a + x, 0) / Math.max(1, K),
+  };
 }
 
 /** Output per day of a firm with effective labour L on a site with multiplier m (annual-mean season, full tools). */
@@ -364,9 +515,61 @@ function freightUnit(P: Mat, days: Mat, len: Mat, a: number, b: number): number 
   return (driver + oil + wear) / WAGON_CAPACITY;
 }
 
+/** Price elasticity assumed for firms' input demand in founding curve snapshots. */
+const INTERMEDIATE_ELASTICITY = 0.4;
+
+/**
+ * A founding order-book snapshot: demand `buy` at price P spread over the household bid
+ * rungs with an iso-elastic shape, and local supply `supply` over the firms' ask rungs.
+ * Flattened [price, cumulative qty, …]: bids descending, asks ascending (base prices).
+ */
+export function foundingCurve(P: number, buy: number, supply: number, elasticity: number): CurveSnapshot {
+  const bids: number[] = [];
+  const asks: number[] = [];
+  if (buy > 1e-6 && P > 0) for (const r of BID_RUNGS) bids.push(round4(P * r), round4(buy * Math.pow(1 / r, elasticity)));
+  if (supply > 1e-6 && P > 0) {
+    let cum = 0;
+    ASK_RUNGS.forEach((r, i) => {
+      cum += supply * (ASK_WEIGHTS[i] ?? 0);
+      asks.push(round4(P * r), round4(cum));
+    });
+  }
+  return { bids, asks, state: [], price: round4(P), volume: round4(buy), wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1 };
+}
+
+/**
+ * Typical load of a wagon on a flow of `q` units/day, as traders consolidate: full wagons
+ * for big flows; a wagon leaves at once when at least TRADE_MIN_LOAD full, otherwise the
+ * goods wait up to TRADE_HOLD_DAYS for company.
+ */
+function wagonLoad(q: number): number {
+  if (q >= WAGON_CAPACITY) return WAGON_CAPACITY;
+  if (q >= TRADE_MIN_LOAD * WAGON_CAPACITY) return q;
+  return Math.max(1e-6, Math.min(WAGON_CAPACITY, q * (1 + TRADE_HOLD_DAYS)));
+}
+
+/** Wagons loaded on the way out of a flow of `q` units/day over `d` days (each at most one wagonload). */
+function loadsOnRoad(q: number, d: number): number {
+  const inTransit = q * d;
+  return Math.max(1, Math.round((q / wagonLoad(q)) * d), Math.ceil(inTransit / WAGON_CAPACITY - 1e-9));
+}
+
 /** Share of a shipment that survives the journey (perishables spoil on the wagon). */
 function survival(g: number, d: number): number {
   return Math.pow(1 - GOODS[g].spoil, Math.max(0, d));
+}
+
+/**
+ * Lowest destination price at which a trader ships a good bought at `pa` over a route of
+ * `d` days with freight `F` per unit — the traders' own rule: the destination price, kept
+ * for spoilage over the trip plus a day, less freight and the minimum margin (the larger of
+ * TRADE_MIN_MARGIN_ABS and TRADE_MIN_MARGIN_PCT of the selling price) must cover the purchase.
+ */
+function landedPrice(g: number, pa: number, F: number, d: number): number {
+  const keep = Math.max(0.1, survival(g, d + 1));
+  const byAbs = (pa + F + TRADE_MIN_MARGIN_ABS) / keep;
+  const byPct = (pa + F) / Math.max(0.05, keep - TRADE_MIN_MARGIN_PCT);
+  return Math.max(byAbs, byPct);
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +580,8 @@ interface CalOpts {
   foreign: boolean;
   world: number[] | null; // fixed world prices (gold); null = decide from harbour prices
   R: RngHolder;
+  /** Realised ÷ planned household demand, [town][0 worker | 1 owner][good] (from householdSteady); null = 1. */
+  hhRatio: number[][][] | null;
 }
 
 function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal {
@@ -473,9 +678,7 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
         }
         for (const hh of hs) {
           if (hh === t) continue;
-          const dd = days[hh][t];
-          const pa = P[hh][g];
-          const landed = (pa + freightUnit(P, days, len, hh, t)) / Math.max(0.05, survival(g, dd)) + Math.max(TRADE_MIN_MARGIN_ABS, TRADE_MIN_MARGIN_PCT * pa);
+          const landed = landedPrice(g, P[hh][g], freightUnit(P, days, len, hh, t), days[hh][t]);
           if (landed < best) {
             best = landed;
             from = hh;
@@ -501,7 +704,8 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
     for (let t = 0; t < NT; t++) {
       const qW = stationaryPlan(P[t], yW * kappa, RENT0).q;
       const qO = stationaryPlan(P[t], yO[t] * kappa, 0).q;
-      for (let g = 0; g < N_GOODS; g++) HH[t][g] = N[t] * ((1 - o) * qW[g] + o * qO[g]);
+      const rr = opts.hhRatio ? opts.hhRatio[t] : null;
+      for (let g = 0; g < N_GOODS; g++) HH[t][g] = N[t] * ((1 - o) * qW[g] * (rr ? rr[0][g] : 1) + o * qO[g] * (rr ? rr[1][g] : 1));
     }
     D = HH.map((r) => r.slice());
     for (const h of hosts) {
@@ -569,13 +773,18 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
     wagonsInUse = new Array(NT).fill(0);
     traderOil = new Array(NT).fill(0);
     traderProfit = new Array(NT).fill(0);
+    const busyEst = new Array(NT).fill(0);
     for (const f of flows) {
-      const loads = f.qty / WAGON_CAPACITY;
-      wagonsInUse[f.from] += loads * 2 * days[f.from][f.to];
-      traderOil[f.from] += loads * len[f.from][f.to] * OIL_PER_TILE;
-      traderProfit[f.from] += f.qty * survival(f.good, days[f.from][f.to]) * Math.max(TRADE_MIN_MARGIN_ABS, TRADE_MIN_MARGIN_PCT * P[f.from][f.good]);
+      const trips = f.qty / wagonLoad(f.qty); // wagons dispatched per day
+      wagonsInUse[f.from] += trips * 2 * days[f.from][f.to];
+      busyEst[f.from] += 2 * loadsOnRoad(f.qty, days[f.from][f.to]);
+      traderOil[f.from] += trips * len[f.from][f.to] * OIL_PER_TILE;
+      // Sales of what arrives, less purchases and the house's own costs (drivers, oil, wear).
+      const fu = freightUnit(P, days, len, f.from, f.to);
+      traderProfit[f.from] += f.qty * (survival(f.good, days[f.from][f.to]) * P[f.to][f.good] - P[f.from][f.good] - fu);
     }
-    drivers = wagonsInUse.map((x) => Math.max(1, Math.round(x * INIT_DRIVER_SLACK)));
+    // One driver per wagon on the road (both legs), with slack; never fewer than the founding fleet in use.
+    drivers = wagonsInUse.map((x, t) => Math.max(1, Math.round(x * INIT_DRIVER_SLACK), busyEst[t] + 1));
 
     // ---- 6. jobs → population ------------------------------------------------------------
     const J = new Array(NT).fill(0);
@@ -715,12 +924,37 @@ function solveHost(h: Host, wEff: number, healthEff: number, chooseN: boolean): 
   }
   h.mult = [];
   for (let i = 0; i < h.n; i++) h.mult.push(multOf(i));
-  h.M = marginFor(d, h.X, h.mult, wEff);
-  h.leff = h.mult.map((m) => optLabor(d, h.M, m, wEff));
-  h.workers = h.leff.map((l) => Math.max(1, Math.round(l / healthEff)));
-  // Output of the integer workforce (the small rounding gap is absorbed by inventories/prices).
-  h.q = h.workers.map((w, i) => outputOf(d, w * healthEff, h.mult[i]));
-  h.leff = h.workers.map((w) => w * healthEff);
+  const Mc = marginFor(d, h.X, h.mult, wEff);
+  const lc = h.mult.map((m) => optLabor(d, Mc, m, wEff) / healthEff); // workers, continuous
+  // Whole workers: round down, then add workers where the remainder is largest until the
+  // host makes at least what is bought (a small surplus is benign; a shortfall drains stocks).
+  const wk = lc.map((l) => Math.max(1, Math.floor(l)));
+  const qOf = () => wk.reduce((a, w, i) => a + outputOf(d, w * healthEff, h.mult[i]), 0);
+  for (let guard = 0; guard < 200 && qOf() < h.X * (1 - 1e-6); guard++) {
+    let best = 0;
+    let bestRem = -Infinity;
+    for (let i = 0; i < wk.length; i++) {
+      const rem = lc[i] - wk[i];
+      if (rem > bestRem) {
+        bestRem = rem;
+        best = i;
+      }
+    }
+    wk[best] += 1;
+  }
+  h.workers = wk;
+  h.leff = wk.map((w) => w * healthEff);
+  h.q = wk.map((w, i) => outputOf(d, w * healthEff, h.mult[i]));
+  // The margin at which the host's aggregate optimal labour equals its actual workforce:
+  // Σ L_i(M) = Σ w_i·e  →  M = (w_e/(α·A)) · (ΣL / Σ m_i^{1/(1−α)})^{1−α}.
+  const ex = 1 / (1 - d.alpha);
+  let sm = 0;
+  let sl = 0;
+  for (let i = 0; i < wk.length; i++) {
+    sm += Math.pow(h.mult[i], ex);
+    sl += h.leff[i];
+  }
+  h.M = sm > 0 && sl > 0 ? (wEff / (d.alpha * tfp(d.key))) * Math.pow(sl / sm, 1 - d.alpha) : Mc;
 }
 
 /** Daily profit of a host's firms at local prices (revenue − materials − tool wear − wages). */
@@ -898,7 +1132,23 @@ export function createWorld(opts: WorldOptions): SimState {
   };
   let cands = candFor();
   const rngSnapshot = s.rng.slice();
-  let cal = calibrate(s, cands, { foreign: withForeign, world: null, R });
+  let cal = calibrate(s, cands, { foreign: withForeign, world: null, R, hhRatio: null });
+  // Realised household demand under the household module's own rules (see householdSteady).
+  const steadyOf = (c: Cal) =>
+    s.towns.map((t) => [
+      householdSteady(c.P[t.id], c.yW * c.kappa, RENT0, bufferTarget(c.yW * c.kappa, 0.01, INIT_UNEMPLOYMENT)),
+      householdSteady(c.P[t.id], c.yO[t.id] * c.kappa, 0, bufferTarget(c.yO[t.id] * c.kappa, 0.01, INIT_UNEMPLOYMENT) * 1.6),
+    ]);
+  const ratioOf = (c: Cal, st: HouseholdSteady[][]): number[][][] =>
+    s.towns.map((t) => {
+      const a = stationaryPlan(c.P[t.id], c.yW * c.kappa, RENT0).q;
+      const b = stationaryPlan(c.P[t.id], c.yO[t.id] * c.kappa, 0).q;
+      const r = (sim: number[], plan: number[]) => plan.map((x, g) => (x > 1e-9 ? clamp(sim[g] / x, 0, 3) : 1));
+      return [r(st[t.id][0].q, a), r(st[t.id][1].q, b)];
+    });
+  // (The same simulations seed people's cash and pantries below: incomes are rescaled per person.)
+  const steady = steadyOf(cal);
+  const ratios = ratioOf(cal, steady);
   // Second pass with core radii from the calibrated populations (same world prices).
   for (const t of s.towns) {
     const nf = cal.hosts.filter((h) => h.town === t.id && !isResourceSector(h.sector)).reduce((a, h) => a + h.n, 0) + 2;
@@ -906,15 +1156,29 @@ export function createWorld(opts: WorldOptions): SimState {
   }
   cands = candFor();
   s.rng = rngSnapshot.slice();
-  cal = calibrate(s, cands, { foreign: withForeign, world: cal.world, R });
+  const cal1 = cal;
+  cal = calibrate(s, cands, { foreign: withForeign, world: cal.world, R, hhRatio: ratios });
 
   // ---- 4. firms -------------------------------------------------------------------------------
   const P = cal.P;
   const NT = s.towns.length;
+  // Markets at the calibrated local prices. Each gets a founding order-book snapshot (as if
+  // yesterday had cleared at those prices): local buyers' demand around the price and local
+  // producers' daily supply. Traders read destination demand from yesterday's book, so
+  // without it no wagon would leave on the first day and export trades would stall.
+  const exportBuy: Mat = s.towns.map(() => new Array(N_GOODS).fill(0));
+  const localSupply: Mat = s.towns.map(() => new Array(N_GOODS).fill(0));
+  for (const fl of cal.flows) exportBuy[fl.from][fl.good] += fl.qty;
+  for (const h of cal.hosts) {
+    const out = SECTORS[h.sector].out;
+    if (out >= 0) localSupply[h.town][out] += h.q.reduce((a, x) => a + x, 0);
+  }
   for (let t = 0; t < NT; t++) {
     for (let g = 0; g < N_GOODS; g++) {
       const m = newMarket(t, g, round4(P[t][g]));
-      m.volEma = round4(Math.max(0, cal.D[t][g]));
+      const buy = Math.max(0, cal.D[t][g]) + exportBuy[t][g];
+      m.volEma = round4(buy);
+      m.curve = foundingCurve(P[t][g], buy, localSupply[t][g], ELASTICITY[g] ?? INTERMEDIATE_ELASTICITY);
       s.markets[t * N_GOODS + g] = m;
     }
   }
@@ -990,7 +1254,6 @@ export function createWorld(opts: WorldOptions): SimState {
   const jobsAt: number[] = new Array(NT).fill(0);
   for (const fp of firmPlan) jobsAt[fp.firm.town] += fp.workers;
   for (let t = 0; t < NT; t++) townPop.push(Math.max(jobsAt[t] + 1, Math.round(jobsAt[t] / (1 - INIT_UNEMPLOYMENT))));
-  const heat0 = heatNeed(0);
   for (let t = 0; t < NT; t++) {
     for (let k = 0; k < townPop[t]; k++) {
       const p = newPerson(s, t, personName(R));
@@ -1012,7 +1275,8 @@ export function createWorld(opts: WorldOptions): SimState {
   for (const t of s.towns) {
     const need = Math.ceil((townPop[t.id] * (1 + INIT_HOUSING_VACANCY)) / HOUSE_SLOTS);
     for (let k = 0; k < need; k++) {
-      const site = findSite(s, 'house', t.id);
+      // Houses fill the town outward from the market: look just beyond the built-up area first.
+      const site = findSite(s, 'house', t.id, t.radius + 4) ?? findSite(s, 'house', t.id);
       if (!site) {
         t.radius += 2; // grow the settlement outward and retry once
         const s2 = findSite(s, 'house', t.id);
@@ -1205,16 +1469,19 @@ export function createWorld(opts: WorldOptions): SimState {
       const basis = round4((pSrc + fu) / Math.max(0.05, surv));
       freightSum += fu * fl.qty;
       unitsTiles += fl.qty * L;
-      for (let j = 0; j < k; j++) {
-        const qty = round3((fl.qty * d) / k);
+      // Loads on the road: the flow's in-transit goods (q × days) in consolidated wagons,
+      // arrivals spread over the journey; as many empties are on their way home.
+      const nOut = loadsOnRoad(fl.qty, d);
+      for (let j = 0; j < nOut; j++) {
+        const qty = round3((fl.qty * d) / nOut);
         if (!(qty > 0.01)) continue;
-        const wag = Math.max(1, Math.ceil(qty / WAGON_CAPACITY));
-        const arrive = round3(j + 0.5 * (d / k));
-        const sh = newShipment(s, firmRef(f.id), t, fl.to, fl.good, qty, basis, round3(arrive - d), arrive, wag);
-        for (let w = 0; w < sh.wagons; w++) busy.push(round3(arrive + d));
-        // Wagons that delivered earlier loads are on their way home.
-        for (let w = 0; w < wag; w++) busy.push(round3(arrive));
+        const wag = Math.max(1, Math.ceil(qty / WAGON_CAPACITY - 1e-9));
+        const arrive = round3(((j + 0.5) * d) / nOut);
+        newShipment(s, firmRef(f.id), t, fl.to, fl.good, qty, basis, round3(arrive - d), arrive, wag);
+        for (let w = 0; w < wag; w++) busy.push(round3(arrive + d)); // loaded, returns after delivery
+        for (let w = 0; w < wag; w++) busy.push(round3(arrive)); // an empty on its way home
       }
+      void k;
       // Stock waiting at the destination (about half a day of arrivals).
       tr.stock[fl.to][fl.good] = round3(tr.stock[fl.to][fl.good] + 0.5 * fl.qty * surv);
       tr.basis[fl.to][fl.good] = basis;
@@ -1222,6 +1489,8 @@ export function createWorld(opts: WorldOptions): SimState {
     const inUse = cal.wagonsInUse[t];
     tr.wagons = Math.max(busy.length + 2, Math.ceil(inUse * INIT_WAGON_SLACK) + 1);
     tr.busy = busy;
+    // Wagons the house keeps on the road in steady state (drives its drivers, fuel store and fleet).
+    (tr as { wantEma?: number }).wantEma = round3(Math.max(busy.length, inUse));
     tr.freightEma = round4(unitsTiles > 0 ? freightSum / unitsTiles : 0.03);
     f.tools = round3(tr.wagons * TOOLS_PER_WAGON);
     f.wage = W;
@@ -1229,8 +1498,11 @@ export function createWorld(opts: WorldOptions): SimState {
     const tripOil = outFlows.length ? cal.traderOil[t] / Math.max(1e-6, outFlows.reduce((a, fl) => a + fl.qty / WAGON_CAPACITY, 0)) : OIL_PER_TILE * 30;
     f.inv[G.oil] = round3(Math.max(cal.traderOil[t] * 6, tripOil * 10));
     const costs = W * f.workers.length + cal.traderOil[t] * P[t][G.oil] + (WAGON_WEAR_DAY * inUse) * P[t][G.tools];
+    let purchases = 0;
+    for (const fl of outFlows) purchases += fl.qty * P[t][fl.good];
     f.profit = round4(cal.traderProfit[t]);
-    f.cash = round2(INIT_FIRM_CASH_DAYS * costs);
+    // Operating cash plus working capital for merchandise bought, on the road and on sale.
+    f.cash = round2(INIT_FIRM_CASH_DAYS * costs + INIT_TRADER_WC_DAYS * purchases);
     f.pExp = 0;
   }
 
@@ -1286,7 +1558,6 @@ export function createWorld(opts: WorldOptions): SimState {
   const depRate = s.bank.depositRate;
   for (const p of s.people) {
     const t = p.town;
-    const Pt = P[t];
     let rentIn = 0;
     for (const hid of p.houses) {
       const b = s.buildings[hid];
@@ -1307,27 +1578,21 @@ export function createWorld(opts: WorldOptions): SimState {
     const wageInc = p.job >= 0 ? wage : p.lastWage * Math.pow(0.95, p.unempDays);
     const income = wageInc + div + rentIn;
     p.income = round4(income);
-    const rent = p.home >= 0 && s.buildings[p.home].owner !== personRef(p.id) ? s.buildings[p.home].rent : 0;
-    const m = bufferTarget(income, depRate, INIT_UNEMPLOYMENT);
+    // Cash and pantry at the stationary point of the household rules for this person's
+    // shopping phase (householdSteady), scaled to their own income, with a little spread.
     const owner = p.owns.length > 0 || p.houses.length > 0;
-    let cash: number;
-    if (owner) {
-      const plan = stationaryPlan(Pt, income, rent);
-      const extra = clamp(SPEND_DOWN_DAYS * (plan.budget - (income - rent)), 0, INIT_OWNER_CASH_DAYS * W);
-      cash = (m + extra) * lognormal(R, 1, 0.25);
-    } else {
-      cash = lognormal(R, (INIT_CASH_DAYS / 39) * m, INIT_CASH_SIGMA);
-      if (p.job < 0) cash *= 0.7;
-    }
+    const sim = steady[t][owner ? 1 : 0];
+    const simIncome = Math.max(1e-6, (owner ? cal1.yO[t] : cal1.yW) * cal1.kappa);
+    const scale = clamp(income / simIncome, 0.05, 20);
+    const phase = p.id % HH_SIM_PHASES;
+    const sig = INIT_CASH_SIGMA * 0.5;
+    let cash = (sim.cash[phase] ?? 0) * scale * lognormal(R, Math.exp((-sig * sig) / 2), sig);
+    if (owner) cash = Math.min(cash, bufferTarget(income, depRate, INIT_UNEMPLOYMENT) + INIT_OWNER_CASH_DAYS * W);
     cash += projectFunds.get(p.id) ?? 0;
     p.cash = round2(Math.max(0, cash));
-    // Pantry: 1–2 days of food, coal for the rest of the cold season, a durable furniture stock.
-    const q = stationaryPlan(Pt, income * cal.kappa, rent).q;
-    p.pantry[G.bread] = round3(q[G.bread] * randRange(R, 1, 2.2));
-    p.pantry[G.fish] = round3(q[G.fish] * randRange(R, 0.3, 0.9));
-    p.pantry[G.coal] = round3(heat0 * 12 * randRange(R, 0.6, 1.1));
-    p.pantry[G.ale] = round3(q[G.ale] * randRange(R, 0.2, 0.8));
-    p.pantry[G.furniture] = round3(Math.min(80, (q[G.furniture] / FURNITURE_WEAR_DAY) * randRange(R, 0.6, 1.1)));
+    const pan = sim.pantry[phase] ?? new Array(N_GOODS).fill(0);
+    for (const g of CONSUMER_GOODS) p.pantry[g] = round3(Math.max(0, pan[g] * (g === G.furniture ? scale : 1)));
+    p.joy = round3(clamp(sim.joy, 0, 1));
     p.foodSat = 1;
     p.heatSat = 1;
   }
@@ -1353,7 +1618,6 @@ export function createWorld(opts: WorldOptions): SimState {
     const loan = newLoan(s, firmRef(f.id), principal, spread, rate, STARTUP_LOAN_TERM, 'invest');
     loan.left = left;
     loan.start = 0;
-    f.otherCosts = 0;
   }
 
   // ---- foreign ---------------------------------------------------------------------------------------------
@@ -1366,6 +1630,7 @@ export function createWorld(opts: WorldOptions): SimState {
   let tradeVal = 0;
   if (harbor) for (let g = 0; g < N_GOODS; g++) tradeVal += (cal.imports[g] + cal.exports[g]) * P[harbor.id][g];
   fo.coin = round2(Math.max(DESK_WORKING_COIN, INIT_FOREIGN_COIN_DAYS * tradeVal * 0.5));
+  (fo as { tradeEma?: number }).tradeEma = round3(tradeVal * 0.5); // daily port trade, (imports + exports) / 2
 
   // ---- bank, Treasury ---------------------------------------------------------------------------------------
   s.treasury.purse = INIT_PURSE;
@@ -1425,7 +1690,7 @@ export function createWorld(opts: WorldOptions): SimState {
   s.stats.baseWage = W;
   s.stats.baseRent = RENT0;
   initStats(s);
-  rt(s).bag.worldCalibration = { ...summarizeCalibration(cal, s), unplaced };
+  rt(s).bag.worldCalibration = { ...summarizeCalibration(cal), unplaced };
   applyScenario(s, scen.id);
   const names = s.towns.map((t) => t.name);
   news(
@@ -1466,8 +1731,7 @@ export interface CalibrationSummary {
   unplaced?: string[];
 }
 
-function summarizeCalibration(cal: Cal, s: SimState): CalibrationSummary {
-  void s;
+function summarizeCalibration(cal: Cal): CalibrationSummary {
   return {
     kappa: cal.kappa,
     prices: cal.P.map((r) => r.slice()),

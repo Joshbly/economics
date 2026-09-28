@@ -48,7 +48,10 @@ import {
   CASH_TARGET_DAYS,
   DAYS_PER_YEAR,
   EXIT_LOSS_DAYS,
+  EXIT_MAX_PER_TRADE,
   EXIT_MIN_AGE,
+  EXIT_PATIENT_CASH_DAYS,
+  EXIT_PROB,
   FINANCING_WAIT_DAYS,
   HOUSE_HURDLE,
   HOUSE_LOAN_TERM,
@@ -370,15 +373,49 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
   return launch(s, { kind: 'firm', town, owner, sector, x: site.x, y: site.y, label: `New ${d.name} in ${tn}` }, total, c.roc, ENTRY_HURDLE);
 }
 
-/** Close firms that have been losing money for a long time. */
+/**
+ * Close firms that have been losing money for a long time — one owner at a time, not a
+ * whole trade at once: the worst eligible loss-maker of each trade and town leaves with
+ * probability EXIT_PROB a month (at most EXIT_MAX_PER_TRADE a month); the last active firm of a trade in a town never leaves voluntarily (it can shrink to no
+ * workers and wait for demand to return); seasonal trades (farms, coal) must have lost
+ * money for twice as long (a lean winter is not a reason to sell up); and an owner with
+ * EXIT_PATIENT_CASH_DAYS of costs still in the till waits another season.
+ */
 function voluntaryExit(s: SimState): void {
+  const active = new Map<string, number>();
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.status !== 'active') continue;
+    const key = f.sector + '@' + f.town;
+    active.set(key, (active.get(key) ?? 0) + 1);
+  }
+  // The worst loss-maker of each trade and town is the candidate (at most EXIT_MAX_PER_TRADE a month).
+  const worst = new Map<string, Firm[]>();
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') continue;
     if (s.day - f.founded < EXIT_MIN_AGE) continue;
-    if (fin(f.lossDays) < EXIT_LOSS_DAYS) continue;
+    const d = SECTORS[f.sector];
+    const seasonal = d && (d.season === 'farm' || d.out === G.coal);
+    const need = seasonal ? 2 * EXIT_LOSS_DAYS : EXIT_LOSS_DAYS;
+    if (fin(f.lossDays) < need) continue;
+    if (fin(f.lossDays) < 2 * need && f.cash > EXIT_PATIENT_CASH_DAYS * firmDailyCost(s, f)) continue;
     if (isEssentialFirm(s, f)) continue;
-    bump(s, 'exits');
-    closeFirm(s, f, 'unprofitable');
+    const key = f.sector + '@' + f.town;
+    let list = worst.get(key);
+    if (!list) worst.set(key, (list = []));
+    list.push(f);
+  }
+  for (const [key, list] of worst) {
+    list.sort((a, b) => fin(a.profit) - fin(b.profit) || a.id - b.id);
+    let n = 0;
+    for (const f of list) {
+      if (n >= EXIT_MAX_PER_TRADE) break;
+      if ((active.get(key) ?? 0) <= 1) break;
+      if (!chance(s, EXIT_PROB)) continue;
+      active.set(key, (active.get(key) ?? 1) - 1);
+      n++;
+      bump(s, 'exits');
+      closeFirm(s, f, 'unprofitable');
+    }
   }
 }
 
