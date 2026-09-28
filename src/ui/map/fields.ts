@@ -208,7 +208,7 @@ function paintLand(F: Fields, m: MapData): void {
         case Terrain.Hills:
           set(HILLS_LO);
           mix(HILLS_HI, clamp01((e - 0.58) / 0.25 + (broad - 0.5) * 0.4));
-          k = 4.5;
+          k = 3.2;
           break;
         case Terrain.Mountain:
           set(MOUNTAIN);

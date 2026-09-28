@@ -26,7 +26,7 @@ export const FOREST_FLOOR: RGB = [66, 104, 58];
 export const HILLS_LO: RGB = [116, 130, 78];
 export const HILLS_HI: RGB = [128, 122, 88];
 export const MOUNTAIN: RGB = [118, 112, 102];
-export const MARSH: RGB = [92, 114, 80];
+export const MARSH: RGB = [84, 110, 84];
 /** Trodden earth around settlements. */
 export const TOWN_GROUND: RGB = [160, 150, 104];
 
@@ -51,15 +51,16 @@ export const PEAK = {
   line: 'rgba(52,44,38,0.32)',
 };
 export const HILL = {
-  body: 'rgba(150,154,96,0.55)',
-  lit: 'rgba(228,226,176,0.55)',
-  shade: 'rgba(62,66,36,0.34)',
+  body: 'rgba(146,152,94,0.62)',
+  lit: 'rgba(214,214,160,0.34)',
+  shade: 'rgba(58,62,34,0.3)',
 };
 export const MARSH_F = {
-  pool: '#3f6b6e',
-  poolRim: 'rgba(170,205,196,0.45)',
-  reed: '#4d6a36',
-  reedLight: '#7a9450',
+  pool: '#4f8a8c',
+  poolDeep: '#3d7176',
+  poolRim: 'rgba(196,226,214,0.5)',
+  reed: '#56773c',
+  reedLight: '#8aa35a',
   cattail: '#6b4a2e',
 };
 export const RIVER = {
