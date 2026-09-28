@@ -11,11 +11,14 @@
 //   --every N         print a row every N days (default 30)
 //   --json            print the rows (and a summary) as JSON instead of a table
 //   --strict          exit 2 if the baseline sanity bands of DESIGN §9 are violated
+//   --load file       start from a saved game instead of a new world (no warm-up)
+//   --save file       write the final state as a save file
 //
 // Every simulated day (warm-up included) is checked: any non-finite indicator in
 // stats.latest, or a bank balance-sheet discrepancy |checkLedger| above
 // 1e-6 × max(1, money), prints the error and exits with code 1.
 // ============================================================================
+import { readFileSync, writeFileSync } from 'node:fs';
 import { WARMUP_DAYS } from '../src/sim/config';
 import { dayOfMonth, monthOf, yearOf } from '../src/sim/calendar';
 import { stepDay } from '../src/sim/engine';
@@ -32,6 +35,8 @@ interface Opts {
   every: number;
   json: boolean;
   strict: boolean;
+  load?: string;
+  save?: string;
 }
 
 function parseArgs(argv: string[]): Opts {
@@ -78,9 +83,15 @@ function parseArgs(argv: string[]): Opts {
       case '--strict':
         o.strict = true;
         break;
+      case '--load':
+        o.load = next();
+        break;
+      case '--save':
+        o.save = next();
+        break;
       case '--help':
       case '-h':
-        console.log('usage: npm run sim -- [--years N] [--days N] [--seed N] [--scenario id] [--no-warmup] [--every N] [--json] [--strict]');
+        console.log('usage: npm run sim -- [--years N] [--days N] [--seed N] [--scenario id] [--no-warmup] [--every N] [--json] [--strict] [--load file] [--save file]');
         process.exit(0);
         break;
       default:
@@ -203,17 +214,18 @@ function main(): void {
   const t0 = performance.now();
   let game: Game;
   try {
-    game = Game.create({ seed: o.seed, scenario: o.scenario, warmup: false });
+    game = o.load ? Game.load(readFileSync(o.load, 'utf8')) : Game.create({ seed: o.seed, scenario: o.scenario, warmup: false });
   } catch (e) {
-    fail(`world creation failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+    fail(`${o.load ? 'loading ' + o.load : 'world creation'} failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
   }
+  if (o.load) o.warmup = false;
   const s = game.s;
   if (!s || !Array.isArray(s.people)) fail('world creation returned no state');
   const tCreate = performance.now() - t0;
   const err0 = checkDay(s);
   if (err0) fail(`fresh world: ${err0}`);
   const realm = s.settings?.realmName ?? 'The Realm';
-  log(`${realm} · seed ${o.seed} · scenario ${s.settings?.scenario ?? '?'} · ${s.people.filter((p) => p && p.alive).length} households, ${s.firms.filter((f) => f && f.alive).length} firms · created in ${tCreate.toFixed(0)} ms`);
+  log(`${realm} · ${o.load ? 'loaded ' + o.load + ' (day ' + s.day + ')' : 'seed ' + o.seed} · scenario ${s.settings?.scenario ?? '?'} · ${s.people.filter((p) => p && p.alive).length} households, ${s.firms.filter((f) => f && f.alive).length} firms · ${o.load ? 'loaded' : 'created'} in ${tCreate.toFixed(0)} ms`);
 
   // Warm-up exactly as Game.create does it, but with the daily checks.
   if (o.warmup) {
@@ -296,6 +308,10 @@ function main(): void {
       console.log('latest news:');
       for (const n of news) console.log(`  [${dateShort(n.day)}] ${n.text}`);
     }
+  }
+  if (o.save) {
+    writeFileSync(o.save, game.save());
+    log(`saved day ${s.day} to ${o.save}`);
   }
   if (o.strict && !ok) process.exit(2);
 }

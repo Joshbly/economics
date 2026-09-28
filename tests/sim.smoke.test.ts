@@ -33,9 +33,15 @@ describe('simulation smoke test', () => {
     expect(s.stats.daily.cpi?.length).toBe(60);
     expect(s.stats.monthly.cpi?.length).toBe(2);
 
-    // A save made mid-game loads and keeps running.
+    // A save made mid-game loads and continues exactly like the uninterrupted game
+    // (runtime caches are rebuildable and never change outcomes).
     const s2 = deserialize(serialize(s));
-    stepDay(s2);
+    for (let d = 0; d < 10; d++) {
+      stepDay(s);
+      stepDay(s2);
+    }
     expect(Math.abs(checkLedger(s2))).toBeLessThan(1e-6 * Math.max(1, deposits(s2)));
+    expect(JSON.stringify(s2.stats.latest)).toBe(JSON.stringify(s.stats.latest));
+    expect(JSON.stringify(s2.people)).toBe(JSON.stringify(s.people));
   }, 120_000);
 });

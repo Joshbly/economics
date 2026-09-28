@@ -150,6 +150,7 @@ export function table<R>(opts: TableOptions<R>): Table<R> {
       const sample = data.length ? c.value(data[0]) : 0;
       sort = { key: c.key, dir: typeof sample === 'number' ? -1 : 1 };
     }
+    wrap.scrollTop = 0;
     apply();
   }
 

@@ -55,14 +55,33 @@
 // at base prices, if firms record it), event_va, build_labor, build_labor_state
 // (Treasury workers' labour on projects, if construction records it), freight_cost,
 // consval, cons_<good>, vol_<good>, shortage_<good>, imp_<good>, exp_<good>, impval,
-// expval, gov_goods, gov_goods_sold, flow_rent, flow_build, tools_selfsupply,
+// expval, gov_goods, gov_goods_sold, flow_rent, build_private, build_state (else
+// flow_build and treasury.flows.build), tools_selfsupply,
 // inv_tools (tools investment ¤, if a module records it; otherwise read from
 // today's tools books),
 // levy_take, levy_give, transfer_give, transfer_take, writeoffs, births, deaths,
 // starved, immigrants, emigrants, hires, fires, quits, evictions, wages, defaults,
 // loans_new, interest_loans, interest_deposits, dividends.
 // ============================================================================
-import {
+import * as CFG from '../config';
+import * as GOODS_M from '../goods';
+import { deposits } from '../ledger';
+import { steadyStateDemand } from '../agents/demandModel';
+import { netWage, wageCtx } from '../agents/labor';
+import { basePrices as foundingPrices } from '../agents/production';
+import { freightPerUnit } from '../agents/traders';
+import { routeBetweenTowns } from '../world/paths';
+import { expectedGross, type Books } from '../market/markets';
+import { levyAmount } from '../policy/levies';
+import { isMonthEnd, monthOf, yearOf } from '../calendar';
+import { rt } from '../runtime';
+import * as TYPES from '../types';
+import type { SimState, Stats } from '../types';
+import * as UTIL from '../util';
+
+// Leaf-module constants and helpers bound once at load (hot loops then read locals
+// instead of live import bindings, which cost a getter call per read under tsx/vitest).
+const {
   BASE_RENT_SHARE,
   BASE_WAGE,
   COLD_BELOW,
@@ -82,20 +101,10 @@ import {
   STATS_TOP_SHARE,
   WAGON_CAPACITY,
   WAGON_WEAR_DAY,
-} from '../config';
-import { ALL_SECTORS, CONSUMER_GOODS, G, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS } from '../goods';
-import { deposits } from '../ledger';
-import { steadyStateDemand } from '../agents/demandModel';
-import { netWage, wageCtx } from '../agents/labor';
-import { basePrices as foundingPrices } from '../agents/production';
-import { freightPerUnit } from '../agents/traders';
-import { routeBetweenTowns } from '../world/paths';
-import { expectedGross, type Books } from '../market/markets';
-import { levyAmount } from '../policy/levies';
-import { isMonthEnd, monthOf, yearOf } from '../calendar';
-import { rt } from '../runtime';
-import { FIRM_BASE, type SimState, type Stats } from '../types';
-import { clamp, fin, gini } from '../util';
+} = CFG;
+const { ALL_SECTORS, CONSUMER_GOODS, G, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS } = GOODS_M;
+const { FIRM_BASE } = TYPES;
+const { clamp, fin, gini } = UTIL;
 
 // ---------------------------------------------------------------------------
 // Keys (precomputed: no string building in the daily path)
@@ -154,6 +163,9 @@ interface StatsCache {
   occN: Float64Array;
   askRent: Float64Array;
   prices: number[];
+  /** Today's indicator values (reused object) and the series layout. */
+  vals: Record<string, number>;
+  plan: Plan | null;
 }
 
 function statsCache(s: SimState): StatsCache {
@@ -182,6 +194,8 @@ function statsCache(s: SimState): StatsCache {
       occN: z(),
       askRent: z(),
       prices: new Array(N_GOODS).fill(0),
+      vals: {},
+      plan: null,
     };
     bag.stats = c;
   }
@@ -730,8 +744,8 @@ export function initStats(s: SimState): void {
   st.monthlyStart = Math.floor(s.day / DAYS_PER_MONTH);
   setBase(s);
   const c = statsCache(s);
-  const vals = computeDaily(s, c);
-  writeLatest(s, vals);
+  const vals = computeDaily(s, c, {});
+  writeLatest(s, vals, null);
   st.latest.infl30Carry = 0;
   st.latest.inflYoYCarry = 0;
 }
@@ -796,13 +810,13 @@ function ensureBase(s: SimState): void {
 // ---------------------------------------------------------------------------
 // Daily indicators
 // ---------------------------------------------------------------------------
-function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
+/** Compute today's indicators into `v` (the same fixed key set every day). */
+function computeDaily(s: SimState, c: StatsCache, v: Record<string, number>): Record<string, number> {
   const st = s.stats;
   const acc = st.acc;
   const lat = st.latest;
   const t = s.treasury;
   const b = s.bank;
-  const v: Record<string, number> = {};
   const nT = s.towns.length;
 
   const detect = c.prevDay === s.day - 1;
@@ -895,8 +909,10 @@ function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
   const flows = t.flows || {};
   const cons = num(acc.consval);
   const rentPaid = num(acc.flow_rent);
-  const govBuild = Math.max(0, -num(flows.build));
-  const privBuild = Math.max(0, num(acc.flow_build) - govBuild);
+  // Construction billed today, split by owner (construction.ts books build_state /
+  // build_private, advances included); fall back to the ledger's 'build' flows.
+  const govBuild = typeof acc.build_state === 'number' ? Math.max(0, num(acc.build_state)) : Math.max(0, -num(flows.build));
+  const privBuild = typeof acc.build_private === 'number' ? Math.max(0, num(acc.build_private)) : Math.max(0, num(acc.flow_build) - govBuild);
   const inv = toolsInvestment(s) + privBuild;
   const gov = num(acc.gov_goods) - num(acc.gov_goods_sold) + Math.max(0, -num(flows.wage)) + govBuild;
   const nx = expval - impval;
@@ -971,16 +987,52 @@ function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
   for (const town of s.towns) if (town.strikeDays > 0) strikes++;
   v.strikes = strikes;
 
-  for (const k in v) if (!Number.isFinite(v[k])) v[k] = 0;
+  const keys = c.plan && c.plan.keys.length ? c.plan.keys : Object.keys(v);
+  for (let i = 0; i < keys.length; i++) if (!Number.isFinite(v[keys[i]])) v[keys[i]] = 0;
   return v;
 }
 
 // ---------------------------------------------------------------------------
 // Series plumbing
 // ---------------------------------------------------------------------------
-function writeLatest(s: SimState, vals: Record<string, number>): void {
+/**
+ * Cached layout of the daily indicator keys (the key set is fixed by computeDaily),
+ * so the daily push, `latest` update and month accumulation walk plain arrays
+ * instead of hashing ~200 keys several times. Rebuilt whenever stats.daily is
+ * replaced (initStats, rebase, load).
+ */
+interface Plan {
+  keys: string[];
+  /** 1 = end-of-month stock (not accumulated), 0 = accumulated (mean or sum). */
+  end: Uint8Array;
+  /** Rounded values of today's indicators, by key index. */
+  rounded: Float64Array;
+  daily: Record<string, number[]> | null;
+  /** Daily series that are not among today's keys (carried flat to stay aligned). */
+  extra: string[];
+}
+
+function planFor(st: Stats, vals: Record<string, number>, c: StatsCache): Plan {
+  let p = c.plan;
+  if (!p || p.daily !== st.daily) {
+    const keys = p && p.keys.length ? p.keys : Object.keys(vals);
+    const end = new Uint8Array(keys.length);
+    for (let i = 0; i < keys.length; i++) end[i] = monthMode(keys[i]) === 'end' ? 1 : 0;
+    const known = new Set(keys);
+    const extra = Object.keys(st.daily).filter((k) => !known.has(k));
+    p = { keys, end, rounded: new Float64Array(keys.length), daily: st.daily, extra };
+    c.plan = p;
+  }
+  return p;
+}
+
+function writeLatest(s: SimState, vals: Record<string, number>, plan: Plan | null): void {
   const lat = s.stats.latest;
-  for (const k in vals) lat[k] = roundSig(vals[k]);
+  if (plan) {
+    const keys = plan.keys;
+    const r = plan.rounded;
+    for (let i = 0; i < keys.length; i++) lat[keys[i]] = r[i];
+  } else for (const k in vals) lat[k] = roundSig(vals[k]);
   // Keep full precision where agents read it back.
   lat.infl30 = vals.infl30;
   lat.inflYoY = vals.inflYoY;
@@ -991,34 +1043,34 @@ function writeLatest(s: SimState, vals: Record<string, number>): void {
 }
 
 /** Append one value per key to the daily series (all series stay aligned; capped at STATS_DAILY_CAP). */
-function pushDaily(st: Stats, vals: Record<string, number>, day: number): void {
+function pushDaily(st: Stats, vals: Record<string, number>, day: number, plan: Plan): void {
   const d = st.daily;
-  let len = -1;
-  for (const k in d) {
-    len = d[k].length;
-    break;
-  }
-  if (len <= 0) {
-    st.dailyStart = day;
-    len = 0;
-  }
-  for (const k in vals) {
-    const x = roundSig(vals[k]);
-    let a = d[k];
-    if (!a) {
-      a = d[k] = new Array(len).fill(x); // a key that appears late is back-filled flat
-    }
-    a.push(x);
-  }
-  // keys not reported today carry their last value
-  for (const k in d) {
-    const a = d[k];
-    if (a.length === len) a.push(a.length > 0 ? a[a.length - 1] : 0);
-  }
+  const keys = plan.keys;
+  const r = plan.rounded;
+  for (let i = 0; i < keys.length; i++) r[i] = roundSig(vals[keys[i]]);
+  let len = 0;
+  const a0 = keys.length ? d[keys[0]] : undefined;
+  if (a0) len = a0.length;
+  else if (plan.extra.length && d[plan.extra[0]]) len = d[plan.extra[0]].length;
+  if (len === 0) st.dailyStart = day;
   const n = len + 1;
+  for (let i = 0; i < keys.length; i++) {
+    let a = d[keys[i]];
+    if (!a || a.length !== len) {
+      // a key that appears late (or a damaged series) is back-filled flat to stay aligned
+      a = d[keys[i]] = a && a.length > len ? a.slice(a.length - len) : new Array(len).fill(r[i]);
+    }
+    a.push(r[i]);
+  }
+  for (const k of plan.extra) {
+    const a = d[k];
+    if (a && a.length === len) a.push(len > 0 ? a[len - 1] : 0);
+  }
   if (n > STATS_DAILY_CAP) {
     const cut = n - STATS_DAILY_CAP;
-    for (const k in d) d[k].splice(0, cut);
+    // shift() is left-trimmed in place by V8 (≈3× cheaper than splice for one element)
+    if (cut === 1) for (const k in d) d[k].shift();
+    else for (const k in d) d[k].splice(0, cut);
     st.dailyStart += cut;
   }
 }
@@ -1046,11 +1098,14 @@ function pushMonthly(st: Stats, vals: Record<string, number>, day: number): void
   }
 }
 
-function accumulateMonth(st: Stats, vals: Record<string, number>): void {
+function accumulateMonth(st: Stats, vals: Record<string, number>, plan: Plan): void {
   const m = st.macc;
   m[MACC_DAYS] = (m[MACC_DAYS] || 0) + 1;
-  for (const k in vals) {
-    if (END_KEYS.has(k)) continue;
+  const keys = plan.keys;
+  const end = plan.end;
+  for (let i = 0; i < keys.length; i++) {
+    if (end[i]) continue;
+    const k = keys[i];
     m[k] = (m[k] || 0) + vals[k];
   }
 }
@@ -1211,10 +1266,11 @@ export function statsStep(s: SimState): void {
   ensureBase(s);
   const st = s.stats;
   const c = statsCache(s);
-  const vals = computeDaily(s, c);
-  pushDaily(st, vals, s.day);
-  writeLatest(s, vals);
-  accumulateMonth(st, vals);
+  const vals = computeDaily(s, c, c.vals);
+  const plan = planFor(st, vals, c);
+  pushDaily(st, vals, s.day, plan);
+  writeLatest(s, vals, plan);
+  accumulateMonth(st, vals, plan);
   if (isMonthEnd(s.day)) closeMonth(s, vals);
   // Snapshot for the between-day carry (see beginDayStats).
   c.snapDay = s.day;

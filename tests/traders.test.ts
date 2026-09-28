@@ -3,11 +3,11 @@
 // does not depend on map generation.
 import { beforeEach, describe, expect, it } from 'vitest';
 import { freightPerUnit, shipTreasuryGoods, traderOrders, tradersBeginDay, tradersDispatch } from '../src/sim/agents/traders';
-import { OIL_PER_TILE, TOOLS_PER_WAGON, WAGON_CAPACITY, WAGON_WEAR_DAY } from '../src/sim/config';
+import { OIL_PER_TILE, TOOLS_IDLE_WEAR_DAY, TOOLS_PER_WAGON, WAGON_CAPACITY, WAGON_WEAR_DAY } from '../src/sim/config';
 import { newFirm, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, mint, reconcileBank } from '../src/sim/ledger';
-import { addAsk, bookFor, clearAll, openBooks } from '../src/sim/market/markets';
+import { addAsk, addBid, bookFor, clearAll, openBooks } from '../src/sim/market/markets';
 import { rt, type Route } from '../src/sim/runtime';
 import { FIRM_BASE, STATE, type Firm, type Levy, type Limit, type MapData, type SimState } from '../src/sim/types';
 import { routeBetweenTowns } from '../src/sim/world/paths';
@@ -93,9 +93,10 @@ beforeEach(() => {
 });
 
 describe('freight', () => {
-  it('follows (wage × round-trip days + oil × fuel + wagon wear) / capacity', () => {
+  it('follows (wage × round-trip days + oil × fuel + wagon wear & capital) / capacity', () => {
     const r = routeBetweenTowns(s, 0, 1);
-    const expected = (10 * 2 * r.days + PRICES[G.oil] * OIL_PER_TILE * r.length * 2 + WAGON_WEAR_DAY * 2 * r.days * PRICES[G.tools]) / WAGON_CAPACITY;
+    const capital = TOOLS_PER_WAGON * PRICES[G.tools] * (TOOLS_IDLE_WEAR_DAY + s.bank.baseRate / 360) * 2 * r.days;
+    const expected = (10 * 2 * r.days + PRICES[G.oil] * OIL_PER_TILE * r.length + WAGON_WEAR_DAY * 2 * r.days * PRICES[G.tools] + capital) / WAGON_CAPACITY;
     expect(freightPerUnit(s, 0, 1)).toBeCloseTo(expected, 10);
   });
 
@@ -104,7 +105,7 @@ describe('freight', () => {
     s.policy.levies.push(levy({ good: G.oil, town: 0 }));
     const f1 = freightPerUnit(s, 0, 1);
     const r = routeBetweenTowns(s, 0, 1);
-    expect(f1 - f0).toBeCloseTo((0.5 * PRICES[G.oil] * OIL_PER_TILE * r.length * 2) / WAGON_CAPACITY, 10);
+    expect(f1 - f0).toBeCloseTo((0.5 * PRICES[G.oil] * OIL_PER_TILE * r.length) / WAGON_CAPACITY, 10);
     s.policy.levies.length = 0;
     rt(s).routes.clear();
     setRoute(s, 0, 1, 40, 0.9); // paved: under half the days
@@ -161,7 +162,7 @@ describe('arbitrage', () => {
     const tripCost = freightPerUnit(s, 0, 1) * WAGON_CAPACITY * sh.wagons;
     expect(sh.basis).toBeCloseTo(1.0 + tripCost / sh.qty, 6);
     expect(trader.inv[G.grain]).toBeCloseTo(0, 6);
-    expect(oil0 - trader.inv[G.oil]).toBeCloseTo(sh.wagons * OIL_PER_TILE * 40 * 2, 6);
+    expect(oil0 - trader.inv[G.oil]).toBeCloseTo(sh.wagons * OIL_PER_TILE * 40, 6);
     expect(trader.trade!.busy.length).toBe(sh.wagons);
     expect(trader.trade!.busy[0]).toBeCloseTo(s.day + 4, 10);
     expect(s.stats.acc.shipped_units).toBeCloseTo(planned, 6);
@@ -276,5 +277,60 @@ describe('Treasury cargo', () => {
     s.treasury.autoMint = false;
     s.treasury.purse = 0;
     expect(shipTreasuryGoods(s, 0, 1, G.iron, 10).ok).toBe(false); // cannot pay
+  });
+});
+
+describe('arbitrage in a running two-town economy', () => {
+  it('narrows the price gap to about the cost of freight, without explosions', async () => {
+    const { bankBeginDay, bankEndDay, bankOrders } = await import('../src/sim/agents/bank');
+    const { foreignOrders, foreignEndDay } = await import('../src/sim/agents/foreign');
+    const { spoilage } = await import('../src/sim/engine');
+    const farmOwner = newPerson(s, 0, 'Farmer');
+    const farm = newFirm(s, 'farm', 0, -1, farmOwner.id, 'Farm');
+    const eater = newPerson(s, 1, 'Eater');
+    eater.cash = 1e6;
+    s.markets[0 * N_GOODS + G.grain].ema = 1.0;
+    s.markets[1 * N_GOODS + G.grain].ema = 4.0;
+    s.markets[1 * N_GOODS + G.grain].volEma = 60;
+    s.bank.reserves = 2e6;
+    reconcileBank(s);
+    const gap: number[] = [];
+    for (let d = 0; d < 150; d++) {
+      bankBeginDay(s);
+      tradersBeginDay(s);
+      while (trader.workers.length < trader.target) trader.workers.push(newPerson(s, 0, 'Carter').id); // (labour market stand-in)
+      const books = openBooks(s);
+      // scripted supply at home (upward sloping) and demand in the capital (downward sloping)
+      farm.inv[G.grain] = 400;
+      const hb = bookFor(books, 0, G.grain);
+      for (let k = 0; k < 4; k++) addAsk(hb, FIRM_BASE + farm.id, 0.9 + 0.1 * k, 100);
+      farm.inv[G.oil] = 30; // …and some oil for the wagons, and tools to build them
+      addAsk(bookFor(books, 0, G.oil), FIRM_BASE + farm.id, 2.6, 30);
+      farm.inv[G.tools] = 5;
+      addAsk(bookFor(books, 0, G.tools), FIRM_BASE + farm.id, 20, 5);
+      const cb = bookFor(books, 1, G.grain);
+      for (const [p, q] of [[6, 15], [5, 15], [4, 15], [3.5, 15], [3, 20], [2.6, 25], [2.3, 30], [2, 40]]) addBid(cb, eater.id, p, q);
+      traderOrders(s, books);
+      foreignOrders(s, books);
+      bankOrders(s, books);
+      clearAll(s, books);
+      tradersDispatch(s, books);
+      bankEndDay(s);
+      foreignEndDay(s);
+      spoilage(s);
+      eater.pantry[G.grain] = 0; // eaten
+      trader.wage = 10;
+      s.day++;
+      gap.push(s.markets[1 * N_GOODS + G.grain].ema - s.markets[0 * N_GOODS + G.grain].ema);
+      expect(Math.abs(checkLedger(s))).toBeLessThan(1e-4);
+    }
+    const freight = freightPerUnit(s, 0, 1);
+    const late = gap.slice(-30).reduce((a, x) => a + x, 0) / 30;
+    expect(gap[0]).toBeGreaterThan(2.5);
+    expect(late).toBeLessThan(gap[0] * 0.75); // arbitrage narrowed the gap…
+    expect(late).toBeGreaterThan(freight * 0.8); // …but not below the cost of moving grain
+    expect(s.stats.acc.shipped_units ?? 0).toBeGreaterThanOrEqual(0);
+    for (const sh of s.shipments) expect(Number.isFinite(sh.basis) && sh.qty >= 0).toBe(true);
+    expect(Number.isFinite(trader.cash) && trader.cash >= 0).toBe(true);
   });
 });

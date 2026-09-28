@@ -273,7 +273,7 @@ function generateFields(seed: number): Fields {
   // ---- 1. coast ----------------------------------------------------------------
   const southY0 = h * randRange(R, 0.76, 0.83);
   const southTilt = randRange(R, -0.1, 0.1) * h; // coast rises/falls from west to east
-  const eastX0 = w * randRange(R, 0.79, 0.86);
+  const eastX0 = w * randRange(R, 0.73, 0.81);
   const eastTilt = randRange(R, -0.08, 0.08) * w;
   const cornerR = randRange(R, 7, 12);
   const coastAmp = randRange(R, 7, 10);
@@ -346,12 +346,13 @@ function generateFields(seed: number): Fields {
       const crest = Math.exp(-(d * d) / (wr * wr)) * taper;
       const aw = 3.3 * wr;
       const apron = Math.exp(-(d * d) / (aw * aw)) * (0.3 + 0.7 * taper);
-      const ridged = 1 - Math.abs(2 * fbm(sub(5), x / 5, y / 5, 4) - 1);
+      const nearRange = d < 4 * wr;
+      const ridged = nearRange ? 1 - Math.abs(2 * fbm(sub(5), x / 5, y / 5, 4) - 1) : 0.5;
       const peaks = ridged * ridged;
       const inland = clamp01(-sea[i] / 28);
-      let e = 0.24 + 0.2 * inland + 0.22 * (fbm(sub(6), x / 15, y / 15, 5) - 0.5);
+      let e = 0.24 + 0.2 * inland + 0.22 * (fbm(sub(6), x / 15, y / 15, 4) - 0.5);
       e += crest * (0.2 + 0.62 * peaks);
-      e += 0.27 * apron * (0.45 + 0.9 * fbm(sub(7), x / 7, y / 7, 3));
+      e += nearRange || apron > 0.02 ? 0.27 * apron * (0.45 + 0.9 * fbm(sub(7), x / 7, y / 7, 3)) : 0;
       // Scattered upland knolls away from the range (small coal-bearing hills).
       const knoll = fbm(sub(8), x / 8, y / 8, 3);
       e += 0.24 * smoothstep(0.6, 0.78, knoll) * inland;
@@ -798,13 +799,13 @@ function chooseSites(F: Fields, relax: number): TownSite[] | null {
       const sd = seaDist[i];
       if (sd < 2 || sd > 4) continue;
       if (!hallOk(F, x, y)) continue;
-      if (!far(x, y, sites, 20)) continue;
+      if (!far(x, y, sites, 18)) continue;
       const fish = boxSum(T.fish, w, h, x, y, RES_R);
       const oil = boxSum(T.oil, w, h, x, y, RES_R);
       if (fish < need.fish || oil < need.oil) continue;
       const dc = Math.hypot(x - cap.x, y - cap.y);
-      if (dc > 52) continue;
-      const score = Math.min(fish, 30) * 0.4 + Math.min(oil, 12) * 1.2 - Math.abs(dc - 30) * 0.5 + boxSum(T.build, w, h, x, y, 5) * 0.08;
+      if (dc > 42) continue;
+      const score = Math.min(fish, 30) * 0.4 + Math.min(oil, 12) * 1.2 - Math.abs(dc - 26) * 0.6 + boxSum(T.build, w, h, x, y, 5) * 0.08;
       if (!best || score > best.score) best = { x, y, score };
     }
   }
@@ -816,15 +817,15 @@ function chooseSites(F: Fields, relax: number): TownSite[] | null {
   for (let y = 3; y < h - 3; y++) {
     for (let x = 3; x < w - 3; x++) {
       if (!hallOk(F, x, y)) continue;
-      if (!far(x, y, sites, 19)) continue;
+      if (!far(x, y, sites, 18)) continue;
       const coal = boxSum(T.coal, w, h, x, y, RES_R);
       const ore = boxSum(T.ore, w, h, x, y, RES_R);
       const forest = boxSum(T.forest, w, h, x, y, RES_R);
       if (coal < need.coal || ore < need.ore || forest < need.forest) continue;
       if (boxSum(T.build, w, h, x, y, 4) < 45) continue;
       const dc = Math.hypot(x - cap.x, y - cap.y);
-      if (dc > 48) continue;
-      const score = Math.min(coal / 6, 3) * 3 + Math.min(ore / 5, 3) * 3 + Math.min(forest / 8, 3) * 2 - Math.abs(dc - 26) * 0.35;
+      if (dc > 40) continue;
+      const score = Math.min(coal / 6, 3) * 3 + Math.min(ore / 5, 3) * 3 + Math.min(forest / 8, 3) * 2 - Math.abs(dc - 24) * 0.5;
       if (!best || score > best.score) best = { x, y, score };
     }
   }
@@ -836,13 +837,23 @@ function chooseSites(F: Fields, relax: number): TownSite[] | null {
   for (let y = 4; y < h - 4; y++) {
     for (let x = 4; x < w - 4; x++) {
       if (!hallOk(F, x, y)) continue;
-      if (!far(x, y, sites, 20)) continue;
+      if (!far(x, y, sites, 18)) continue;
       const fertile = boxSum(T.fertile, w, h, x, y, RES_R + 3) - boxSum(T.fertile, w, h, x, y, 3);
       if (fertile < need.fertile * 0.6) continue;
       const dc = Math.hypot(x - cap.x, y - cap.y);
-      if (dc > 46) continue;
-      const west = x < cap.x ? 8 : 0;
-      const score = fertile * 0.6 + west - Math.abs(dc - 27) * 0.45 - (seaDist[y * w + x] < 5 ? 6 : 0) + (river[y * w + x] ? 0 : 0);
+      if (dc > 36) continue;
+      // Grain goes to every town: stay within reach of the others too.
+      let others = 0;
+      let tooFar = false;
+      for (const o of sites) {
+        if (o === cap) continue;
+        const d = Math.hypot(x - o.x, y - o.y);
+        others += d;
+        if (d > 46) tooFar = true;
+      }
+      if (tooFar) continue;
+      const west = x < cap.x ? 5 : 0;
+      const score = Math.min(fertile, 60) * 0.5 + west - Math.abs(dc - 24) * 0.5 - 0.25 * others - (seaDist[y * w + x] < 5 ? 6 : 0);
       if (!best || score > best.score) best = { x, y, score };
     }
   }
@@ -916,6 +927,30 @@ function forceSites(F: Fields): TownSite[] {
 }
 
 /**
+ * Land far from every town was never cleared: grassland more than ~22 tiles from
+ * the nearest town turns to wildwood where the noise says so (denser with distance),
+ * so the settled country reads as open fields and the frontier as forest.
+ */
+function wildwood(F: Fields, sites: readonly TownSite[], seed: number): void {
+  const { w, h, terrain, deposit, fert, river } = F;
+  const k = (Math.imul(seed | 0, 0x7feb352d) ^ 0x2545f491) | 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (terrain[i] !== Terrain.Grass || river[i] || F.seaDist[i] <= 1) continue;
+      let dmin = 1e9;
+      for (const s of sites) dmin = Math.min(dmin, Math.hypot(x - s.x, y - s.y));
+      if (dmin < 22) continue;
+      const cut = 0.64 - 0.22 * smoothstep(22, 42, dmin);
+      if (fbm(k, x / 9, y / 9, 3) < cut) continue;
+      terrain[i] = Terrain.Forest;
+      deposit[i] = Math.round(clamp01(0.3 + 0.55 * fbmS(k + 7, x / 6, y / 6, 3)) * 1000) / 1000;
+      fert[i] = Math.round(fert[i] * 0.45 * 1000) / 1000;
+    }
+  }
+}
+
+/**
  * Generate a MAP_W × MAP_H map from a seed (own local RNG seeded from `seed`):
  * fractal value noise elevation + moisture; sea along the south/east; one river
  * from the mountains to the sea; forest in moist areas, hills/mountains in a
@@ -938,6 +973,7 @@ export function generateMap(seed: number): { map: MapData; sites: TownSite[] } {
   }
   if (!F) F = generateFields(seed);
   if (!sites) sites = forceSites(F);
+  wildwood(F, sites, seed);
   const n = F.w * F.h;
   const map: MapData = {
     w: F.w,

@@ -63,6 +63,7 @@ const {
   SHIP_CAP_SMOOTH,
   INIT_GOLD_PRICE,
   PRICE_MIN,
+  BASE_WAGE,
 } = CFG;
 
 // ---------------------------------------------------------------------------
@@ -135,24 +136,28 @@ export function exportPrice(s: SimState, g: GoodId): number {
 export function deskTargetCoin(s: SimState): number {
   const fo = s.foreign;
   const E = goldRate(s);
+  // Capacity net of piers: building a pier should not by itself move the exchange rate.
+  const pierMult = 1 + Math.max(0, fin(fo.piers)) * PIER_CAP_BONUS;
   let pot = 0;
   for (let g = 0; g < N_GOODS; g++) {
     const w = fin(fo.world[g]);
     const c = fin(fo.shipCap[g]);
-    if (w > 0 && c > 0) pot += c * w * E;
+    if (w > 0 && c > 0) pot += (c / pierMult) * w * E;
   }
   const base = Math.max(DESK_WORKING_COIN, DESK_COIN_DAYS * pot);
   const gap = clamp(fin(s.bank.depositRate) - WORLD_RATE, -0.1, 0.2);
   return base * Math.exp(DESK_RATE_SENS * gap);
 }
 
+/** The desk's inventory premium on gold: (coin / target)^DESK_COIN_ELASTICITY (log-ratio clamped to ±2). */
+export function deskPremium(s: SimState): number {
+  const ratio = Math.max(1e-6, Math.max(0, fin(s.foreign.coin))) / Math.max(1e-6, deskTargetCoin(s));
+  return Math.exp(DESK_COIN_ELASTICITY * clamp(Math.log(ratio), -2, 2));
+}
+
 /** Centre of the dealers' gold quotes today: dealerValue · (coin / target)^DESK_COIN_ELASTICITY. */
 export function dealerCentre(s: SimState): number {
-  const fo = s.foreign;
-  const target = deskTargetCoin(s);
-  const ratio = Math.max(1e-6, Math.max(0, fin(fo.coin))) / Math.max(1e-6, target);
-  const lr = clamp(Math.log(ratio), -2, 2);
-  const v = fin(fo.dealerValue, INIT_GOLD_PRICE) * Math.exp(DESK_COIN_ELASTICITY * lr);
+  const v = fin(s.foreign.dealerValue, INIT_GOLD_PRICE) * deskPremium(s);
   return Math.max(PRICE_MIN * 10, v);
 }
 
@@ -286,6 +291,36 @@ function tradablesPPP(s: SimState): number {
   return n ? Math.exp(sum / n) : 0;
 }
 
+/**
+ * Wage-based parity: the founding gold price scaled by the domestic wage level (prices are
+ * ultimately labour costs) and deflated by the world price index. Slow-moving, so the
+ * exchange rate's own pass-through into import prices does not feed back into it. 0 if no wage data.
+ */
+function wagePPP(s: SimState): number {
+  const fo = s.foreign;
+  let wSum = 0;
+  let wN = 0;
+  for (const t of s.towns) {
+    const w = fin(t.avgWage);
+    const n = Math.max(0, fin(t.employed));
+    if (w > 0 && n > 0) {
+      wSum += w * n;
+      wN += n;
+    }
+  }
+  if (!(wN > 0)) return 0;
+  let lx = 0;
+  let k = 0;
+  for (let g = 0; g < N_GOODS; g++) {
+    if (fo.world0[g] > 0 && fo.world[g] > 0) {
+      lx += Math.log(fo.world[g] / fo.world0[g]);
+      k++;
+    }
+  }
+  const worldIndex = k ? Math.exp(lx / k) : 1;
+  return (INIT_GOLD_PRICE * (wSum / wN / BASE_WAGE)) / Math.max(1e-6, worldIndex);
+}
+
 /** Monthly ship capacity from national use; piers take effect at once. */
 function updateShipCap(s: SimState): void {
   const fo = s.foreign;
@@ -336,9 +371,13 @@ function noteQuotas(s: SimState, port: number): void {
  * (world index); dealerValue += DEALER_PPP_PULL·(ppp − dealerValue) + 0.2·(last gold
  * price − dealerValue)·0.1; goldEma; shipCap from national use × SHIP_CAP_SHARE ×
  * (1 + piers·PIER_CAP_BONUS). stats.acc: imports/exports value.
- * Implementation notes: ppp is measured directly as the geometric mean over tradable
- * goods of (domestic price ÷ world gold price), smoothed by PPP_EMA — the gold price at
- * which the realm's tradables cost what they cost abroad; it needs no CPI base.
+ * Implementation notes: the price pull uses the traded price divided by the desk's current
+ * inventory premium (deskPremium), so only trading away from the dealers' quotes moves their
+ * valuation. ppp is the geometric mean of two estimates, smoothed by PPP_EMA: tradables
+ * parity (geometric mean over tradable goods of domestic price ÷ world gold price — the gold
+ * price at which the realm's tradables cost what they cost abroad) and wage parity
+ * (INIT_GOLD_PRICE × average wage / BASE_WAGE ÷ world price index), which moves slowly and
+ * keeps the exchange rate's own pass-through into import prices from feeding back on itself.
  * shipCap is recomputed at month start (smoothed), piers apply immediately.
  * stats.acc: imports, exports (¤ at base prices, = foreign.importValue/exportValue),
  * desk_coin, desk_target.
@@ -368,10 +407,15 @@ export function foreignEndDay(s: SimState): void {
   const price = fin(s.goldMarket.price) > PRICE_MIN ? s.goldMarket.price : goldRate(s);
   fo.goldPrice = price;
   fo.goldEma = ema(fo.goldEma, price, GOLD_EMA);
-  const raw = tradablesPPP(s);
+  const pt = tradablesPPP(s);
+  const pw = wagePPP(s);
+  const raw = pt > 0 && pw > 0 ? Math.sqrt(pt * pw) : pt > 0 ? pt : pw;
   if (raw > 0) fo.ppp = ema(fo.ppp, raw, PPP_EMA);
+  // Dealers learn about fundamentals from where gold trades, net of their own inventory premium
+  // (otherwise a lasting coin surplus would compound into an ever-rising "fair value").
   const dv = fo.dealerValue;
-  fo.dealerValue = Math.max(PRICE_MIN * 10, dv + DEALER_PPP_PULL * (fo.ppp - dv) + DEALER_PRICE_PULL * (price - dv));
+  const fundamental = price / Math.max(1e-6, deskPremium(s));
+  fo.dealerValue = Math.max(PRICE_MIN * 10, dv + DEALER_PPP_PULL * (fo.ppp - dv) + DEALER_PRICE_PULL * (fundamental - dv));
   // ---- capacity, quotas ----
   updateShipCap(s);
   noteQuotas(s, portTown(s));

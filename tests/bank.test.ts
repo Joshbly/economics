@@ -319,7 +319,7 @@ describe('bank: failure and bail-in', () => {
     expect(s.bank.equity).toBeCloseTo(-3_000, 6);
     bankEndDay(s);
     expect(s.bank.failed).toBe(true);
-    expect(s.news.at(-1)!.kind).toBe('crisis');
+    expect(s.news[s.news.length - 1].kind).toBe('crisis');
     requestLoan(s, { borrower: FIRM_BASE + f.id, amount: 100, term: 180, purpose: 'working', project: -1 });
     bankEndDay(s);
     expect(loansOf(s, FIRM_BASE + f.id).length).toBe(1); // no new loan

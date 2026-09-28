@@ -7,8 +7,8 @@ import { SEASONS, seasonOf } from '../sim/calendar';
 import { DAYS_PER_YEAR } from '../sim/config';
 import type { SimState } from '../sim/types';
 import { h, listen, setText, setTone, toggleClass } from './dom';
-import { fmtDayLong, fmtIndex, fmtInt, fmtMoney, fmtMoneyDelta, fmtMoneyShort, fmtPct, fmtPctSigned, fmtPrice, fmtPts, fmtSigned } from './format';
-import { act, on, setSpeed, SPEEDS, ui } from './uiState';
+import { fmtDayLong, fmtIndex, fmtInt, fmtMoney, fmtMoneyShort, fmtPct, fmtPctSigned, fmtPrice, fmtPts, fmtSigned } from './format';
+import { act, on, setSpeed, setTab, SPEEDS, ui } from './uiState';
 import { icon, speedIcon } from './widgets/icons';
 import { arrowOf, tailMean, trend, type Tone } from './widgets/kpi';
 import { sparkCanvas } from './widgets/sparkline';
@@ -46,8 +46,8 @@ interface IndReading {
 interface IndDef {
   id: string;
   label: string;
-  /** Responsive hide class (ind-hide-1 hides first as the window narrows). */
-  hide?: string;
+  /** Hide order when the bar is too narrow (higher hides first; 0 = never). */
+  drop: number;
   /** Daily series behind the indicator (for the hover sparkline). */
   series: string;
   read(s: SimState): IndReading;
@@ -90,6 +90,7 @@ const toneOf = (d: number, good: 'up' | 'down' | null, eps: number): Tone => {
 const INDICATORS: IndDef[] = [
   {
     id: 'prices',
+    drop: 0,
     label: 'Prices',
     series: 'cpi',
     title: 'Prices',
@@ -112,6 +113,7 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'jobless',
+    drop: 0,
     label: 'Jobless',
     series: 'unemp',
     title: 'Jobless',
@@ -133,6 +135,7 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'output',
+    drop: 3,
     label: 'Output',
     series: 'gdpReal',
     title: 'Output',
@@ -154,8 +157,8 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'money',
+    drop: 5,
     label: 'Money',
-    hide: 'ind-hide-2',
     series: 'money',
     title: 'Money',
     explain:
@@ -170,6 +173,7 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'purse',
+    drop: 1,
     label: 'Purse',
     series: 'purse',
     title: 'The Purse',
@@ -180,7 +184,7 @@ const INDICATORS: IndDef[] = [
       return {
         value: fmtMoneyShort(p),
         valueTone: p < 0 ? 'bad' : null,
-        delta: Number.isFinite(tr.delta) && D(s, 'purse').length > 1 ? fmtMoneyDelta(tr.delta) : undefined,
+        delta: Number.isFinite(tr.delta) && D(s, 'purse').length > 1 ? fmtSigned(tr.delta, fmtMoneyShort) : undefined,
         dir: tr.delta,
         tone: null,
       };
@@ -191,8 +195,8 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'gold',
+    drop: 6,
     label: 'Gold',
-    hide: 'ind-hide-1',
     series: 'goldPrice',
     title: 'Gold price',
     explain:
@@ -207,8 +211,8 @@ const INDICATORS: IndDef[] = [
   },
   {
     id: 'people',
+    drop: 7,
     label: 'People',
-    hide: 'ind-hide-3',
     series: 'pop',
     title: 'Households',
     explain: 'Households living in the realm. Births and newcomers add to it; deaths and people leaving for abroad — taking their money with them — subtract.',
@@ -266,7 +270,12 @@ export function createTopbar(actions: TopbarActions): Topbar {
     const arr = h('span', { class: 'arr' });
     const dtxt = h('span');
     const delta = h('span', { class: 'ind-delta' }, arr, dtxt);
-    const el = h('div', { class: 'ind' + (def.hide ? ' ' + def.hide : ''), tabIndex: 0 }, h('span', { class: 'ind-lab' }, def.label), h('span', { class: 'ind-row' }, val, delta));
+    const el = h(
+      'button',
+      { class: 'ind', type: 'button', 'aria-label': def.title, onClick: () => setTab('charts') },
+      h('span', { class: 'ind-lab' }, def.label),
+      h('span', { class: 'ind-row' }, val, delta),
+    );
     attachTip(el, () => indicatorCard(def), { placement: 'below', delay: 220 });
     return { def, el, val, arr, dtxt, delta };
   });
@@ -343,6 +352,18 @@ export function createTopbar(actions: TopbarActions): Topbar {
     );
   }
 
+  // ---- fit: hide low-priority indicators until the strip fits ---------------------
+  let fitSig = '';
+  function fit(): void {
+    for (const x of inds) x.el.hidden = false;
+    const order = inds.filter((x) => x.def.drop > 0).sort((a, b) => b.def.drop - a.def.drop);
+    for (const x of order) {
+      if (indBox.scrollWidth <= indBox.clientWidth + 1) break;
+      x.el.hidden = true;
+    }
+  }
+  new ResizeObserver(() => fit()).observe(el);
+
   // ---- updates ----------------------------------------------------------------
   let lastDay = -1;
   let lastSpeed = -1;
@@ -391,6 +412,11 @@ export function createTopbar(actions: TopbarActions): Topbar {
         setText(x.dtxt, r.delta);
         setTone(x.delta, ['good', 'bad'], r.tone ?? null);
       }
+    }
+    const sig = inds.map((x) => (x.val.textContent?.length ?? 0) + ':' + (x.delta.classList.contains('hidden') ? 0 : x.dtxt.textContent?.length ?? 0)).join(',');
+    if (sig !== fitSig) {
+      fitSig = sig;
+      fit();
     }
   }
 

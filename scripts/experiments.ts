@@ -2,7 +2,8 @@
 // Policy experiments (DESIGN §9): same world, same RNG state, baseline vs
 // treatment. The directional results below define what "accurate" means.
 //
-//   npm run experiments -- [--only <substr>] [--days N] [--seed N] [--pre N] [--verbose]
+//   npm run experiments -- [--only <id|substr>] [--days N] [--seed N] [--pre N] [--verbose]
+//   (--only 7 runs 7a and 7b; --only road runs the experiments whose name mentions it)
 //
 // Procedure: build the world and run the warm-up once (Game.create), switch random
 // events off (they would add noise that differs between arms) and let the Purse
@@ -522,7 +523,10 @@ function pad(s: string, w: number, right = false): string {
 
 function main(): void {
   const o = parseArgs(process.argv.slice(2));
-  const selected = EXPERIMENTS.filter((e) => !o.only || e.id.toLowerCase() === o.only || e.name.toLowerCase().includes(o.only) || e.id.toLowerCase().startsWith(o.only));
+  // --only: exact ids first (e.g. "7a"), then id prefixes ("7" → 7a, 7b), then name substrings.
+  const byId = EXPERIMENTS.filter((e) => e.id.toLowerCase() === o.only);
+  const byPrefix = EXPERIMENTS.filter((e) => /^\d+$/.test(o.only) && e.id.toLowerCase().replace(/[a-z]+$/, '') === o.only);
+  const selected = !o.only ? EXPERIMENTS : byId.length ? byId : byPrefix.length ? byPrefix : EXPERIMENTS.filter((e) => e.name.toLowerCase().includes(o.only));
   if (selected.length === 0) {
     console.error(`experiments: nothing matches "${o.only}"`);
     process.exit(1);

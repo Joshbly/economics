@@ -46,7 +46,7 @@ export function createNewsTicker(): NewsTicker {
   const more = h('button', { class: 'btn btn-ghost btn-sm ticker-more', type: 'button', onClick: () => (open ? closeLog() : openLog()) }, icon('news', 15), 'All news', badge);
   const el = h('footer', { class: 'ticker' }, h('span', { class: 'ticker-label' }, 'NEWS'), track, more);
 
-  let shownKey = '';
+  let shownKey = '\u0000'; // sentinel: forces the first paint (even of the empty state)
   let current: HTMLElement | null = null;
   let seenKey = '';
   let open = false;
@@ -188,9 +188,4 @@ export function createNewsTicker(): NewsTicker {
       return open;
     },
   };
-}
-
-/** Reset the seen-marker (after a new game) — call update() afterwards. */
-export function newsKey(n: NewsItem | undefined): string {
-  return keyOf(n);
 }

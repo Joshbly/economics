@@ -30,11 +30,12 @@ export const OFFROAD_FACTOR: readonly number[] = [0, 0, 1.2, 1, 1.5, 1.8, 4, 2.5
 /** Multiplier on the cost of stepping through another building's tile. */
 const BUILDING_PENALTY = 2.5;
 /** Construction-cost factors for laying a new track (index = Terrain id); 0 = impossible. */
-const PLAN_FACTOR: readonly number[] = [0, 0, 1.3, 1, 1.7, 2.4, 9, 3.2];
+const PLAN_FACTOR: readonly number[] = [0, 0, 1.25, 1, 1.4, 2.0, 9, 2.6];
 const PLAN_ROAD_DIRT = 0.22;
 const PLAN_ROAD_PAVED = 0.15;
 const PLAN_BRIDGE = 14;
-const PLAN_TURN = 0.06;
+/** Tie-breaker: cost per tile of distance from the straight start→goal line (roads follow the line as a staircase, which travellers cut diagonally). */
+const PLAN_LINE = 0.015;
 /** Keep the tile-path cache bounded (commutes change as people move). */
 const PATH_CACHE_MAX = 25000;
 
@@ -301,13 +302,18 @@ export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e
   const toRoad = goal < 0;
   const gx = toRoad ? 0 : goal % w;
   const gy = toRoad ? 0 : (goal - gx) / w;
+  const sx = start % w;
+  const sy = (start - sx) / w;
+  const lx = gx - sx;
+  const ly = gy - sy;
+  const ll = Math.hypot(lx, ly) || 1;
   const hmin = PLAN_ROAD_PAVED;
   const heur = (x: number, y: number) => (toRoad ? 0 : hmin * (Math.abs(x - gx) + Math.abs(y - gy)));
+  const lineOff = (x: number, y: number) => (toRoad ? 0 : (PLAN_LINE * Math.abs((x - sx) * ly - (y - sy) * lx)) / ll);
   g[start] = 0;
   seen[start] = st;
   from[start] = -1;
-  const sx0 = start % w;
-  hpush(c, heur(sx0, (start - sx0) / w), start);
+  hpush(c, heur(sx, sy), start);
   let end = -1;
   while (c.hs > 0) {
     const cur = hpop(c);
@@ -339,7 +345,7 @@ export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e
       if (pc <= 0) continue;
       // Never lay track along the river: a new bridge must land on the far bank.
       if (onNewBridge && river[ni] === 1 && road[ni] < 1) continue;
-      if (prev >= 0 && (dx !== pdx || dy !== pdy) && road[ni] < 1) pc += PLAN_TURN;
+      if (road[ni] < 1) pc += lineOff(nx, ny);
       const ng = g[cur] + pc;
       if (seen[ni] !== st || ng < g[ni]) {
         g[ni] = ng;

@@ -78,7 +78,7 @@ export function speedIcon(n: number, size = 18): SVGSVGElement {
     const p = document.createElementNS(NS, 'path');
     p.setAttribute('d', `M${x.toFixed(2)} 5.5l${tri} 4.5-${tri} 4.5z`);
     p.setAttribute('fill', 'currentColor');
-    p.setAttribute('opacity', String(0.55 + (0.45 * (i + 1)) / k));
+    p.setAttribute('opacity', String(0.7 + (0.3 * (i + 1)) / k));
     svg.appendChild(p);
   }
   return svg;

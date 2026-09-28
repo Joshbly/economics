@@ -230,6 +230,19 @@ function roadAdjacent(m: MapData, x: number, y: number, w: number, h: number): b
   return false;
 }
 
+/** Occupied tiles in the ring around a footprint. */
+function crowding(m: MapData, x: number, y: number, w: number, h: number): number {
+  let c = 0;
+  for (let yy = y - 1; yy <= y + h; yy++) {
+    for (let xx = x - 1; xx <= x + w; xx++) {
+      const inside = xx >= x && xx < x + w && yy >= y && yy < y + h;
+      if (inside || xx < 0 || yy < 0 || xx >= m.w || yy >= m.h) continue;
+      if (m.occ[yy * m.w + xx] >= 0) c++;
+    }
+  }
+  return c;
+}
+
 /** Score a candidate site (higher is better). */
 function siteScore(s: SimState, what: SiteWhat, town: TownId, x: number, y: number): number {
   const m = s.map;
@@ -238,8 +251,9 @@ function siteScore(s: SimState, what: SiteWhat, town: TownId, x: number, y: numb
   const j = jitter(s, x, y);
   if (isResourceSector(what)) {
     const q = siteQuality(m, what as Sector, x, y, w, h);
-    // Richness dominates; distance matters a little (commutes, hauling).
-    return q * 10 - 0.22 * d + 0.3 * j + (roadAdjacent(m, x, y, w, h) ? 0.4 : 0);
+    // Richness dominates; distance matters a little (commutes, hauling); neighbours
+    // crowd a site (fields and pits spread out rather than lining up wall to wall).
+    return q * 10 - 0.22 * d + 0.3 * j + (roadAdjacent(m, x, y, w, h) ? 0.4 : 0) - 0.45 * crowding(m, x, y, w, h);
   }
   if (what === 'pier') {
     // Next to the Port if there is one.
@@ -276,8 +290,14 @@ export function findSite(s: SimState, what: SiteWhat, town: TownId): { x: number
   const y1 = Math.min(m.h - 2, t.y + reach);
   let best: { x: number; y: number } | null = null;
   let bestScore = -1e18;
+  const [fw, fh] = footprintForWhat(what);
+  const maxD = reachOf(s, what, town);
+  const maxD2 = maxD * maxD;
   for (let y = y0; y <= y1; y++) {
+    const dy = y + fh / 2 - t.y;
     for (let x = x0; x <= x1; x++) {
+      const dx = x + fw / 2 - t.x;
+      if (dx * dx + dy * dy > maxD2) continue; // cheap reach test first
       if (!footprintOk(s, what, x, y)) continue;
       if (!withinReach(s, what, town, x, y)) continue;
       const sc = siteScore(s, what, town, x, y);
@@ -463,6 +483,8 @@ export function placeMarketHall(s: SimState, town: TownId): Building {
   const b = placeBuilding(s, 'market', '', town, t.x - 1, t.y - 1, 'active');
   b.owner = -1; // STATE
   t.market = b.id;
+  // The hall stands on the market square: its tiles count as track for travel (hidden under the hall).
+  for (let y = t.y - 1; y <= t.y; y++) for (let x = t.x - 1; x <= t.x; x++) if (x >= 0 && y >= 0 && x < m.w && y < m.h) m.road[y * m.w + x] = 1;
   const ring: number[] = [];
   for (let y = t.y - 2; y <= t.y + 1; y++) {
     for (let x = t.x - 2; x <= t.x + 1; x++) {

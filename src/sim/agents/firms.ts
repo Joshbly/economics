@@ -43,7 +43,10 @@
 // ============================================================================
 import {
   ASK_COST_FLOOR,
+  ASK_COMPETE_STEP,
   ASK_INV_ELASTICITY,
+  ASK_QS_MAX,
+  ASK_QS_MIN,
   ASK_RUNGS,
   ASK_SHIFT_MAX,
   ASK_SHIFT_MIN,
@@ -51,6 +54,7 @@ import {
   ASK_WEIGHTS,
   BASE_WAGE,
   CASH_LOW_DAYS,
+  COAL_HEAT_SHARE,
   CASH_TARGET_DAYS,
   DAYS_PER_YEAR,
   DEMAND_SLACK,
@@ -60,6 +64,7 @@ import {
   DIVIDEND_SHARE,
   DROUGHT_FACTOR,
   FIRE_SALE,
+  HEAT_MEAN,
   INPUT_BID_RUNGS,
   INPUT_BID_WEIGHTS,
   INPUT_BUFFER_DAYS,
@@ -81,6 +86,8 @@ import {
   SHORTAGE_WEIGHT,
   STRIKE_FACTOR,
   TARGET_HYSTERESIS,
+  TARGET_MAX_STEP,
+  TARGET_MAX_STEP_ABS,
   TARGET_SMOOTH,
   TOOLS_BUFFER_DAYS,
   TOOLS_GAP_CLOSE,
@@ -93,22 +100,24 @@ import {
   WAGE_RESERVE_DAYS,
   WAGE_UP_DAY,
   WAGE_VACANCY_DAYS,
+  WAGON_CAPACITY,
   WORKING_DEBT_MAX_DAYS,
   WORKING_LOAN_RETRY_DAYS,
   WORKING_LOAN_TERM,
 } from '../config';
-import { dayOfYear, farmSeason, isMonthEnd, seasonFactor } from '../calendar';
+import { dayOfYear, farmSeason, heatNeed, isMonthEnd, seasonFactor } from '../calendar';
 import { newFirm } from '../factory';
-import { G, GOODS, N_GOODS, SECTORS, type SectorDef } from '../goods';
+import { G, GOODS, N_GOODS, PRODUCER_OF, SECTORS, type SectorDef } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, repayPrincipal, writeOff } from '../ledger';
 import { addAsk, addBid, bookFor, expectedGross, expectedNet, marketOf, type Books } from '../market/markets';
 import { chargeLevy, wageLevyRates } from '../policy/levies';
 import { wageBounds } from '../policy/limits';
 import { rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
-import type { Book, Firm, Person, Ref, Sector, SimState, TownId } from '../types';
+import type { Book, Firm, MarketState, Person, Ref, Sector, SimState, TownId } from '../types';
 import { STATE } from '../types';
 import { clamp, ema, fin } from '../util';
+import { siteMultiplier as layoutSiteMultiplier } from '../world/layout';
 import { firmName } from '../world/names';
 import { requestLoan } from './bank';
 import { cancelProject } from './construction';
@@ -187,14 +196,23 @@ export function strikeFactor(s: SimState, town: TownId): number {
 }
 
 /**
- * Site multiplier of a firm's building: resource sectors 0.6 + 0.8 × the best
- * deposit (farms: fertility) under the footprint; town sectors 1.
+ * Site multiplier of a firm's building: resource sectors 0.6 + 0.8 × site quality
+ * (farms: fertility, others: deposit richness) over the footprint; town sectors 1.
+ * Delegates to world/layout.siteMultiplier so production uses exactly the quality
+ * measure that site selection and calibration use (the footprint mean); falls back
+ * to the best footprint tile if the layout module is unavailable.
  */
 export function siteMultiplier(s: SimState, f: Firm): number {
   const d = SECTORS[f.sector];
   if (!d || !d.producer || d.site === 'town') return 1;
   const b = f.building >= 0 ? s.buildings[f.building] : undefined;
   if (!b) return 1;
+  try {
+    const m = layoutSiteMultiplier(s, b);
+    if (Number.isFinite(m) && m > 0) return m;
+  } catch {
+    /* fall through */
+  }
   const map = s.map;
   const arr = f.sector === 'farm' ? map.fert : map.deposit;
   let best = 0;
@@ -216,17 +234,26 @@ function planSeason(d: SectorDef, day: number): number {
   return d.season === 'farm' ? 1 : seasonFactor(d.season, day);
 }
 
-// Seasonal carry of farm output: the cumulative surplus of the farm season over its
-// mean, in days of mean output (0 at the end of spring, ~69 after the harvest).
-let CARRY: number[] | null = null;
-let CARRY_MAX = 0;
-function carryTable(): number[] {
-  if (CARRY) return CARRY;
+// ---- Seasonality ------------------------------------------------------------
+// Two goods have strong seasons: grain SUPPLY (harvests) and coal DEMAND (heating).
+// In both cases producers keep a steady workforce and let stocks absorb the season:
+// farms carry the harvest into spring, coal mines build stock through summer for the
+// winter. The carry is the cumulative seasonal surplus (supply above its mean, or
+// demand below its mean), in days of mean flow: ~0 when the lean/peak season has just
+// ended, largest just before it starts.
+
+/** Seasonal factor of the DEMAND for a good (mean ≈ 1): part of all coal is burnt for heat. */
+export function demandSeason(good: number, day: number): number {
+  if (good !== G.coal) return 1;
+  return 1 - COAL_HEAT_SHARE + (COAL_HEAT_SHARE * heatNeed(day)) / Math.max(1e-6, HEAT_MEAN);
+}
+
+function buildCarry(f: (day: number) => number, sign: 1 | -1): { table: number[]; max: number } {
   const n = DAYS_PER_YEAR;
   const v: number[] = [];
   let mean = 0;
   for (let d = 0; d < n; d++) {
-    v.push(farmSeason(d));
+    v.push(f(d));
     mean += v[d];
   }
   mean /= n;
@@ -234,36 +261,55 @@ function carryTable(): number[] {
   let c = 0;
   let lo = Infinity;
   for (let d = 0; d < n; d++) {
-    c += v[d] - mean;
+    c += sign * (v[d] - mean);
     cum.push(c);
     if (c < lo) lo = c;
   }
-  CARRY = cum.map((x) => (x - lo) / Math.max(1e-9, mean));
-  CARRY_MAX = Math.max(...CARRY);
-  return CARRY;
+  const table = cum.map((x) => (x - lo) / Math.max(1e-9, mean));
+  return { table, max: Math.max(...table) };
 }
 
-/** Extra stock (days of sales) a farm carries today to ride out the lean season. */
+let FARM_CARRY: { table: number[]; max: number } | null = null;
+let COAL_CARRY: { table: number[]; max: number } | null = null;
+function farmCarry() {
+  return FARM_CARRY ?? (FARM_CARRY = buildCarry(farmSeason, 1));
+}
+function coalCarry() {
+  return COAL_CARRY ?? (COAL_CARRY = buildCarry((d) => demandSeason(G.coal, d), -1));
+}
+
+/** Extra stock (days of mean sales) a farm carries today to ride out the lean season. */
 export function seasonalCarryDays(day: number): number {
-  return carryTable()[dayOfYear(day)] ?? 0;
+  return farmCarry().table[dayOfYear(day)] ?? 0;
+}
+
+/** Extra stock (days of mean sales) a producer of `good` holds today ahead of seasonal demand (coal). */
+export function demandCarryDays(good: number, day: number): number {
+  return good === G.coal ? coalCarry().table[dayOfYear(day)] ?? 0 : 0;
+}
+
+/** Sales with the demand season taken out (what the firm sells on average over the year). */
+export function meanSales(good: number, sales: number, day: number): number {
+  return Math.max(0, sales) / Math.max(0.05, demandSeason(good, day));
 }
 
 /** Output inventory target of a producer (units) for expected daily sales. */
 export function inventoryTarget(sector: Sector, sales: number, day: number): number {
   const d = SECTORS[sector];
   if (!d || d.out < 0) return 0;
+  const mean = meanSales(d.out, sales, day);
   let days = isPerishable(d.out) ? INV_TARGET_DAYS_PERISHABLE : INV_TARGET_DAYS;
   if (d.season === 'farm') days += seasonalCarryDays(day);
-  return days * Math.max(0, sales);
+  days += demandCarryDays(d.out, day);
+  return days * mean;
 }
 
 function inventoryMaxDays(sector: Sector): number {
   const d = SECTORS[sector];
-  if (d && d.season === 'farm') {
-    carryTable();
-    return INV_MAX_DAYS + CARRY_MAX;
-  }
-  return INV_MAX_DAYS;
+  let days = INV_MAX_DAYS;
+  if (d && d.season === 'farm') days += farmCarry().max;
+  if (d && d.out === G.coal) days += coalCarry().max;
+  return days;
 }
 
 /**
@@ -293,6 +339,7 @@ interface FirmScratch {
   toolWear: Float64Array; // ¤ of tools worn today
   unpaid: Float64Array; // ¤ of wages the firm could not pay today
   short: Float64Array; // ¤ of wanted purchases the firm could not fund today
+  shade: Float64Array; // today's competitive ask adjustment (multiplier on pExp; 0 = none)
 }
 
 function scratch(s: SimState): FirmScratch {
@@ -306,7 +353,7 @@ function scratch(s: SimState): FirmScratch {
       if (a && c && c.day === s.day) b.set(a.subarray(0, Math.min(a.length, n)));
       return b;
     };
-    c = { day: c ? c.day : s.day, n, matUsed: grow(c?.matUsed), toolWear: grow(c?.toolWear), unpaid: grow(c?.unpaid), short: grow(c?.short) };
+    c = { day: c ? c.day : s.day, n, matUsed: grow(c?.matUsed), toolWear: grow(c?.toolWear), unpaid: grow(c?.unpaid), short: grow(c?.short), shade: grow(c?.shade) };
     bag.firms = c;
   }
   if (c.day !== s.day) {
@@ -314,6 +361,7 @@ function scratch(s: SimState): FirmScratch {
     c.toolWear.fill(0);
     c.unpaid.fill(0);
     c.short.fill(0);
+    c.shade.fill(0);
     c.day = s.day;
   }
   return c;
@@ -372,6 +420,26 @@ export function townGrossPrices(s: SimState, town: TownId): number[] {
   return out;
 }
 
+/**
+ * What a good costs to make here and now: materials at local expected prices + tool
+ * wear + the local wage per unit at the calibrated productivity, divided by α (price =
+ * marginal cost at a typical firm's optimum; the founding-price formula at today's costs).
+ * Buyers anchor their "pay anything" bids to it, so that bids at a multiple of the market
+ * price cannot ratchet the price up day after day in a shortage. Goods nobody makes → ema.
+ */
+export function fairPrice(s: SimState, town: TownId, good: number, prices?: readonly number[]): number {
+  const k = PRODUCER_OF[good];
+  const d = k ? SECTORS[k] : undefined;
+  const ema = Math.max(1e-6, fin(marketOf(s, town, good).ema, 1));
+  if (!d) return ema;
+  const pr = prices ?? townGrossPrices(s, town);
+  const w = defaultWage(s, town);
+  const mat = materialCostPerUnit(k, pr);
+  const tool = good === G.tools ? 0 : toolCostPerUnit(k, pr[G.tools], d.prodPerWorker, carryRate(s));
+  const c = mat + tool + w / (d.alpha * d.prodPerWorker);
+  return c > 0 && Number.isFinite(c) ? c : ema;
+}
+
 /** Annual rate firms use to price the carrying cost of tools. */
 function carryRate(s: SimState): number {
   const r = fin(s.bank?.baseRate, 0.045);
@@ -428,7 +496,13 @@ export function firmDailyCost(s: SimState, f: Firm): number {
     for (const [g, a] of d.inputs) mc += a * Math.max(0, fin(marketOf(s, f.town, g).ema));
     c += mc * Math.max(fin(f.output), fin(f.sales));
   } else if (f.sector === 'builder') c *= 1.4;
-  else if (f.sector === 'trader') c *= 1.5;
+  else if (f.sector === 'trader') {
+    // Fuel and wear on top of wages, plus the merchandise a fleet turns over: about a
+    // quarter of its wagon capacity a day at a middling price (grain as the yardstick).
+    c *= 1.5;
+    const wagons = Math.max(0, fin(f.trade?.wagons ?? 0));
+    c += 0.25 * wagons * WAGON_CAPACITY * Math.max(0, fin(marketOf(s, f.town, G.grain).ema, 1));
+  }
   return Math.max(1, fin(c, 1));
 }
 
@@ -469,7 +543,9 @@ function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: numb
   let w = f.wage > 0 && Number.isFinite(f.wage) ? f.wage : base;
   w *= index;
   const open = fin(f.target) - f.workers.length;
-  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5) w *= 1 + WAGE_UP_DAY;
+  // Raise pay only when vacancies stay open for want of willing applicants (a firm held back
+  // by its daily hiring pace while plenty of people would take the job has no reason to).
+  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5 && f.applicants < open) w *= 1 + WAGE_UP_DAY;
   else if (open <= 0.5 && (f.distress > 0 || (f.profit < 0 && unemp > WAGE_CUT_UNEMP))) w *= 1 - WAGE_DOWN_DAY;
   w = Math.max(WAGE_MIN_ABS, fin(w, base));
   if (lo >= 0 && w < lo) w = lo;
@@ -477,8 +553,28 @@ function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: numb
   f.wage = fin(w, base);
 }
 
+/**
+ * Price (net of seller levies) at which yesterday's buyers in the firm's market would
+ * have taken `qty` units: read off the aggregated demand curve of the order book.
+ * Used by firms that have nothing to sell to judge whether coming back is worth it.
+ * 0 if the book had no bids.
+ */
+function demandPriceFor(m: MarketState | undefined, qty: number, expNet: number): number {
+  const c = m?.curve;
+  if (!m || !c || c.bids.length < 2) return m && m.bestBid > 0 ? 0 : 0;
+  const ref = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : m.price;
+  const toNet = ref > 0 ? expNet / ref : 1;
+  const b = c.bids;
+  let p = 0;
+  for (let i = 0; i + 1 < b.length; i += 2) {
+    p = b[i];
+    if (b[i + 1] >= qty) return Math.max(0, p * toNet);
+  }
+  return 0; // the whole book would not take one worker's output
+}
+
 /** Producer workforce target (see the header). */
-function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Array, levies: boolean): void {
+function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Array, levies: boolean, sc: FirmScratch): void {
   const d = SECTORS[f.sector];
   const k = f.sector;
   const t = f.town;
@@ -490,6 +586,7 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const site = siteMultiplier(s, f);
   const sPlan = planSeason(d, s.day);
   const gross = pt.gross[t];
+  const m = s.markets[t * N_GOODS + g];
   const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
   const mc = materialCostPerUnit(k, gross);
   const tc = toolCostPerUnit(k, gross[G.tools], d.prodPerWorker * site * sPlan * eff, carryRate(s));
@@ -500,7 +597,6 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
 
   // Demand side: expected sales (+ a share of the market's unmet demand) and the stock gap.
   let sales = Math.max(0, fin(f.sales));
-  const m = s.markets[t * N_GOODS + g];
   if (m && m.shortage > 0 && Number.isFinite(m.shortage)) {
     const tot = salesByTG[t * N_GOODS + g];
     const share = tot > 1e-9 ? sales / tot : 1;
@@ -509,23 +605,60 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const perish = isPerishable(g);
   const tgt = inventoryTarget(k, sales, s.day);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
-  const qWant = Math.max(0, sales * (1 + DEMAND_SLACK) + (tgt - Math.max(0, f.inv[g])) / adj);
+  // Production follows mean (de-seasonalised) sales; the stock target absorbs the season.
+  const qWant = Math.max(0, meanSales(g, sales, s.day) * (1 + DEMAND_SLACK) + (tgt - Math.max(0, f.inv[g])) / adj);
   let lDem = laborForOutput(k, qWant, sPlan, site) / eff;
   // Without a sales history the firm keeps (or builds up to) a capacity-based workforce.
   const young = s.day - f.founded < NEW_FIRM_DAYS;
   const noHistory = !(f.sales > 1e-6) || f.sales < 0.2 * fin(f.output);
   if (young && noHistory) lDem = Math.max(lDem, nW, NEW_FIRM_SCALE * Math.min(cap, d.typicalSize));
-
+  const profitBound = lOpt < lDem;
   let raw = Math.min(lOpt, lDem);
   if (!(margin > 0)) raw = 0;
   raw = clamp(fin(raw), 0, cap);
   if (margin > 0 && lOpt > 0.3 && lDem > 0.05 && raw < 1) raw = Math.min(1, cap);
+  // Probing: a firm that has stopped (nothing in stock, nothing sold) comes back with one
+  // worker when yesterday's buyers would have paid more than it costs one worker to make
+  // their output — otherwise a firm that stopped would never learn that demand came back.
+  let probe = 0;
+  if (cap >= 1 && !(f.sales > 1) && f.inv[g] < 1) {
+    const q1 = potentialOutput(k, eff, d.toolsPerWorker * eff, sPlan, site);
+    const pp = demandPriceFor(m, q1, pt.net[t][g]);
+    if (q1 > 0 && pp > mc + tc + wEff / q1) {
+      raw = Math.max(raw, 1);
+      probe = pp;
+    }
+  }
 
+  // Competitive pricing: the net price at which the optimal workforce would equal the
+  // workforce demand calls for — marginal cost at the quantity demanded. Asks move toward
+  // it (at most ASK_COMPETE_STEP a day): fat margins with idle capacity are competed away,
+  // cost increases are passed on instead of simply cutting output.
+  let shade = 1;
+  if (probe > 0) shade = probe / Math.max(1e-6, pNet);
+  else if (lDem > 1e-6 && lOpt > 1e-6 && margin > 0) {
+    const pStar = mc + tc + margin * Math.pow(lDem / lOpt, 1 - d.alpha);
+    shade = pStar / Math.max(1e-6, pNet);
+  } else if (!(margin > 0) && lDem > 0.05) shade = (mc + tc + wEff / Math.max(1e-6, d.prodPerWorker * site * sPlan * eff)) / Math.max(1e-6, pNet);
+  if (f.id < sc.n) sc.shade[f.id] = clamp(fin(shade, 1), 1 - ASK_COMPETE_STEP, 1 + ASK_COMPETE_STEP);
+
+  // Smoothing with hysteresis. When the margin (not demand) binds, the daily step is also
+  // bounded: with α near 1 the optimum reacts to margins with an elasticity of 1/(1−α), so
+  // firms feel their way toward it; what they cannot sell they stop making at once.
   const cur = clamp(fin(f.target), 0, cap);
   let next = cur;
-  if (Math.abs(raw - cur) > TARGET_HYSTERESIS * cur + 0.1) next = cur + TARGET_SMOOTH * (raw - cur);
+  if (Math.abs(raw - cur) > TARGET_HYSTERESIS * cur + 0.1) {
+    let step = TARGET_SMOOTH * (raw - cur);
+    if (profitBound && margin > 0) {
+      const stepCap = TARGET_MAX_STEP * Math.max(cur, 1) + TARGET_MAX_STEP_ABS;
+      step = clamp(step, -stepCap, stepCap);
+    }
+    next = cur + step;
+  }
   if (raw <= 0 && next < 0.3) next = 0;
   f.target = clamp(fin(next), 0, cap);
+  const dbg = rt(s).bag.firmDebug as Record<number, unknown> | undefined;
+  if (dbg) dbg[f.id] = { pNet, mc, tc, margin, lOpt, lDem, raw, sales, tgt, stock: f.inv[g], shade: f.id < sc.n ? sc.shade[f.id] : 0 };
 }
 
 /**
@@ -539,7 +672,7 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
  * Applies to ALL firm sectors except stateworks (builders/traders also adjust wages here).
  */
 export function firmsPlan(s: SimState): void {
-  scratch(s);
+  const sc = scratch(s);
   const pt = priceTable(s);
   const nT = s.towns.length;
   const infl = meanExpectedInflation(s);
@@ -572,7 +705,7 @@ export function firmsPlan(s: SimState): void {
       f.target = 0;
       continue;
     }
-    planTarget(s, f, pt, salesByTG, levies);
+    planTarget(s, f, pt, salesByTG, levies, sc);
   }
 }
 
@@ -751,7 +884,7 @@ const ASK_CUM_AT_1 = (() => {
 })();
 
 /** Ask ladder for a producer's own output. */
-function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
+function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmScratch): void {
   const d = SECTORS[f.sector];
   const g = d.out;
   const stock = Math.max(0, f.inv[g]);
@@ -763,6 +896,8 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
   const sales = salesRef(s, f, stock);
   const target = Math.max(1e-6, inventoryTarget(f.sector, sales, s.day));
   let shift = clamp(Math.pow(stock / target, -ASK_INV_ELASTICITY), ASK_SHIFT_MIN, ASK_SHIFT_MAX);
+  const sh = f.id < sc.n ? sc.shade[f.id] : 0;
+  if (sh > 0) shift *= sh;
   const distressed = f.distress > 0;
   if (distressed) shift *= DISTRESS_ASK_SHIFT;
   const base = pExp * shift;
@@ -779,14 +914,20 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
   const perish = isPerishable(g);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
   let left = stock;
-  let qs = clamp(sales + (stock - target) / adj, 0, stock);
+  // Planned sales at ≤ pExp: expected sales, corrected toward the stock target (bounded, so a
+  // firm short of its target — a farm before the harvest — still sells, just less and dearer).
+  let qs = clamp(sales + (stock - target) / adj, ASK_QS_MIN * sales, ASK_QS_MAX * sales);
+  qs = clamp(qs, 0, stock);
   if (perish && stock > target) {
     // Overstock of a perishable is priced to clear: it rots if held.
     const excess = stock - target;
     const exDays = excess / Math.max(1e-6, sales);
     const k = PERISH_CLEAR_K * ((GOODS[g]?.spoil ?? 0.05) / 0.05);
     const m = clamp(1 - k * exDays, PERISH_CLEAR_MIN, 0.95);
-    addAsk(book, ref, base * m, excess);
+    // Salvage floor: never below half of what the stock cost to make (the price spiral of
+    // clearing at a share of an expectation that itself follows the clearing price stops here).
+    const salvage = 0.5 * Math.max(0, fin(f.unitCost));
+    addAsk(book, ref, Math.max(base * m, Math.min(salvage, base)), excess);
     left -= excess;
     qs = Math.min(sales, left);
   }
@@ -855,11 +996,13 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
       const qty = gap * (TOOLS_GAP_CLOSE + (1 - TOOLS_GAP_CLOSE) * sh);
       const top = 1.1 + (TOOLS_MAX_BID_MULT - 1.1) * sh;
       const pT = gross[G.tools];
+      // Never above TOOLS_MAX_BID_MULT × what tools cost to make (see fairPrice).
+      const lim = TOOLS_MAX_BID_MULT * fairPrice(s, t, G.tools, gross);
       const book = bookFor(books, t, G.tools);
-      pushBid(book, pT * top, qty * 0.25, 1);
-      pushBid(book, pT * (1 + top) * 0.5, qty * 0.25, 1);
-      pushBid(book, pT, qty * 0.3, 1);
-      pushBid(book, pT * 0.92, qty * 0.2, 1);
+      pushBid(book, Math.min(pT * top, lim), qty * 0.25, 1);
+      pushBid(book, Math.min(pT * (1 + top) * 0.5, lim), qty * 0.25, 1);
+      pushBid(book, Math.min(pT, lim), qty * 0.3, 1);
+      pushBid(book, Math.min(pT * 0.92, lim), qty * 0.2, 1);
     }
   }
   if (pBook.length === 0) return;
@@ -933,7 +1076,7 @@ export function firmOrders(s: SimState, books: Books): void {
     }
     const d = SECTORS[f.sector];
     if (!d || !d.producer || !operating(s, f)) continue;
-    askOutput(s, books, f, pt);
+    askOutput(s, books, f, pt, sc);
     bidInputsAndTools(s, books, f, pt, sc, levies);
   }
 }
@@ -1125,6 +1268,11 @@ export function firmsEndDay(s: SimState): void {
       const expNet = pt.net[f.town]?.[g] ?? f.pExp;
       let x = expNet;
       if (f.soldToday > Math.max(1e-6, 0.05 * f.sales) && f.revenue > 0) x = 0.5 * (f.revenue / f.soldToday) + 0.5 * expNet;
+      else if (!(f.inv[g] > 1)) {
+        // Nothing to sell: expect what yesterday's buyers would pay for a worker's output.
+        const q1 = potentialOutput(f.sector, 0.95, d.toolsPerWorker, planSeason(d, s.day), siteMultiplier(s, f));
+        x = Math.max(x, demandPriceFor(s.markets[f.town * N_GOODS + g], q1, expNet));
+      }
       f.pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? Math.max(1e-6, ema(f.pExp, x, PRICE_EXP_EMA)) : Math.max(1e-6, fin(x, 1));
     }
 

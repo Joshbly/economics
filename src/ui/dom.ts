@@ -199,8 +199,16 @@ export function pickTextFile(accept = '.json,application/json'): Promise<{ name:
       r.onerror = () => finish(null);
       r.readAsText(f);
     });
-    // Some browsers never fire 'change' on cancel; 'cancel' covers the newer ones.
+    // Newer browsers fire 'cancel'; older Safari fires nothing on cancel, so also
+    // resolve null shortly after the window regains focus without a file chosen.
     input.addEventListener('cancel', () => finish(null));
+    const onFocus = () => {
+      window.removeEventListener('focus', onFocus);
+      setTimeout(() => {
+        if (!input.files || input.files.length === 0) finish(null);
+      }, 1000);
+    };
+    window.addEventListener('focus', onFocus);
     document.body.appendChild(input);
     input.click();
   });

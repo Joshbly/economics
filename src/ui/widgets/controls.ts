@@ -172,7 +172,7 @@ export function numberInput(o: NumberInputOptions): NumberInput {
     title: o.title ?? null,
   });
   const msg = h('div', { class: 'ctl-msg', hidden: true });
-  const box = h('label', { class: 'num-input' }, o.prefix ? h('span', { class: 'num-pre' }, o.prefix) : null, input, unit ? h('span', { class: 'num-unit' }, unit) : null);
+  const box = h('label', { class: 'num-input' + (o.prefix ? ' has-pre' : '') }, o.prefix ? h('span', { class: 'num-pre' }, o.prefix) : null, input, unit ? h('span', { class: 'num-unit' }, unit) : null);
   const el = h('div', { class: 'num-ctl' }, box, msg);
   if (o.width) box.style.width = o.width;
 

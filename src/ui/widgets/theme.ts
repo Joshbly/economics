@@ -13,6 +13,8 @@
 //    always paired with an arrow or sign so colour is never the only cue.
 // ============================================================================
 
+import { GOODS } from '../../sim/goods';
+
 export const FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif';
 export const MONO_STACK = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -109,7 +111,44 @@ export function mix(a: string, b: string, t: number): string {
   return `rgb(${m(0)},${m(1)},${m(2)})`;
 }
 
+/** WCAG relative luminance of a colour. */
+export function luminance(color: string): number {
+  const [r, g, b] = toRgb(color).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast ratio between two colours. */
+export function contrast(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+const readableCache = new Map<string, string>();
+
+/**
+ * The colour, lightened just enough to reach `min`:1 contrast on the chart
+ * surface (some goods' own colours — oil, coal — are too dark for a dark UI).
+ */
+export function readable(color: string, min = 3, surface: string = T.bg2): string {
+  const key = color + '|' + min + '|' + surface;
+  const hit = readableCache.get(key);
+  if (hit) return hit;
+  let out = color;
+  for (let t = 0.08; contrast(out, surface) < min && t <= 0.9; t += 0.06) out = mix(color, '#f1e9d8', t);
+  readableCache.set(key, out);
+  return out;
+}
+
 /** Lighten toward parchment (hover lift). */
 export function lighten(color: string, t = 0.18): string {
   return mix(color, '#ffffff', t);
+}
+
+/** A good's UI colour, lifted to stay readable on the dark chart surface. */
+export function goodColor(g: number): string {
+  return readable(GOODS[g]?.color ?? T.ink2);
 }

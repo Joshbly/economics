@@ -92,54 +92,95 @@ export function hasWedge(snap: Pick<CurveSnapshot, 'wedge'>): boolean {
 }
 
 /**
- * Visible price and quantity ranges. Prices are clamped to [P/4, 4P] around
- * the clearing (or indicative) price so a stray extreme order cannot squash
- * the interesting part; limits, the wedge and Treasury orders are included
- * when they are within a reasonable band.
+ * Visible price and quantity ranges. The window of interest is 0.55–1.7 × the
+ * clearing (or indicative) price P, widened for any legal limit, the levy
+ * wedge, Treasury orders — and, when nothing traded, the best bid and ask —
+ * as long as they lie within [P/3, 3P]. Extreme rungs (desperate bids at
+ * 2.5×, far asks) simply run off the plot edge, so they cannot squash the part
+ * of the diagram where the curves cross.
  */
 export function curveDomain(c: CurveSnapshot): { pLo: number; pHi: number; qMax: number; pRef: number } {
-  const prices: number[] = [];
-  for (let i = 0; i + 1 < c.bids.length; i += 2) if (c.bids[i] > 0) prices.push(c.bids[i]);
-  for (let i = 0; i + 1 < c.asks.length; i += 2) if (c.asks[i] > 0) prices.push(c.asks[i]);
   let pRef = c.price > 0 && Number.isFinite(c.price) ? c.price : 0;
-  if (!pRef && prices.length) {
-    const sorted = [...prices].sort((a, b) => a - b);
-    pRef = sorted[sorted.length >> 1];
+  if (!pRef) {
+    const prices: number[] = [];
+    for (let i = 0; i + 1 < c.bids.length; i += 2) if (c.bids[i] > 0) prices.push(c.bids[i]);
+    for (let i = 0; i + 1 < c.asks.length; i += 2) if (c.asks[i] > 0) prices.push(c.asks[i]);
+    prices.sort((x, y) => x - y);
+    pRef = prices.length ? prices[prices.length >> 1] : 1;
   }
-  if (!pRef) pRef = 1;
-  const lo = pRef / 4;
-  const hi = pRef * 4;
-  let pLo = pRef;
-  let pHi = pRef;
-  const take = (p: number, band = 1) => {
-    if (!(p > 0) || !Number.isFinite(p)) return;
-    if (p < lo / band || p > hi * band) return;
-    if (p < pLo) pLo = p;
-    if (p > pHi) pHi = p;
+  let pLo = pRef * 0.55;
+  let pHi = pRef * 1.7;
+  const take = (p: number) => {
+    if (!(p > 0) || !Number.isFinite(p) || p < pRef / 3 || p > pRef * 3) return;
+    pLo = Math.min(pLo, p * 0.92);
+    pHi = Math.max(pHi, p * 1.08);
   };
-  for (const p of prices) take(p);
-  if (c.ceiling > 0) take(c.ceiling, 2);
-  if (c.floor > 0) take(c.floor, 2);
+  if (c.ceiling > 0) take(c.ceiling);
+  if (c.floor > 0) take(c.floor);
   if (c.volume > 0 && hasWedge(c)) {
-    take(grossOf(c, c.price), 2);
-    take(netOf(c, c.price), 2);
+    take(grossOf(c, c.price));
+    take(netOf(c, c.price));
   }
-  for (let i = 0; i + 2 < c.state.length; i += 3) take(c.state[i + 1], 2);
-  pLo = Math.max(pLo, lo);
-  pHi = Math.min(pHi, hi);
-  if (pHi - pLo < pRef * 0.1) {
-    pLo = Math.max(0, pLo - pRef * 0.1);
-    pHi = pHi + pRef * 0.1;
+  for (let i = 0; i + 2 < c.state.length; i += 3) take(c.state[i + 1]);
+  if (!(c.volume > 0)) {
+    if (c.bids.length >= 2) take(c.bids[0]);
+    if (c.asks.length >= 2) take(c.asks[0]);
   }
   let qMax = Math.max(demandAt(c.bids, pLo), supplyAt(c.asks, pHi), c.volume * 1.3);
   for (let i = 0; i + 2 < c.state.length; i += 3) {
     const p = c.state[i + 1];
     if (p >= pLo && p <= pHi) qMax = Math.max(qMax, c.state[i + 2]);
   }
-  if (c.ceiling > 0) qMax = Math.max(qMax, demandAt(c.bids, c.ceiling));
-  if (c.floor > 0) qMax = Math.max(qMax, supplyAt(c.asks, c.floor));
   if (!(qMax > 0) || !Number.isFinite(qMax)) qMax = 1;
   return { pLo, pHi, qMax: qMax * 1.06, pRef };
+}
+
+/** Does a price limit bind? (price sits on it and the long side is rationed) */
+export function limitBinds(c: CurveSnapshot): { kind: 'ceiling' | 'floor'; gap: number } | null {
+  const eps = 1e-6 * Math.max(1, c.price);
+  if (c.ceiling > 0 && c.price >= c.ceiling - eps) {
+    const gap = demandAt(c.bids, c.ceiling) - supplyAt(c.asks, c.ceiling);
+    if (gap > 1e-9) return { kind: 'ceiling', gap };
+  }
+  if (c.floor > 0 && c.price <= c.floor + eps) {
+    const gap = supplyAt(c.asks, c.floor) - demandAt(c.bids, c.floor);
+    if (gap > 1e-9) return { kind: 'floor', gap };
+  }
+  return null;
+}
+
+interface Label {
+  text: string;
+  x: number;
+  y: number;
+  align: 'left' | 'right' | 'center';
+  fill: string;
+  prio: number;
+}
+
+/**
+ * Draw pill labels by priority, nudging each vertically to avoid the ones
+ * already placed and dropping it when no free spot is found.
+ */
+function placeLabels(ctx: CanvasRenderingContext2D, labels: Label[], bounds: { left: number; right: number; top: number; bottom: number }): void {
+  const H = 15;
+  const placed: [number, number, number, number][] = [];
+  ctx.font = font(10, 600);
+  labels.sort((a, b) => b.prio - a.prio);
+  for (const l of labels) {
+    const w = ctx.measureText(l.text).width + 10;
+    for (const dy of [0, -16, 16, -32, 32]) {
+      let x0 = l.align === 'left' ? l.x : l.align === 'right' ? l.x - w : l.x - w / 2;
+      x0 = Math.max(bounds.left + 2, Math.min(bounds.right - w, x0));
+      const y0 = l.y + dy - H / 2;
+      if (y0 < bounds.top - 14 || y0 + H > bounds.bottom + 2) continue;
+      const hit = placed.some(([a, b, c, d]) => x0 < c + 3 && x0 + w > a - 3 && y0 < d + 2 && y0 + H > b - 2);
+      if (hit) continue;
+      placed.push([x0, y0, x0 + w, y0 + H]);
+      pillText(ctx, l.text, x0, y0 + H / 2, { align: 'left', fill: l.fill, bg: alpha(T.bg2, 0.93), h: H });
+      break;
+    }
+  }
 }
 
 // ---- widget -------------------------------------------------------------------
@@ -159,6 +200,7 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
   } | null = null;
 
   const legend = h('div', { class: 'chart-legend chart-legend-static' });
+  const summary = h('div', { class: 'chart-summary' });
   const root = h('div', { class: 'chart chart-curve' }, legend);
   const host: CanvasHost = createCanvasHost({
     height: o.height,
@@ -176,14 +218,53 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
     },
   });
   root.appendChild(host.el);
+  root.appendChild(summary);
 
   const pf = () => o.priceFormat ?? fmtPrice;
   const qf = () => o.qtyFormat ?? fmtQty;
   const units = () => (o.unit ? pluralize(o.unit) : 'units');
 
   let legendSig = '';
+  /** One-paragraph text read-out of the diagram (also the accessible equivalent). */
+  function buildSummary(): void {
+    if (!c || (c.bids.length < 2 && c.asks.length < 2)) {
+      summary.hidden = true;
+      return;
+    }
+    summary.hidden = false;
+    const u = units();
+    const b = (t: string) => h('b', null, t);
+    const parts: (Node | string)[] = [];
+    if (c.volume > 0) {
+      parts.push('Cleared ', b(`${qf()(c.volume)} ${u}`), ' at ', b(pf()(c.price)), '.');
+      if (hasWedge(c)) {
+        const G = grossOf(c, c.price);
+        const N = netOf(c, c.price);
+        const take = c.volume * (G - N);
+        parts.push(' Buyers pay ', b(pf()(G)), ', sellers get ', b(pf()(N)), ' — the Treasury ', G >= N ? 'takes ' : 'pays ', h('b', { class: G >= N ? 'gold' : 'good' }, fmtMoneyShort(Math.abs(take))), ' a day.');
+      }
+    } else {
+      const bb = c.bids.length >= 2 ? c.bids[0] : -1;
+      const ba = c.asks.length >= 2 ? c.asks[0] : -1;
+      parts.push('No trade today');
+      if (bb > 0 && ba > 0) parts.push(': the best bid (', b(pf()(bb)), ') is below the best ask (', b(pf()(ba)), ').');
+      else parts.push(bb > 0 ? ': nobody is selling.' : ba > 0 ? ': nobody is buying.' : '.');
+    }
+    const lim = limitBinds(c);
+    if (lim) {
+      parts.push(
+        lim.kind === 'ceiling' ? ' The max price of ' : ' The min price of ',
+        b(pf()(lim.kind === 'ceiling' ? c.ceiling : c.floor)),
+        ' binds: ',
+        h('b', { class: 'warn' }, `${qf()(lim.gap)} ${u}`),
+        lim.kind === 'ceiling' ? ' of demand go unmet.' : ' go unsold.',
+      );
+    }
+    replace(summary, ...parts);
+  }
+
   function buildLegend(): void {
-    legend.hidden = o.legend === false;
+    legend.hidden = o.legend === false || !c;
     const wedge = !!c && hasWedge(c) && c.volume > 0;
     const state = !!c && c.state.length > 0;
     const limit = !!c && (c.ceiling > 0 || c.floor > 0);
@@ -213,37 +294,41 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
     const d = curveDomain(c);
     const top = 22;
     const bottom = hh - 34;
-    const py = niceTicks(d.pLo * 0.94, d.pHi * 1.04, Math.max(3, Math.min(7, Math.round((bottom - top) / 38))));
+    const py = niceTicks(d.pLo, d.pHi, Math.max(3, Math.min(7, Math.round((bottom - top) / 38))));
     const pLo = Math.max(0, py.min);
     const pHi = py.max;
     ctx.font = font(10.5);
-    const tickLab = (p: number) => {
-      const s = pf()(p);
-      return s;
-    };
-    const labW = Math.max(...py.ticks.map((t) => ctx.measureText(tickLab(t)).width));
-    const left = Math.max(36, Math.ceil(labW + 12));
+    const labW = Math.max(...py.ticks.map((t) => ctx.measureText(pf()(t)).width), ctx.measureText(pf()(c.price)).width + 6);
+    const left = Math.max(36, Math.ceil(labW + 14));
     const right = w - 14;
     const qx = niceTicks(0, d.qMax, Math.max(2, Math.min(6, Math.round((right - left) / 80))));
     const xOf = scaleLinear(0, qx.max, left, right);
     const yOf = scaleLinear(pLo, pHi, bottom, top);
     const pOf = scaleLinear(bottom, top, pLo, pHi);
     L = { left, right, top, bottom, xOf, yOf, pOf };
+    const traded = c.volume > 0 && c.price > 0;
+    const wedge = hasWedge(c) && traded;
+    const G = grossOf(c, c.price);
+    const N = netOf(c, c.price);
+    const yP = traded ? yOf(c.price) : NaN;
+    const xV = traded ? xOf(c.volume) : NaN;
+    const labels: Label[] = [];
 
-    // grid + axes
+    // grid + axes (tick labels give way to the clearing read-outs)
     ctx.lineWidth = 1;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'right';
     for (const t of py.ticks) {
       if (t < pLo - 1e-9) continue;
-      const y = snap(yOf(t), dpr);
+      const y = yOf(t);
       ctx.strokeStyle = T.grid;
       ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.lineTo(right, y);
+      ctx.moveTo(left, snap(y, dpr));
+      ctx.lineTo(right, snap(y, dpr));
       ctx.stroke();
+      if (Math.abs(y - yP) < 13) continue;
       ctx.fillStyle = T.ink2;
-      ctx.fillText(tickLab(t), left - 7, yOf(t));
+      ctx.fillText(pf()(t), left - 7, y);
     }
     ctx.strokeStyle = T.axis;
     ctx.beginPath();
@@ -261,8 +346,11 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       ctx.moveTo(snap(x, dpr), bottom);
       ctx.lineTo(snap(x, dpr), bottom + 4);
       ctx.stroke();
+      const lab = fmtTick(t, qx.step);
+      const lx = Math.max(left + 8, Math.min(right - 8, x));
+      if (Math.abs(lx - xV) < ctx.measureText(lab).width / 2 + 26) continue;
       ctx.fillStyle = T.ink2;
-      ctx.fillText(fmtTick(t, qx.step), Math.max(left + 8, Math.min(right - 8, x)), bottom + 6);
+      ctx.fillText(lab, lx, bottom + 6);
     }
     // axis captions
     ctx.font = font(10, 500);
@@ -279,27 +367,27 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
     ctx.rect(left + 1, top - 4, right - left + 4, bottom - top + 4);
     ctx.clip();
 
-    const wedge = hasWedge(c) && c.volume > 0;
-    const G = grossOf(c, c.price);
-    const N = netOf(c, c.price);
-
-    // levy wedge rectangle (Treasury take per day = V × (G − N))
+    // levy wedge: rectangle 0…V between seller net and buyer gross = the Treasury's take per day
     if (wedge) {
       const x0 = xOf(0);
-      const x1 = xOf(c.volume);
       const yG = yOf(G);
       const yN = yOf(N);
-      const takes = G >= N;
-      const col = takes ? T.gold : T.good;
-      ctx.fillStyle = alpha(col, 0.13);
-      ctx.fillRect(x0, Math.min(yG, yN), x1 - x0, Math.abs(yN - yG));
-      ctx.strokeStyle = alpha(col, 0.8);
+      const col = G >= N ? T.gold : T.good;
+      ctx.fillStyle = alpha(col, 0.2);
+      ctx.fillRect(x0, Math.min(yG, yN), xV - x0, Math.abs(yN - yG));
+      ctx.strokeStyle = alpha(col, 0.85);
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x0, snap(yG, dpr));
-      ctx.lineTo(x1, snap(yG, dpr));
+      ctx.lineTo(xV, snap(yG, dpr));
       ctx.moveTo(x0, snap(yN, dpr));
-      ctx.lineTo(x1, snap(yN, dpr));
+      ctx.lineTo(xV, snap(yN, dpr));
+      ctx.stroke();
+      // bracket at the traded volume
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(snap(xV, dpr), yG);
+      ctx.lineTo(snap(xV, dpr), yN);
       ctx.stroke();
     }
 
@@ -324,6 +412,7 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
     // reference price
     if (o.reference && o.reference > pLo && o.reference < pHi) {
       ctx.strokeStyle = alpha(T.ink2, 0.5);
+      ctx.lineWidth = 1;
       ctx.setLineDash([1, 3]);
       ctx.beginPath();
       ctx.moveTo(left, snap(yOf(o.reference), dpr));
@@ -347,7 +436,7 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       ctx.stroke();
     }
 
-    // legal limits + rationed gap
+    // legal limits + the rationed gap measured off the curves
     const limitLine = (price: number, label: string, gapFrom: number, gapTo: number, gapLabel: string) => {
       const y = snap(yOf(price), dpr);
       ctx.strokeStyle = T.warn;
@@ -361,18 +450,14 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       if (gapTo - gapFrom > 1e-9) {
         const xa = xOf(gapFrom);
         const xb = xOf(gapTo);
-        ctx.fillStyle = alpha(T.warn, 0.22);
+        ctx.fillStyle = alpha(T.warn, 0.25);
         ctx.fillRect(xa, y - 3, xb - xa, 6);
         ctx.fillStyle = T.warn;
-        ctx.fillRect(xa, y - 5, 1.5, 10);
-        ctx.fillRect(xb - 1.5, y - 5, 1.5, 10);
-        if (xb - xa > 60) {
-          ctx.font = font(10, 600);
-          pillText(ctx, gapLabel, (xa + xb) / 2, y + 12, { align: 'center', fill: T.warn, bg: alpha(T.bg2, 0.92), h: 15 });
-        }
+        ctx.fillRect(xa - 0.75, y - 5, 1.5, 10);
+        ctx.fillRect(xb - 0.75, y - 5, 1.5, 10);
+        labels.push({ text: gapLabel, x: (xa + xb) / 2, y: y + 13, align: 'center', fill: T.warn, prio: 7 });
       }
-      ctx.font = font(10, 600);
-      pillText(ctx, label, right - 2, y - 10, { align: 'right', fill: T.warn, bg: alpha(T.bg2, 0.92), h: 15 });
+      labels.push({ text: label, x: right - 2, y: y - 10, align: 'right', fill: T.warn, prio: 8 });
     };
     if (c.ceiling > 0 && c.ceiling >= pLo && c.ceiling <= pHi) {
       const qd = demandAt(c.bids, c.ceiling);
@@ -385,7 +470,7 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       limitLine(c.floor, 'Min price ' + pf()(c.floor), qd, qs, 'surplus ' + qf()(qs - qd));
     }
 
-    // Treasury orders
+    // Treasury orders: a gold bar at the limit price, as long as the quantity
     const nState = Math.floor(c.state.length / 3);
     for (let i = 0; i < nState; i++) {
       const side = c.state[i * 3];
@@ -403,69 +488,34 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       ctx.stroke();
       ctx.lineCap = 'round';
       diamond(ctx, x1, y, 5, T.gold);
-      if (nState <= 3) {
-        ctx.font = font(10, 600);
-        const lab = `Treasury ${side === 0 ? 'buys' : 'sells'} ${qf()(q)} @ ${pf()(p)}`;
-        const tw = ctx.measureText(lab).width + 10;
-        const lx = x1 + 10 + tw < right ? x1 + 10 : Math.max(left + 4, x1 - 10 - tw);
-        pillText(ctx, lab, lx, y, { align: 'left', fill: T.goldHi, bg: alpha(T.bg2, 0.92), h: 15 });
-      }
+      if (nState <= 4) labels.push({ text: `Treasury ${side === 0 ? 'buys' : 'sells'} ${qf()(q)} @ ${pf()(p)}`, x: x1 + 10, y, align: 'left', fill: T.goldHi, prio: 4 });
     }
     ctx.restore();
 
-    // clearing point / indicative price
-    ctx.font = font(10.5, 600);
-    if (c.volume > 0 && c.price > 0) {
-      const x = xOf(c.volume);
-      const y = yOf(c.price);
+    // clearing point with guides; wedge read-outs beside it
+    if (traded) {
       ctx.strokeStyle = alpha(T.ink0, 0.35);
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 3]);
       ctx.beginPath();
-      ctx.moveTo(left, snap(y, dpr));
-      ctx.lineTo(x, snap(y, dpr));
-      ctx.moveTo(snap(x, dpr), y);
-      ctx.lineTo(snap(x, dpr), bottom);
+      ctx.moveTo(left, snap(yP, dpr));
+      ctx.lineTo(xV, snap(yP, dpr));
+      ctx.moveTo(snap(xV, dpr), yP);
+      ctx.lineTo(snap(xV, dpr), bottom);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.arc(xV, yP, 7, 0, Math.PI * 2);
       ctx.fillStyle = T.bg2;
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.arc(xV, yP, 5, 0, Math.PI * 2);
       ctx.fillStyle = T.ink0;
       ctx.fill();
-      // axis read-outs
-      pillText(ctx, pf()(c.price), left - 3, y, { align: 'right', fill: T.bg0, bg: T.ink0, h: 16 });
-      pillText(ctx, qf()(c.volume), x, bottom + 12, { align: 'center', fill: T.bg0, bg: T.ink0, h: 16 });
       if (wedge) {
-        ctx.font = font(10, 600);
-        const takes = G >= N;
-        const col = takes ? T.goldHi : T.good;
-        const xl = x + 10;
-        const room = right - xl;
-        const yG = yOf(G);
-        const yN = yOf(N);
-        const sep = Math.abs(yG - yN) < 18 ? 9 - Math.abs(yG - yN) / 2 : 0;
-        const upper = Math.min(yG, yN) - sep;
-        const lower = Math.max(yG, yN) + sep;
-        const gLab = 'buyers pay ' + pf()(G);
-        const nLab = 'sellers get ' + pf()(N);
-        if (room > 90) {
-          pillText(ctx, gLab, xl, yG <= yN ? upper : lower, { align: 'left', fill: col, bg: alpha(T.bg2, 0.9), h: 15 });
-          pillText(ctx, nLab, xl, yG <= yN ? lower : upper, { align: 'left', fill: col, bg: alpha(T.bg2, 0.9), h: 15 });
-        }
-        const take = c.volume * (G - N);
-        const rectH = Math.abs(yN - yG);
-        const lab = (takes ? 'Treasury takes ' : 'Treasury pays ') + fmtMoneyShort(Math.abs(take)) + '/day';
-        const tw = ctx.measureText(lab).width;
-        if (rectH >= 15 && x - left > tw + 16) {
-          ctx.fillStyle = col;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(lab, (left + x) / 2, (yG + yN) / 2);
-        }
+        const col = G >= N ? T.goldHi : T.good;
+        labels.push({ text: 'buyers pay ' + pf()(G), x: xV + 10, y: yOf(G) + (G >= N ? -8 : 8), align: 'left', fill: col, prio: 9 });
+        labels.push({ text: 'sellers get ' + pf()(N), x: xV + 10, y: yOf(N) + (G >= N ? 8 : -8), align: 'left', fill: col, prio: 9 });
       }
     } else if (c.price > 0 && c.price >= pLo && c.price <= pHi) {
       const y = snap(yOf(c.price), dpr);
@@ -477,8 +527,15 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       ctx.lineTo(right, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.font = font(10, 600);
-      pillText(ctx, 'no trade · indicative ' + pf()(c.price), left + 6, y - 10, { align: 'left', fill: T.ink1, bg: alpha(T.bg2, 0.92), h: 15 });
+      labels.push({ text: 'no trade · indicative ' + pf()(c.price), x: left + 6, y: y - 10, align: 'left', fill: T.ink1, prio: 8 });
+    }
+    placeLabels(ctx, labels, { left, right, top, bottom });
+
+    // axis read-outs of the clearing point (on top of everything)
+    if (traded) {
+      ctx.font = font(10.5, 600);
+      pillText(ctx, pf()(c.price), left - 3, yP, { align: 'right', fill: T.bg0, bg: T.ink0, h: 16 });
+      pillText(ctx, qf()(c.volume), xV, bottom + 12, { align: 'center', fill: T.bg0, bg: T.ink0, h: 16 });
     }
   }
 
@@ -539,6 +596,7 @@ export function curveChart(initial: CurveChartOptions = {}): CurveChart {
       }
       c = next ?? null;
       buildLegend();
+      buildSummary();
       host.redraw();
     },
     destroy() {

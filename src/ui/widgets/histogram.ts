@@ -13,7 +13,7 @@
 import { h } from '../dom';
 import { fmtInt, fmtNum, fmtPct } from '../format';
 import { createCanvasHost, pillText, roundRect, snap, type CanvasHost } from './canvas';
-import { fmtTick, niceTicks, scaleLinear } from './axis';
+import { fmtTick, logTicks, niceTicks, scaleLinear } from './axis';
 import { drawEmpty } from './linechart';
 import { alpha, font, lighten, SERIES, T } from './theme';
 import { hideTip, showTip, tipKV, tipTitle } from './tooltip';
@@ -194,19 +194,24 @@ export function histogram(initial: HistogramOptions = {}): Histogram {
       ctx.fill();
     }
 
-    // x ticks: a handful of bin edges
+    // x ticks at round values (log: 1-2-5 per decade), positioned on the continuous scale
+    const e0 = bins.zeroBin === 0 ? 1 : 0;
+    const a = bins.edges[e0];
+    const b = bins.edges[n];
+    const xOfV = (v: number): number => {
+      const fx = o.log ? (v > 0 && a > 0 ? (Math.log(v) - Math.log(a)) / (Math.log(b) - Math.log(a) || 1) : NaN) : (v - a) / (b - a || 1);
+      return left + e0 * colW + fx * (n - e0) * colW;
+    };
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = T.ink2;
-    const maxLabels = Math.max(2, Math.floor((right - left) / 70));
-    const every = Math.max(1, Math.ceil(n / maxLabels));
+    const want = Math.max(2, Math.floor((right - left) / 70));
+    const tk = o.log && a > 0 ? logTicks(a, b, want) : niceTicks(a, b, want);
     let lastR = -Infinity;
-    for (let i = 0; i <= n; i += every) {
-      const x = left + i * colW;
-      const lab = bins.zeroBin === 0 && i === 0 ? '≤0' : fmt()(bins.edges[i]);
+    const tickAt = (x: number, lab: string) => {
       const tw = ctx.measureText(lab).width;
       const lx = Math.max(left + tw / 2, Math.min(right - tw / 2, x));
-      if (lx - tw / 2 < lastR + 6) continue;
+      if (lx - tw / 2 < lastR + 8) return;
       ctx.strokeStyle = T.axis;
       ctx.beginPath();
       ctx.moveTo(snap(x, dpr), bottom);
@@ -214,21 +219,20 @@ export function histogram(initial: HistogramOptions = {}): Histogram {
       ctx.stroke();
       ctx.fillText(lab, lx, bottom + 6);
       lastR = lx + tw / 2;
+    };
+    if (e0 === 1) tickAt(left + colW / 2, '≤0');
+    for (const t of tk.ticks) {
+      if (t < a - 1e-9 || t > b + 1e-9) continue;
+      const x = xOfV(t);
+      if (Number.isFinite(x)) tickAt(x, fmt()(t));
     }
 
     // markers (median, mean, a threshold…)
-    const e0 = bins.zeroBin === 0 ? 1 : 0;
-    const a = bins.edges[e0];
-    const b = bins.edges[n];
     for (const m of o.markers ?? []) {
-      if (!Number.isFinite(m.x)) continue;
-      let fx: number;
-      if (o.log) {
-        if (m.x <= 0 || a <= 0) continue;
-        fx = (Math.log(m.x) - Math.log(a)) / (Math.log(b) - Math.log(a));
-      } else fx = (m.x - a) / (b - a || 1);
-      if (fx < 0 || fx > 1) continue;
-      const x = snap(left + e0 * colW + fx * (n - e0) * colW, dpr);
+      if (!Number.isFinite(m.x) || m.x < a || m.x > b) continue;
+      const xm = xOfV(m.x);
+      if (!Number.isFinite(xm)) continue;
+      const x = snap(xm, dpr);
       ctx.strokeStyle = m.color ?? T.gold;
       ctx.lineWidth = 1.5;
       ctx.beginPath();

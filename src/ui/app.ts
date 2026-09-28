@@ -243,7 +243,7 @@ function progressView(title: string): Progress {
 
 /** The realm form (name, seed, scenario) used on the boot screen and in the New realm dialog. */
 function realmForm(defaults: Partial<FoundOptions> = {}): { el: HTMLElement; read(): FoundOptions | null } {
-  const name = textInput({ value: defaults.realmName ?? '', placeholder: 'Leave blank to draw a name from the chronicles', maxLength: 40 });
+  const name = textInput({ value: defaults.realmName ?? '', placeholder: 'Leave blank for a name from the chronicles', maxLength: 40 });
   const seed = numberInput({ value: defaults.seed ?? randomSeed(), integer: true, min: 0, max: 2 ** 31 - 1, width: '140px' });
   const dice = button({ label: '', kind: 'ghost', size: 'sm', icon: icon('dice', 16), title: 'Roll a new seed', onClick: () => seed.set(randomSeed()) });
   const scen = selectInput({ options: SCENARIOS.map((x) => ({ value: x.id, label: x.name })), value: defaults.scenario ?? SCENARIOS[0]?.id ?? 'founding' });
@@ -575,7 +575,7 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
     emit('newgame');
     emit('select', null);
     topbar.update(true);
-    ticker.update();
+    tickerDirty = true;
     forcePanels = true;
     toast(message, 'good');
   }
@@ -675,6 +675,7 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
 
   // ---- event wiring --------------------------------------------------------------------
   let dirty = true;
+  let tickerDirty = true;
   let forcePanels = true;
   let lastPanelUpdate = 0;
   let lastTopbar = 0;
@@ -705,6 +706,7 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
   on('placing', () => paintPlacing());
   on('day', () => {
     dirty = true;
+    tickerDirty = true;
     const m = Math.floor(ui.game.s.day / 30);
     if (m !== autosaveMonth && Date.now() - lastAutosave >= AUTOSAVE_MIN_MS) {
       autosaveMonth = m;
@@ -718,8 +720,9 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
       lastTopbar = now;
       topbar.update();
     }
-    if (dirty && now - lastTicker >= 250) {
+    if (tickerDirty && now - lastTicker >= 250) {
       lastTicker = now;
+      tickerDirty = false;
       ticker.update();
     }
     const elapsed = now - lastPanelUpdate;
@@ -792,20 +795,37 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
       clearInterval(hudTimer);
       return;
     }
-    hud = h('div', { class: 'tip on', style: 'left:auto;right:12px;top:auto;bottom:calc(var(--ticker-h) + 12px);transform:none;pointer-events:none;font:11px/1.5 var(--mono)' });
+    hud = h('div', { class: 'tip on', style: 'left:auto;right:12px;top:auto;bottom:calc(var(--ticker-h) + 12px);transform:none;pointer-events:none;max-width:none;white-space:nowrap;font:11px/1.5 var(--mono)' });
     document.body.appendChild(hud);
     const paint = () => {
       if (!hud) return;
       const p = loop.perf;
-      hud.textContent = `fps ${p.fps.toFixed(0)} · ${p.stepMs.toFixed(2)} ms/day · ${p.daysPerSec.toFixed(1)} days/s · people ${ui.game.s.people.length}`;
+      let alive = 0;
+      for (const x of ui.game.s.people) if (x && x.alive) alive++;
+      hud.textContent = `fps ${p.fps.toFixed(0)} · ${p.stepMs.toFixed(2)} ms/day · ${p.daysPerSec.toFixed(1)} days/s · ${alive} households · day ${ui.game.s.day}`;
     };
     paint();
     hudTimer = window.setInterval(paint, 500);
   }
 
-  // ---- autosave on hide -------------------------------------------------------------------
+  // ---- autosave on hide / close ---------------------------------------------------------------
   listen(document, 'visibilitychange', () => {
     if (document.visibilityState === 'hidden' && Date.now() - lastAutosave > 3000) autosave('hidden');
+  });
+  // The page is going away: compression is asynchronous and may not finish, so
+  // write uncompressed synchronously. If that exceeds the quota the previous
+  // (compressed) autosave stays in place — setItem failures leave it untouched.
+  listen(window, 'pagehide', () => {
+    if (how === 'preview' || Date.now() - lastAutosave < 3000) return;
+    try {
+      const json = ui.game.save();
+      const s = ui.game.s;
+      localStorage.setItem(SLOT_AUTO, 'raw:' + json);
+      const meta: SaveMeta = { name: s.settings?.realmName || 'The Realm', day: s.day, savedAt: Date.now(), bytes: json.length + 4, scenario: s.settings?.scenario ?? '' };
+      localStorage.setItem(SLOT_AUTO + META, JSON.stringify(meta));
+    } catch {
+      /* quota or storage disabled: keep the last compressed autosave */
+    }
   });
 
   // ---- go ----------------------------------------------------------------------------------

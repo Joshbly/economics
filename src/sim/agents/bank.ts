@@ -98,6 +98,8 @@ const {
   BANK_IOU_BUY_FRACTION,
   BANK_MIN_LOAN_RATE,
   BANK_NEWS_GAP_DAYS,
+  BANK_LATE_REFUSE_DAYS,
+  BANK_MAX_TERM,
   DISTRESS_BANKRUPT_DAYS,
   ENTRY_OWNER_EQUITY,
   BUILD_MARGIN,
@@ -655,7 +657,7 @@ export function requestLoan(s: SimState, req: LoanRequest): void {
   for (const r of rq) {
     if (r.borrower === req.borrower && r.purpose === req.purpose && r.project === req.project) {
       r.amount = Math.max(r.amount, req.amount);
-      r.term = req.term > 0 ? req.term : r.term;
+      r.term = req.term > 0 ? clamp(Math.round(req.term), 1, BANK_MAX_TERM) : r.term;
       return;
     }
   }
@@ -663,7 +665,7 @@ export function requestLoan(s: SimState, req: LoanRequest): void {
   rq.push({
     borrower: req.borrower,
     amount: req.amount,
-    term: Math.max(1, Math.round(fin(req.term, WORKING_LOAN_TERM))),
+    term: clamp(Math.round(fin(req.term, WORKING_LOAN_TERM)), 1, BANK_MAX_TERM),
     purpose: req.purpose,
     project: Number.isFinite(req.project) ? req.project : -1,
   });
@@ -801,12 +803,19 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
   let debt0 = 0;
   let interest0 = 0;
   let service0 = 0;
+  let late = 0;
   for (const ln of s.loans) {
     if (!ln.active || ln.borrower !== who) continue;
+    if (ln.overdue > late) late = ln.overdue;
     debt0 += ln.principal;
     const i = (ln.principal * Math.max(0, ln.rate)) / DAYS_PER_YEAR;
     interest0 += i;
     service0 += i + ln.principal / Math.max(1, ln.left);
+  }
+  // A borrower already behind on its payments gets no new credit.
+  if (late > BANK_LATE_REFUSE_DAYS) {
+    d.reason = 'overdue';
+    return d;
   }
   const assets0 = assetsOf(s, who);
   // cash flow available for debt service (¤/day)
@@ -879,7 +888,7 @@ export interface LoanDecision {
   amount: number;
   /** Loan id, or -1 if refused. */
   loan: number;
-  /** '' approved in full, 'partial', or why it was refused: 'failed' | 'capital' | 'leverage' | 'coverage' | 'ratecap' | 'gone' | 'small'. */
+  /** '' approved in full, 'partial', or why it was refused: 'failed' | 'capital' | 'leverage' | 'coverage' | 'ratecap' | 'overdue' | 'gone' | 'small'. */
   reason: string;
 }
 
@@ -1051,6 +1060,8 @@ export function bankEndDay(s: SimState): void {
   if (isMonthEnd(s.day)) payDividends(s);
   manageReserves(s, deposits(s));
   pruneLoans(s);
+  // IOUs are carried at cost; report the unrealised gain (+) / loss (−) at today's price.
+  if (b.iou > 0) s.stats.acc.bank_iou_unrealised = b.iou * Math.max(0, fin(s.iouMarket.ema)) - b.iouBook;
 }
 
 /** Drop inactive loans from s.loans (in place). */
