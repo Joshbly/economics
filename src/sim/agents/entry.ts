@@ -260,7 +260,7 @@ function houseSignal(s: SimState, town: TownId): number | null {
 // Monthly: launching projects
 // ---------------------------------------------------------------------------
 
-/** A person with at least `minFree` to invest, weighted by wealth (same town counts double). */
+/** A person with at least `minFree` to invest and no project already under way, weighted by wealth (same town counts double). */
 function pickEntrepreneur(s: SimState, town: TownId, minFree: number): Ref | null {
   // One venture at a time: whoever still has a project under way (or awaiting its loan)
   // keeps their means for it — it may cost more than planned.

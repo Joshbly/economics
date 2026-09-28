@@ -564,7 +564,7 @@ function paintKpis(s: SimState, d: Derived): void {
   tiles.content.set(lat('content', NaN), { delta: co.delta, spark: D.content, sub: `${fmtInt(d.unhappy)} unhappy` });
   const M = s.stats?.monthly?.gini ?? [];
   const gi = trend(M, 3);
-  tiles.gini.set(Number.isFinite(L.gini) ? L.gini : gi.now, { delta: M.length > 1 ? gi.delta : null, spark: M.length > 1 ? M : [], sub: M.length ? 'monthly' : 'first reading at month end' });
+  tiles.gini.set(Number.isFinite(L.gini) ? L.gini : gi.now, { delta: M.length > 1 ? gi.delta : null, spark: M.length > 1 ? M : [], sub: M.length ? 'monthly' : 'at month end' });
   tiles.median.set(d.medianSavings, { sub: `avg ${fmtMoneyShort(d.meanSavings)}` });
 }
 

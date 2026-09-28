@@ -9,7 +9,7 @@
 //    of the range (rates and shares stay as they are — they are already relative).
 //  * "Your own": pick up to four series from every recorded statistic.
 //  * Clicking a top-bar indicator opens Charts on the matching group and chart.
-//  * Gold triangles mark days on which the Treasury acted (policy news).
+//  * Gold triangles mark Treasury events (policy news: your actions, empty-Purse notices).
 // Reads ui.game.s fresh every update; recomputes only when the day or an option
 // changes.
 // ============================================================================
@@ -563,7 +563,7 @@ export const chartsPanel: Panel = {
     });
     blurbEl = h('div', { class: 'ch-blurb' });
     metaText = h('span');
-    marksEl = h('span', { class: 'ch-marks', hidden: true, tabIndex: 0 }, '▼ days you acted');
+    marksEl = h('span', { class: 'ch-marks', hidden: true, tabIndex: 0 }, '▼ Treasury events');
     metaEl = h('div', { class: 'ch-meta' }, metaText, marksEl);
     attachTip(
       marksEl,
@@ -574,9 +574,9 @@ export const chartsPanel: Panel = {
         const acts = (s.news ?? []).filter((n) => n && n.kind === 'policy' && n.day >= v.from && n.day <= v.to + 1);
         const last = acts.slice(-8).reverse();
         return [
-          tipTitle('What you did', `${acts.length} ${acts.length === 1 ? 'action' : 'actions'} in this range`),
+          tipTitle('The Treasury’s record', `${acts.length} in this range`),
           ...last.map((n) => tipNote(`${fmtDay(n.day)} — ${n.text}`)),
-          acts.length > last.length ? tipNote(`…and ${acts.length - last.length} earlier. The gold marks on each chart show the days.`) : null,
+          tipNote(acts.length > last.length ? `…and ${acts.length - last.length} earlier. Gold marks on each chart show the days.` : 'Gold marks on each chart show the days.'),
         ];
       },
       { placement: 'below', delay: 150 },
