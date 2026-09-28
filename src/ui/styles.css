@@ -1,0 +1,3 @@
+/* OWNER: ui-foundation agent */
+html, body { margin: 0; height: 100%; background: #14161a; color: #e6e2d8; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif; }
+.boot { display: flex; align-items: center; justify-content: center; height: 100vh; font-size: 18px; opacity: .7; }
