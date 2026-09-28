@@ -302,7 +302,8 @@ describe('workforce planning', () => {
     const s = world();
     const f = firm(s, 'bakery', { workers: 5 });
     f.sales = 70;
-    f.pExp = 2.0; // below grain + coal cost per loaf
+    f.pExp = 2.0; // below grain + coal cost per loaf …
+    s.markets[G.bread].ema = 2.0; // … and so is the market: even a 25 % price rise would not cover materials
     reconcile(s);
     for (let d = 0; d < 40; d++) firmsPlan(s);
     expect(f.target).toBe(0);

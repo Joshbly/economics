@@ -82,6 +82,7 @@ import {
   PERISH_CLEAR_MIN,
   PREPAY_CASH_DAYS,
   PRICE_EXP_EMA,
+  PRICE_PLAN_DAYS,
   PROFIT_EMA,
   SALES_EMA,
   SHORTAGE_WEIGHT,
@@ -130,6 +131,7 @@ import {
   materialCostPerUnit,
   optimalLabor,
   potentialOutput,
+  tfp,
   toolCostPerUnit,
   toolFactor,
   unitVariableCost,
@@ -589,21 +591,20 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const sPlan = planSeason(d, s.day);
   const gross = pt.gross[t];
   const m = s.markets[t * N_GOODS + g];
-  // Planning price: the firm's own expectation blended with the market's reference and
-  // today's clearing price (net of levies), so output prices are read with the same lag
-  // as input prices — a cost shock is then met by the price rising, not by output being cut
-  // on a stale price.
+  // The firm's price: its own expectation blended with the market's reference.
   const pOwn = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
-  const pToday = m && m.traded && m.net > 0 && Number.isFinite(m.net) ? m.net : pt.net[t][g];
-  const pNet = (pOwn + pt.net[t][g] + pToday) / 3;
+  const pNet = 0.5 * (pOwn + pt.net[t][g]);
   const mc = materialCostPerUnit(k, gross);
   const tc = toolCostPerUnit(k, gross[G.tools], d.prodPerWorker * site * sPlan * eff, carryRate(s));
   const margin = pNet - mc - tc;
   const wEff = Math.max(0.01, employerCost(s, f, f.wage, levies));
-  // Profit-maximising effective labour, in workers of today's average efficiency.
-  const lOpt = margin > 0 ? optimalLabor(k, margin, wEff / eff, sPlan, site) / eff : 0;
+  /** Profit-maximising workforce if the firm's net price were p (workers of today's efficiency). */
+  const lOptAt = (p: number): number => (p - mc - tc > 0 ? optimalLabor(k, p - mc - tc, wEff / eff, sPlan, site) / eff : 0);
+  const A = tfp(k) * sPlan * site;
+  /** Marginal cost of output when employing L workers: materials + tool wear + wage / marginal product. */
+  const mcAt = (L: number): number => mc + tc + ((wEff / eff) * Math.pow(Math.max(1e-6, L * eff), 1 - d.alpha)) / Math.max(1e-9, d.alpha * A);
 
-  // Demand side: expected sales (+ a share of the market's unmet demand) and the stock gap.
+  // ---- demand: expected sales (+ a share of the market's unmet demand) and the stock gap ----
   let sales = Math.max(0, fin(f.sales));
   if (m && m.shortage > 0 && Number.isFinite(m.shortage)) {
     const tot = salesByTG[t * N_GOODS + g];
@@ -614,17 +615,30 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const tgt = inventoryTarget(k, sales, s.day);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
   // Production follows mean (de-seasonalised) sales; the stock target absorbs the season.
-  const qWant = Math.max(0, meanSales(g, sales, s.day) * (1 + DEMAND_SLACK) + (tgt - Math.max(0, f.inv[g])) / adj);
+  const mean = meanSales(g, sales, s.day);
+  const qWant = Math.max(0, mean * (1 + DEMAND_SLACK) + (tgt - Math.max(0, f.inv[g])) / adj);
   let lDem = laborForOutput(k, qWant, sPlan, site) / eff;
   // Without a sales history the firm keeps (or builds up to) a capacity-based workforce.
   const young = s.day - f.founded < NEW_FIRM_DAYS;
   const noHistory = !(f.sales > 1e-6) || f.sales < 0.2 * fin(f.output);
   if (young && noHistory) lDem = Math.max(lDem, nW, NEW_FIRM_SCALE * Math.min(cap, d.typicalSize));
-  const profitBound = lOpt < lDem;
+
+  // ---- price: marginal cost at the normal rate of sales (P = MC) ----
+  // Firms here set prices (they post ask ladders), so they meet demand at a price equal to
+  // the marginal cost of serving it: asks move toward it (ASK_COMPETE_STEP a day), fat
+  // margins with idle capacity are competed away and cost increases are passed on.
+  const lSales = Math.min(cap, Math.max(laborForOutput(k, mean, sPlan, site) / eff, young && noHistory ? lDem : 0));
+  const pStar = mcAt(Math.max(lSales, 0.5));
+  // Output is judged at the price the firm is moving to (within PRICE_PLAN_DAYS of steps),
+  // so a cost shock is met by the price rising, not by output being cut on a stale price;
+  // only a shock bigger than that forces the firm to shrink (step-capped, below).
+  const reach = PRICE_PLAN_DAYS * ASK_COMPETE_STEP;
+  const pPlan = clamp(pStar, pNet * (1 - reach), pNet * (1 + reach));
+  const lOpt = lOptAt(pPlan);
+  const profitBound = lOpt < lDem * 0.999;
   let raw = Math.min(lOpt, lDem);
-  if (!(margin > 0)) raw = 0;
   raw = clamp(fin(raw), 0, cap);
-  if (margin > 0 && lOpt > 0.3 && lDem > 0.05 && raw < 1) raw = Math.min(1, cap);
+  if (pPlan - mc - tc > 0 && lOpt > 0.3 && lDem > 0.05 && raw < 1) raw = Math.min(1, cap);
   // Probing: a firm that has stopped (nothing in stock, nothing sold) comes back with one
   // worker when yesterday's buyers would have paid more than it costs one worker to make
   // their output — otherwise a firm that stopped would never learn that demand came back.
@@ -637,27 +651,15 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
       probe = pp;
     }
   }
-
-  // Competitive pricing: the net price at which the optimal workforce would equal the
-  // workforce demand calls for — marginal cost at the quantity demanded. Asks move toward
-  // it (at most ASK_COMPETE_STEP a day): fat margins with idle capacity are competed away,
-  // cost increases are passed on instead of simply cutting output.
-  let shade = 1;
-  if (probe > 0) shade = probe / Math.max(1e-6, pNet);
-  else if (lDem > 1e-6 && lOpt > 1e-6 && margin > 0) {
-    const pStar = mc + tc + margin * Math.pow(lDem / lOpt, 1 - d.alpha);
-    shade = pStar / Math.max(1e-6, pNet);
-  } else if (!(margin > 0) && lDem > 0.05) shade = (mc + tc + wEff / Math.max(1e-6, d.prodPerWorker * site * sPlan * eff)) / Math.max(1e-6, pNet);
+  const shade = probe > 0 ? probe / Math.max(1e-6, pNet) : pStar / Math.max(1e-6, pNet);
   if (f.id < sc.n) sc.shade[f.id] = clamp(fin(shade, 1), 1 - ASK_COMPETE_STEP, 1 + ASK_COMPETE_STEP);
 
-  // Smoothing with hysteresis. When the margin (not demand) binds, the daily step is also
-  // bounded: with α near 1 the optimum reacts to margins with an elasticity of 1/(1−α), so
-  // firms feel their way toward it; what they cannot sell they stop making at once.
+  // ---- smoothing with hysteresis; profit-driven cuts are step-capped ----
   const cur = clamp(fin(f.target), 0, cap);
   let next = cur;
   if (Math.abs(raw - cur) > TARGET_HYSTERESIS * cur + 0.1) {
     let step = TARGET_SMOOTH * (raw - cur);
-    if (profitBound && margin > 0) {
+    if (profitBound && lOpt > 0) {
       const stepCap = TARGET_MAX_STEP * Math.max(cur, 1) + TARGET_MAX_STEP_ABS;
       step = clamp(step, -stepCap, stepCap);
     }
@@ -666,7 +668,7 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   if (raw <= 0 && next < 0.3) next = 0;
   f.target = clamp(fin(next), 0, cap);
   const dbg = rt(s).bag.firmDebug as Record<number, unknown> | undefined;
-  if (dbg) dbg[f.id] = { pNet, mc, tc, margin, lOpt, lDem, raw, sales, tgt, stock: f.inv[g], shade: f.id < sc.n ? sc.shade[f.id] : 0 };
+  if (dbg) dbg[f.id] = { pNet, mc, tc, margin, lOpt, lDem, raw, sales, tgt, stock: f.inv[g], shade: f.id < sc.n ? sc.shade[f.id] : 0, pStar };
 }
 
 /**

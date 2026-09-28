@@ -100,6 +100,7 @@ const {
   BANK_NEWS_GAP_DAYS,
   BANK_LATE_REFUSE_DAYS,
   BANK_MAX_TERM,
+  BANK_TERM_CAPITAL_EXTRA,
   DISTRESS_BANKRUPT_DAYS,
   ENTRY_OWNER_EQUITY,
   BUILD_MARGIN,
@@ -796,8 +797,8 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
   const f = firmOf(s, who);
   const p = f ? undefined : personOf(s, who);
 
-  // capital headroom
-  const capNeed = minCapital(s) + BANK_STANCE_CAPITAL * stance;
+  // capital headroom (term credit must leave room for working capital)
+  const capNeed = minCapital(s) + BANK_STANCE_CAPITAL * stance + (asset ? BANK_TERM_CAPITAL_EXTRA : 0);
   const capRoom = fin(b.equity) / Math.max(1e-6, capNeed) - loansNow;
   // existing obligations
   let debt0 = 0;
@@ -1019,9 +1020,10 @@ function failureStep(s: SimState): void {
   }
   b.failedDays += 1;
   if (b.failedDays < BANK_FAIL_GRACE_DAYS) return;
-  // No new capital arrived: depositors absorb the loss.
+  // No new capital arrived: depositors absorb the loss, and enough of their balances is
+  // converted into the bank's capital for it to meet its minimum again (and lend).
   const L = loansOutstanding(s);
-  const need = BANK_BAILIN_TARGET * Math.max(0, L) - b.equity;
+  const need = (minCapital(s) + BANK_BAILIN_TARGET) * Math.max(0, L) - b.equity;
   const dep = deposits(s);
   const frac = dep > 0 ? clamp(need / dep, 0, 1) : 0;
   const cut = frac > 0 ? bailIn(s, frac) : 0;
@@ -1042,7 +1044,8 @@ function failureStep(s: SimState): void {
  * cap below the risk-adjusted rate → reject); approved → Loan record + ledger.disburse.
  * Stance tightens with defaultEma, loosens slowly. Monthly dividends to the owner when
  * capital ratio > 12 %. Failure: equity < 0 → failed (no new loans, news 'crisis');
- * after BANK_FAIL_GRACE_DAYS still < 0 → bailIn to restore 2 % capital, news.
+ * after BANK_FAIL_GRACE_DAYS still < 0 → bailIn to restore capital (to the minimum ratio +
+ * BANK_BAILIN_TARGET, so the bank can lend again), news.
  * Recovery when equity > 0 (e.g. the player transfers to the bank).
  * Also: overnight reserve management at the window and pruning of inactive loans.
  * stats.acc: loans_new (¤ lent today), loans_rationed, bank_dividends.

@@ -307,7 +307,7 @@ function badLoss(s: SimState, amount: number, sinkId: number): void {
 }
 
 describe('bank: failure and bail-in', () => {
-  it('negative equity stops lending; after the grace period deposits are cut to restore 2 % capital', () => {
+  it('negative equity stops lending; after the grace period deposits are cut to restore its minimum capital', () => {
     const s = world();
     const a = person(s, 10_000);
     const f = firm(s, 5_000, 30);
@@ -339,7 +339,7 @@ describe('bank: failure and bail-in', () => {
     expect(frac).toBeGreaterThan(0);
     expect(a.cash).toBeCloseTo(cash0 * (1 - frac), 6);
     expect(s.bank.equity).toBeGreaterThan(0);
-    expect(capitalRatio(s)).toBeCloseTo(0.02, 6);
+    expect(capitalRatio(s)).toBeCloseTo(0.08 + 0.02, 6); // minimum capital + BANK_BAILIN_TARGET
     expect(big.active).toBe(true);
     const texts = s.news.map((n) => n.text).join('\n');
     expect(texts).not.toMatch(BANNED);

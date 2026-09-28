@@ -252,6 +252,8 @@ export const ASK_QS_MIN = 0.5;
 export const ASK_QS_MAX = 2.5;
 /** Asks move at most this share a day toward the price at which the firm's optimal output meets demand (P = MC). */
 export const ASK_COMPETE_STEP = 0.05;
+/** Firms judge output at the price they can reach within this many days of ask steps (price setters pass costs on). */
+export const PRICE_PLAN_DAYS = 5;
 /** Output inventory gaps are closed over this many days (perishables: faster). */
 export const INV_ADJUST_DAYS = 20;
 export const INV_ADJUST_DAYS_PERISHABLE = 2;
@@ -477,8 +479,11 @@ export const BANK_PAY_TOLERANCE = 0.98;
 export const BANK_DEFAULT_KEEP_DAYS = 5;
 /** Dividends only while the capital ratio exceeds this. */
 export const BANK_DIVIDEND_CAPITAL = 0.12;
-/** Bail-in restores equity to this share of loans. */
+/** Bail-in restores the capital ratio to the legal/own minimum plus this margin (so the bank can lend again). */
 export const BANK_BAILIN_TARGET = 0.02;
+/** Loans that finance new capital (invest, start-up, house, project) must leave this much capital headroom
+ *  above what working-capital credit needs: existing customers' working capital comes first. */
+export const BANK_TERM_CAPITAL_EXTRA = 0.02;
 /** IOUs must yield more than the reserve rate + BANK_IOU_MARGIN + this term premium (they are perpetual). */
 export const BANK_IOU_TERM_PREMIUM = 0.01;
 /** IOU book capped at this share of deposits; this share of excess reserves bid per day. */
