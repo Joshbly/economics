@@ -1,0 +1,36 @@
+import { it } from 'vitest';
+import { freightPerUnit, traderOrders, tradersBeginDay, tradersDispatch } from '../src/sim/agents/traders';
+import { TOOLS_PER_WAGON } from '../src/sim/config';
+import { newFirm, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
+import { G, N_GOODS } from '../src/sim/goods';
+import { reconcileBank } from '../src/sim/ledger';
+import { addAsk, bookFor, clearAll, openBooks, expectedGross } from '../src/sim/market/markets';
+import { rt } from '../src/sim/runtime';
+import { FIRM_BASE } from '../src/sim/types';
+it('dbg', () => {
+  const n = 600; const z = () => new Array(n).fill(0);
+  const s = newSimState(5, { w: 60, h: 10, terrain: new Array(n).fill(3), elev: z(), fert: z(), deposit: z(), river: z(), road: new Array(n).fill(1), occ: new Array(n).fill(-1), district: z() });
+  s.towns.push(newTown(0, 'A', 'farm', 5, 5, 3)); s.towns.push(newTown(1, 'B', 'capital', 45, 5, 3));
+  s.treasury = newTreasury(2);
+  const P = [2.6, 3.0, 2.6, 2.6, 2.6, 3.2, 13, 20, 4, 2.8, 22];
+  for (let t = 0; t < 2; t++) for (let g = 0; g < N_GOODS; g++) s.markets.push(newMarket(t, g, P[g]));
+  for (const k of ['0>1','1>0']) rt(s).routes.set(k, { from: 0, to: 1, tiles: [], length: 40, paved: 0, dirt: 40, offroad: 0, days: 2 });
+  const owner = newPerson(s, 0, 'O'); const f = newFirm(s, 'trader', 0, -1, owner.id, 'T');
+  f.wage = 10; f.cash = 5000; f.tools = 6.5 * TOOLS_PER_WAGON; f.inv[G.oil] = 60; f.capacity = 24;
+  for (let i = 0; i < 6; i++) { const p = newPerson(s, 0, 'c'); p.job = f.id; f.workers.push(p.id); }
+  s.bank.reserves = 1e5; reconcileBank(s);
+  s.markets[G.grain].ema = 1; s.markets[N_GOODS + G.grain].ema = 6; s.markets[N_GOODS + G.grain].volEma = 200;
+  tradersBeginDay(s);
+  console.log('fpu before', freightPerUnit(s, 0, 1), expectedGross(s, 0, G.oil), expectedGross(s, 0, G.tools));
+  const books = openBooks(s); traderOrders(s, books);
+  console.log('fpu after orders', freightPerUnit(s, 0, 1));
+  const o2 = newPerson(s, 0, 'F'); const farm = newFirm(s, 'farm', 0, -1, o2.id, 'Farm'); farm.inv[G.grain] = 500;
+  addAsk(bookFor(books, 0, G.grain), FIRM_BASE + farm.id, 1.0, 500);
+  clearAll(s, books);
+  console.log('fpu after clear', freightPerUnit(s, 0, 1), expectedGross(s, 0, G.oil), expectedGross(s, 0, G.tools), s.markets[G.oil].ema);
+  console.log(bookFor(books, 0, G.oil).bids.length, bookFor(books, 0, G.tools).bids.length, f.trade!.basis[0][G.grain]);
+  for (const o of bookFor(books, 0, G.grain).bids) console.log('bid', o.ref, o.limit, o.qty, o.filled, o.paid);
+  tradersDispatch(s, books);
+  console.log('basis home', f.trade!.basis[0][G.grain], f.inv[G.grain]);
+  console.log(s.shipments[0]);
+});

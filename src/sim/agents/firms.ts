@@ -266,13 +266,21 @@ function inventoryMaxDays(sector: Sector): number {
   return INV_MAX_DAYS;
 }
 
-/** Daily sales a firm plans its selling around (falls back on output while it has no sales history). */
-function salesRef(f: Firm, stock: number): number {
+/**
+ * Daily sales a firm plans its selling around. A young firm without a sales history
+ * assumes it can sell what it makes (or that its stock is at target); a mature firm
+ * uses its sales EMA, with a small floor so that stock it cannot sell is still
+ * offered (and, being far above target, discounted).
+ */
+function salesRef(s: SimState, f: Firm, stock: number): number {
   const sales = Math.max(0, fin(f.sales));
   const out = Math.max(0, fin(f.output));
-  if (sales > 0.2 * out && sales > 1e-6) return sales;
-  if (out > 1e-6) return Math.max(sales, out);
-  return Math.max(sales, stock / Math.max(1, INV_TARGET_DAYS));
+  const young = s.day - f.founded < NEW_FIRM_DAYS;
+  if (young && !(sales > 0.2 * out && sales > 1e-6)) {
+    if (out > 1e-6) return Math.max(sales, out);
+    return Math.max(sales, stock / Math.max(1, INV_TARGET_DAYS));
+  }
+  return Math.max(sales, stock / Math.max(1, 4 * INV_TARGET_DAYS));
 }
 
 // ---------------------------------------------------------------------------
@@ -416,8 +424,6 @@ export function firmDailyCost(s: SimState, f: Firm): number {
   const w = Math.max(0, fin(f.wage));
   let c = n * w;
   if (d && d.producer) {
-    const prices = s.markets.length ? null : null;
-    void prices;
     let mc = 0;
     for (const [g, a] of d.inputs) mc += a * Math.max(0, fin(marketOf(s, f.town, g).ema));
     c += mc * Math.max(fin(f.output), fin(f.sales));
@@ -715,7 +721,6 @@ export function firmsPayWages(s: SimState): void {
     total += paidFirm;
     if (state) stateTotal += paidFirm;
     bump(s, wagesKey(f.sector), paidFirm);
-    if (state && k >= 1 && paidFirm < w * f.workers.length - 1e-6 && f.id < sc.n) sc.unpaid[f.id] += w * f.workers.length - paidFirm;
   }
   bump(s, 'wages', total);
   bump(s, 'wages_state', stateTotal);
@@ -755,7 +760,7 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
   const t = f.town;
   const book = bookFor(books, t, g);
   const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
-  const sales = salesRef(f, stock);
+  const sales = salesRef(s, f, stock);
   const target = Math.max(1e-6, inventoryTarget(f.sector, sales, s.day));
   let shift = clamp(Math.pow(stock / target, -ASK_INV_ELASTICITY), ASK_SHIFT_MIN, ASK_SHIFT_MAX);
   const distressed = f.distress > 0;
@@ -765,9 +770,11 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
   let floor = 0;
   if (!distressed) {
     const nW = f.workers.length;
-    const apl = nW > 0 && f.output > 0 ? f.output / nW : d.prodPerWorker * siteMultiplier(s, f);
+    // Output per worker: realised, but never below half the calibrated norm (a firm idled by
+    // missing inputs must not price itself out of the market on a freak cost figure).
+    const norm = d.prodPerWorker * siteMultiplier(s, f) * seasonFactor(d.season, s.day);
+    const apl = Math.max(nW > 0 ? fin(f.output) / nW : 0, 0.5 * norm);
     floor = ASK_COST_FLOOR * fin(unitVariableCost(f.sector, f.wage, apl, pt.gross[t]), 0);
-    if (floor > 5 * pExp) floor = 5 * pExp; // numeric guard for firms with no output history
   }
   const perish = isPerishable(g);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
@@ -1022,7 +1029,7 @@ function monthEndFinance(s: SimState, f: Firm, costDay: number, working: number)
   let reserve = CASH_TARGET_DAYS * costDay;
   if (f.build) reserve += builderAdvances(s, f);
   // Early repayment of working-capital loans (destroys deposits: credit contracts when firms are flush).
-  if (working > 0 && f.cash > PREPAY_CASH_DAYS * costDay + reserve - CASH_TARGET_DAYS * costDay) {
+  if (working > 0 && f.cash > reserve + (PREPAY_CASH_DAYS - CASH_TARGET_DAYS) * costDay) {
     let room = f.cash - reserve;
     for (const ln of s.loans) {
       if (!(room > 0.01)) break;
@@ -1038,7 +1045,7 @@ function monthEndFinance(s: SimState, f: Firm, costDay: number, working: number)
       }
     }
   }
-  const excess = f.cash - reserve - (working > 0 ? 0 : 0);
+  const excess = f.cash - reserve;
   if (excess > 0 && (f.monthProfit > 0 || excess > CASH_TARGET_DAYS * costDay)) payDividend(s, f, DIVIDEND_SHARE * excess);
 }
 
@@ -1261,10 +1268,6 @@ function finalizeClosure(s: SimState, f: Firm): void {
       if (!o || !o.alive || o.id === f.id) to = STATE;
     } else to = STATE;
     pay(s, fref, to, f.cash, 'transfer');
-  }
-  if (f.cash > 0 && f.cash < 1e-6) {
-    // dust left by float rounding goes to the Treasury
-    pay(s, fref, STATE, f.cash, 'misc');
   }
   // Unsold stock stays in the vacant building; a firm that reopens it takes it over.
   const b = f.building >= 0 ? s.buildings[f.building] : undefined;

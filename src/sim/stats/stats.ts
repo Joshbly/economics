@@ -23,14 +23,16 @@
 //            (port trade, tradable goods only), imports, exports, tradeBal (¤ at base)
 //   Labour   unemp (rate: jobless / population — every household is a worker),
 //            employed, unemployed, vacancies, wage (employment-weighted posted wage),
-//            realWage (wage / CPI × 100), hires, fires, quits
+//            realWage (wage / CPI × 100), wageNet (take-home after worker-side wage
+//            levies), wagesPaid (¤ paid in wages today), hires, fires, quits
 //   People   pop, births, deaths, starved, immigrants, emigrants, hunger (share with
 //            food satisfaction < HUNGRY_BELOW), cold (share with heat < COLD_BELOW),
 //            homeless (count), homelessRate, evictions, health, content (means)
 //   Money    money (Σ deposits), reserves, credit (loans), bankEquity, capRatio
 //            (equity / loans), loanRate (principal-weighted, else bank base rate),
 //            baseRate, depRate, windowDebt, reserveRate, lendRate (the window),
-//            writeoffs, iouPrice, iouYield, iouOut, goldPrice, treasuryGold
+//            writeoffs, defaults, loansNew, interestLoans, interestDeposits, dividends
+//            (¤ today), iouPrice, iouYield, iouOut, goldPrice, treasuryGold
 //   Treasury purse, minted (cumulative), mintDay (created today), levyTake, levyGive,
 //            levyNet, transferGive, transferTake, treasuryIncome, treasurySpend
 //            (Σ positive / negative categories of treasury.flows today)
@@ -53,10 +55,12 @@
 // at base prices, if firms record it), event_va, build_labor, build_labor_state
 // (Treasury workers' labour on projects, if construction records it), freight_cost,
 // consval, cons_<good>, vol_<good>, shortage_<good>, imp_<good>, exp_<good>, impval,
-// expval, gov_goods, gov_goods_sold, flow_rent, flow_build, inv_tools (tools
-// investment ¤, if firms record it; otherwise read from today's tools books),
+// expval, gov_goods, gov_goods_sold, flow_rent, flow_build, tools_selfsupply,
+// inv_tools (tools investment ¤, if a module records it; otherwise read from
+// today's tools books),
 // levy_take, levy_give, transfer_give, transfer_take, writeoffs, births, deaths,
-// starved, immigrants, emigrants, hires, fires, quits, evictions.
+// starved, immigrants, emigrants, hires, fires, quits, evictions, wages, defaults,
+// loans_new, interest_loans, interest_deposits, dividends.
 // ============================================================================
 import {
   BASE_RENT_SHARE,
@@ -82,10 +86,12 @@ import {
 import { ALL_SECTORS, CONSUMER_GOODS, G, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS } from '../goods';
 import { deposits } from '../ledger';
 import { steadyStateDemand } from '../agents/demandModel';
+import { netWage, wageCtx } from '../agents/labor';
 import { basePrices as foundingPrices } from '../agents/production';
 import { freightPerUnit } from '../agents/traders';
 import { routeBetweenTowns } from '../world/paths';
 import { expectedGross, type Books } from '../market/markets';
+import { levyAmount } from '../policy/levies';
 import { isMonthEnd, monthOf, yearOf } from '../calendar';
 import { rt } from '../runtime';
 import { FIRM_BASE, type SimState, type Stats } from '../types';
@@ -118,6 +124,9 @@ export function monthMode(key: string): Mode {
 }
 
 const MACC_DAYS = '_days';
+
+/** A finite number or 0 (acc keys may be missing). */
+const num = (x: number | undefined): number => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 
 // ---------------------------------------------------------------------------
 // Runtime cache (rebuildable; never serialised)
@@ -262,10 +271,20 @@ export function consumerPrice(s: SimState, t: number, g: number): number {
   return gr > 0 ? gr : m.ema > 0 ? m.ema : 1;
 }
 
-/** Cost of the CPI basket in town t at consumer prices, with `rent` per slot per day. */
+/** Rent a tenant in town t pays per slot per day for an asked rent of `rent`, including tenant-side rent levies (a payment lowers it). */
+export function tenantRent(s: SimState, t: number, rent: number): number {
+  const r = Math.max(0, fin(rent));
+  const ls = s.policy.levies;
+  let any = false;
+  for (let i = 0; i < ls.length; i++) if (ls[i].base === 'rent' && ls[i].enabled) any = true;
+  if (!any) return r;
+  return Math.max(0, r + fin(levyAmount(s, 'rent', 'tenant', { town: t }, r, 1)));
+}
+
+/** Cost of the CPI basket in town t at consumer prices, with an asked `rent` per slot per day. */
 export function basketCost(s: SimState, t: number, rent: number): number {
   const st = s.stats;
-  let c = fin(st.basketRent) * Math.max(0, fin(rent));
+  let c = fin(st.basketRent) * tenantRent(s, t, rent);
   for (const g of CONSUMER_GOODS) c += fin(st.basket[g]) * consumerPrice(s, t, g);
   return c;
 }
@@ -369,17 +388,33 @@ function costFreight(s: SimState): number {
 
 /**
  * Tools investment today (¤): what firms other than builders (whose tools are mostly
- * project materials, counted in construction) paid for tools. Uses acc.inv_tools
+ * project materials, counted in construction) paid for tools, plus toolworks' own
+ * output put to use (acc.tools_selfsupply at the tools price). Uses acc.inv_tools
  * when a module records it; otherwise reads today's settled tools books (the pooled
  * books of market/markets.ts keep today's fills until the next openBooks). A book is
  * used only if its fills add up to the market's recorded volume (i.e. it is today's).
  */
 export function toolsInvestment(s: SimState): number {
-  const recorded = s.stats.acc.inv_tools;
+  const acc = s.stats.acc;
+  const recorded = acc.inv_tools;
   if (typeof recorded === 'number' && Number.isFinite(recorded)) return Math.max(0, recorded);
-  const books = rt(s).bag.marketBooks as Books | undefined;
-  if (!books || !books.goods) return 0;
+  // Own-account investment: toolworks equipping themselves from their own output.
   let inv = 0;
+  const own = num(acc.tools_selfsupply);
+  if (own > 0) {
+    let p = 0;
+    let n = 0;
+    for (let t = 0; t < s.towns.length; t++) {
+      const m = s.markets[t * N_GOODS + G.tools];
+      if (m && m.ema > 0) {
+        p += m.ema;
+        n++;
+      }
+    }
+    inv += own * (n > 0 ? p / n : fin(s.stats.basePrices[G.tools]));
+  }
+  const books = rt(s).bag.marketBooks as Books | undefined;
+  if (!books || !books.goods) return inv;
   for (let t = 0; t < s.towns.length; t++) {
     const m = s.markets[t * N_GOODS + G.tools];
     const b = books.goods[t * N_GOODS + G.tools];
@@ -397,6 +432,19 @@ export function toolsInvestment(s: SimState): number {
     if (Math.abs(filled - m.volume) <= 1e-6 * Math.max(1, m.volume)) inv += firmPaid;
   }
   return inv;
+}
+
+/** Employment-weighted take-home wage (posted wage after worker-side wage levies, within legal bounds). */
+export function takeHomeWage(s: SimState, fallback = 0): number {
+  let sum = 0;
+  let n = 0;
+  const wc = wageCtx(s);
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.workers.length === 0) continue;
+    sum += fin(netWage(s, wc, f)) * f.workers.length;
+    n += f.workers.length;
+  }
+  return n > 0 ? sum / n : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,7 +736,13 @@ export function initStats(s: SimState): void {
   st.latest.inflYoYCarry = 0;
 }
 
-/** After warm-up: re-base CPI (=100) to current prices, clear series, s.startDay = s.day. */
+/**
+ * After warm-up: re-base CPI (=100) to current prices, clear series, s.startDay = s.day.
+ * The whole base period moves (base prices for real GDP, base wage and rent, the basket
+ * re-weighted at current prices, base freight); the last measured inflation rates are
+ * carried (infl30Carry / inflYoYCarry) until enough new history exists; warm-up news
+ * is dropped (founding-day items are kept).
+ */
 export function rebaseStats(s: SimState): void {
   const st = s.stats;
   const lat = st.latest;
@@ -712,6 +766,9 @@ export function rebaseStats(s: SimState): void {
   lat.deflator = 100;
   lat.freight = roundSig(st.baseFreight);
   lat.day = s.day;
+  // The player's story starts now: drop what happened during the silent warm-up
+  // (keep items from the founding day, e.g. the world's welcome message).
+  s.news = s.news.filter((n) => n.day <= 0);
 }
 
 /** Make sure the base period exists (a state built without initStats). */
@@ -739,8 +796,6 @@ function ensureBase(s: SimState): void {
 // ---------------------------------------------------------------------------
 // Daily indicators
 // ---------------------------------------------------------------------------
-const num = (x: number | undefined): number => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
-
 function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
   const st = s.stats;
   const acc = st.acc;
@@ -781,6 +836,8 @@ function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
   const wage = tl.wageN > 0 ? tl.wageSum / tl.wageN : num(lat.wage) || st.baseWage;
   v.wage = wage;
   v.realWage = cpi > 0 ? (wage * 100) / cpi : wage;
+  v.wageNet = takeHomeWage(s, wage);
+  v.wagesPaid = num(acc.wages);
   v.hires = num(acc.hires);
   v.fires = num(acc.fires);
   v.quits = num(acc.quits);
@@ -872,6 +929,11 @@ function computeDaily(s: SimState, c: StatsCache): Record<string, number> {
   v.reserveRate = fin(t.reserveRate);
   v.lendRate = fin(t.lendRate);
   v.writeoffs = num(acc.writeoffs);
+  v.defaults = num(acc.defaults);
+  v.loansNew = num(acc.loans_new);
+  v.interestLoans = num(acc.interest_loans);
+  v.interestDeposits = num(acc.interest_deposits);
+  v.dividends = num(acc.dividends);
   const iouPrice = s.iouMarket && s.iouMarket.price > 0 ? s.iouMarket.price : IOU_PAR;
   v.iouPrice = iouPrice;
   v.iouYield = IOU_COUPON / iouPrice;

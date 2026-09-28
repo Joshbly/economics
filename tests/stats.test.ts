@@ -217,6 +217,23 @@ describe('CPI', () => {
   });
 });
 
+describe('CPI rent component', () => {
+  it('a tenant-side rent payment by the Treasury lowers the CPI', () => {
+    const { s } = world();
+    initStats(s);
+    statDay(s);
+    const before = s.stats.latest.cpi;
+    s.policy.levies.push({
+      id: 2, label: '', enabled: true, dir: -1, base: 'rent', unit: 'pct', rate: 0.5, payer: 'tenant', threshold: 0, good: -1, town: -1, toTown: -1,
+      sector: 'any', group: 'all', buildingKind: 'any', created: 0, until: -1, today: 0, month: 0, lastMonth: 0, total: 0,
+    });
+    statDay(s);
+    const rentShare = (s.stats.basketRent * s.stats.baseRent) / s.stats.baseCost;
+    expect(before - s.stats.latest.cpi).toBeCloseTo(100 * rentShare * 0.5, 0);
+    expect(s.stats.latest.cpi).toBeLessThan(before);
+  });
+});
+
 describe('daily indicators and town fields', () => {
   it('sets town derived fields', () => {
     const { s } = world();

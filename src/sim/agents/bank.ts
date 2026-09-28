@@ -1043,7 +1043,7 @@ export function bankEndDay(s: SimState): void {
   const b = s.bank;
   const wo = todaysWriteoffs(s);
   const L = loansOutstanding(s);
-  b.defaultEma = ema(fin(b.defaultEma), wo / Math.max(1, L), BANK_DEFAULT_EMA);
+  b.defaultEma = ema(fin(b.defaultEma), wo / Math.max(1, L + wo), BANK_DEFAULT_EMA); // share of the book lost today
   b.profitMonth = fin(b.profitMonth) + b.interestIn - b.interestOut - wo;
   failureStep(s);
   updateStance(s);

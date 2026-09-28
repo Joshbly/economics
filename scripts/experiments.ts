@@ -21,7 +21,7 @@
 import { WARMUP_DAYS } from '../src/sim/config';
 import { G, GOODS, N_GOODS, TRADABLE_GOODS } from '../src/sim/goods';
 import { Game } from '../src/sim/game';
-import { netWage, wageCtx } from '../src/sim/agents/labor';
+import { takeHomeWage } from '../src/sim/stats/stats';
 import { roadPlan } from '../src/sim/world/paths';
 import type { Levy, Limit, PlayerAction, SimState, TownKind } from '../src/sim/types';
 
@@ -192,7 +192,7 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   freight: { label: 'shipping rate', fn: (s) => L(s, 'freight') },
   importPrice: { label: 'port price paid for the imported good', fn: (s, c) => mkt(s, c.harbor, c.importGood)?.gross ?? 0 },
   importQty: { label: 'imports of that good/day', fn: (s, c) => L(s, 'imp_' + c.importGood) },
-  takeHome: { label: 'take-home wage (employment-weighted)', fn: (s) => takeHome(s) },
+  takeHome: { label: 'take-home wage (employment-weighted)', fn: (s) => takeHomeWage(s) },
   employed: { label: 'people employed', fn: (s) => L(s, 'employed') },
 };
 
@@ -205,17 +205,6 @@ function safe(f: () => number): number {
   }
 }
 
-function takeHome(s: SimState): number {
-  const wc = wageCtx(s);
-  let sum = 0;
-  let n = 0;
-  for (const f of s.firms) {
-    if (!f || !f.alive || f.workers.length === 0) continue;
-    sum += netWage(s, wc, f) * f.workers.length;
-    n += f.workers.length;
-  }
-  return n > 0 ? sum / n : 0;
-}
 
 // ---------------------------------------------------------------------------
 // Experiments
