@@ -135,6 +135,19 @@ export const PORTFOLIO_MAX_GOLD_SHARE = 0.4;
 export const PORTFOLIO_MIN_ORDER = 1;
 /** Skip consumer bids whose planned spend is below this (¤) — avoids dust orders. */
 export const MIN_BID_SPEND = 0.01;
+/**
+ * Order-load control. All households of a town bid at the same BID_RUNGS price levels,
+ * so each household uses only this many rungs per good: a strided subset of BID_RUNGS
+ * (e.g. 2 → {2.5,1.0} / {1.6,0.9} / {1.25,0.8} / {1.1,0.65}) rotating daily across
+ * households. The town's aggregate demand curve keeps every level; auction load drops ~3×.
+ * Set a good to BID_RUNGS.length for full individual ladders.
+ */
+export const HH_RUNGS: Record<number, number> = { 1: 3, 3: 2, 8: 3, 9: 2, 10: 2 }; // fish, coal, bread, ale, furniture
+/** Furniture (durable) is bought every this many days, staggered, in proportionally larger lots. */
+export const FURNITURE_SHOP_DAYS = 5;
+/** While the coal store covers today plus this many days of forecast heat, coal is topped up only every COAL_SHOP_DAYS. */
+export const COAL_COMFORT_DAYS = 6;
+export const COAL_SHOP_DAYS = 4;
 
 // ---- Labour (agents/labor.ts) ------------------------------------------------
 export const JOB_SAMPLE = 6; // vacancies an unemployed person looks at per day

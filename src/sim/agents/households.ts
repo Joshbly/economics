@@ -11,69 +11,35 @@
 //    buyer-side sale levy shifts the demand curve down in base terms; bread and fish
 //    substitute through the CES food nest.
 //  * income → consumption: spending tracks an EMA of disposable income (net wages,
-//    dividends, rent received, interest, Treasury payments) minus per-head levies.
+//    dividends, rent received, interest, Treasury payments, net of per-head and other
+//    stock levies — everything the paying modules book into person.earned).
 //  * inflation → portfolio: when expected inflation outruns the deposit rate, savers
 //    buy gold; when IOU yields beat deposits they buy IOUs.
 //  * living standards → health (productivity, mortality) and contentment (unrest,
 //    emigration).
 // ============================================================================
-import {
-  ALE_JOY_SCALE,
-  BASE_WAGE,
-  COLD_BELOW,
-  COMFORT_HALF,
-  CONTENT_EMA,
-  CONTENT_W_COMFORT,
-  CONTENT_W_FOOD,
-  CONTENT_W_HEALTH,
-  CONTENT_W_HOME,
-  CONTENT_W_INCOME,
-  CONTENT_W_JOY,
-  CONTENT_W_WORK,
-  ELASTICITY,
-  FOOD_MAX,
-  FOOD_NEED,
-  FURNITURE_WEAR_DAY,
-  GOLD_HEDGE_TRIGGER,
-  HEALTH_EMA,
-  HEALTH_FOOD_POW,
-  HEALTH_W_HEAT,
-  HEAT_AHEAD_DAYS,
-  HEAT_AMP,
-  HEAT_MEAN,
-  HEAT_RESERVE_DAYS,
-  HOMELESS_HEALTH,
-  HUNGRY_BELOW,
-  INCOME_EMA,
-  INFL_EXP_EMA,
-  INFL_PAIN_SPAN,
-  INFL_PAIN_START,
-  INFL_PAIN_W,
-  IOU_COUPON,
-  IOU_MARGIN,
-  JOY_EMA,
-  MIN_BID_SPEND,
-  OLD_AGE_MAX_LOSS,
-  OLD_AGE_SPAN,
-  OLD_AGE_START,
-  PORTFOLIO_DAILY_FRACTION,
-  PORTFOLIO_MAX_GOLD_SHARE,
-  PORTFOLIO_MAX_IOU_SHARE,
-  PORTFOLIO_MIN_ORDER,
-  PORTFOLIO_SURPLUS_MULT,
-  SHARE_COAL,
-} from '../config';
-import { heatNeed } from '../calendar';
-import { CONSUMER_GOODS, G, N_GOODS } from '../goods';
-import { personRef } from '../ledger';
+import * as CFG from '../config';
+import * as CAL from '../calendar';
+import * as GOODS_M from '../goods';
+import * as LEDGER from '../ledger';
 import { addAsk, addBid, bookFor, expectedGross, type Books } from '../market/markets';
-import { levyAmount, matchLevies } from '../policy/levies';
+import { matchLevies } from '../policy/levies';
 import { rt } from '../runtime';
 import type { Book, Person, SimState } from '../types';
-import { GOLD_GOOD, IOU_GOOD } from '../types';
-import { clamp, ema, fin } from '../util';
-import { bidLadder, bufferTarget, foodIndex, goodsBudget, planDemand, subsistenceCost, type DemandInput } from './demandModel';
+import * as TYPES from '../types';
+import * as UTIL from '../util';
+import { bufferTarget, foodIndex, goodsBudget } from './demandModel';
 import { hasLevyBase, netWage, wageCtx } from './labor';
+
+// Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
+// import cycles back into agents) bound once at load: hot loops then read locals instead of
+// live import bindings (which cost a getter call per read under tsx/vitest).
+const { personRef } = LEDGER;
+const { ALE_JOY_SCALE, ALE_MAX_PER_DAY, BASE_WAGE, BID_RUNGS, COAL_COMFORT_DAYS, COAL_SHOP_DAYS, COLD_BELOW, COMFORT_HALF, CONTENT_EMA, CONTENT_W_COMFORT, CONTENT_W_FOOD, CONTENT_W_HEALTH, CONTENT_W_HOME, CONTENT_W_INCOME, CONTENT_W_JOY, CONTENT_W_WORK, ELASTICITY, FOOD_FLEX, FOOD_MAX, FOOD_NEED, FURNITURE_SHOP_DAYS, FURNITURE_WEAR_DAY, GOLD_HEDGE_TRIGGER, HEALTH_EMA, HEALTH_FOOD_POW, HEALTH_W_HEAT, HEAT_AHEAD_DAYS, HEAT_AMP, HEAT_MEAN, HEAT_RESERVE_DAYS, HH_RUNGS, HOMELESS_HEALTH, HUNGRY_BELOW, INCOME_EMA, INFL_EXP_EMA, INFL_PAIN_SPAN, INFL_PAIN_START, INFL_PAIN_W, IOU_COUPON, IOU_MARGIN, JOY_EMA, MIN_BID_SPEND, OLD_AGE_MAX_LOSS, OLD_AGE_SPAN, OLD_AGE_START, PANTRY_DAYS_BREAD, PANTRY_DAYS_COAL, PANTRY_DAYS_FISH, PORTFOLIO_DAILY_FRACTION, PORTFOLIO_MAX_GOLD_SHARE, PORTFOLIO_MAX_IOU_SHARE, PORTFOLIO_MIN_ORDER, PORTFOLIO_SURPLUS_MULT, SHARE_ALE, SHARE_COAL, SHARE_FOOD, SHARE_FURNITURE } = CFG;
+const { CONSUMER_GOODS, G, N_GOODS } = GOODS_M;
+const { clamp, ema, fin } = UTIL;
+const { heatNeed } = CAL;
+const { GOLD_GOOD, IOU_GOOD } = TYPES;
 
 /** Bread share of food units when no plan exists (CES weight at equal prices). */
 const FOOD_W_BREAD_FALLBACK = 0.68;
@@ -99,6 +65,10 @@ export interface HouseholdCache {
   subsist: Float64Array; // subsistence cost at expected prices
   prices: number[][]; // [town][good] expected gross prices (consumer goods; others 1)
   breadShare: number[]; // [town] planned bread share of food units
+  fiIndex: number[]; // [town] CES food price index
+  fiBread: number[]; // [town] bread expenditure share in the food nest
+  fiFish: number[]; // [town] fish expenditure share
+  subsistTown: number[]; // [town] subsistence cost (food + today's heat) at expected prices
   realIncome: number[]; // [town] mean real income (for relative standing)
   unemp: number[]; // [town] local unemployment rate used for buffers
   heat: number;
@@ -128,6 +98,10 @@ export function householdCache(s: SimState): HouseholdCache {
       subsist: newArr(n),
       prices: [],
       breadShare: [],
+      fiIndex: [],
+      fiBread: [],
+      fiFish: [],
+      subsistTown: [],
       realIncome: [],
       unemp: [],
       heat: HEAT_MEAN,
@@ -194,7 +168,8 @@ export function effectiveDepositRate(s: SimState, p: Person, interestLevies: boo
 
 /**
  * Before markets (after wages are paid):
- *  - income EMA from yesterday's person.earned (INCOME_EMA); lastWage tracking;
+ *  - income EMA from yesterday's person.earned (INCOME_EMA) — every module that pays a
+ *    person books it there (levies.stockLevies books takes negative); lastWage tracking;
  *  - expected inflation EMA toward stats.latest.infl30 (INFL_EXP_EMA);
  *  - today's goods budget via demandModel.bufferTarget / goodsBudget, stored in person.budget
  *    (rent = their slot's rent if housed);
@@ -208,58 +183,64 @@ export function householdsBeginDay(s: SimState): void {
   c.heatAhead = heatAheadMean(s.day);
 
   // Per-town expected gross prices, food split and local unemployment.
-  c.prices.length = nT;
-  c.breadShare.length = nT;
-  c.unemp.length = nT;
+  for (const a of [c.prices, c.breadShare, c.unemp, c.fiIndex, c.fiBread, c.fiFish, c.subsistTown]) a.length = nT;
   for (let t = 0; t < nT; t++) {
     const row = c.prices[t] ?? (c.prices[t] = new Array(N_GOODS).fill(1));
     for (let g = 0; g < N_GOODS; g++) row[g] = 1;
     for (const g of CONSUMER_GOODS) row[g] = safePrice(expectedGross(s, t, g));
+    // Same for everyone in town: the CES food index and subsistence cost
+    // (identical to demandModel.foodIndex / subsistenceCost).
     const fi = foodIndex(row[G.bread], row[G.fish]);
+    c.fiIndex[t] = fi.index;
+    c.fiBread[t] = fi.shareBread;
+    c.fiFish[t] = fi.shareFish;
+    c.subsistTown[t] = FOOD_NEED * fi.index + c.heat * row[G.coal];
     const qb = fi.shareBread / row[G.bread];
     const qf = fi.shareFish / row[G.fish];
-    c.breadShare[t] = qb + qf > 0 ? qb / (qb + qf) : 0.68;
+    c.breadShare[t] = qb + qf > 0 ? qb / (qb + qf) : FOOD_W_BREAD_FALLBACK;
     const town = s.towns[t];
     c.unemp[t] = town.pop > 0 ? clamp(fin(town.unemployed) / Math.max(1, town.pop), 0, 1) : 0.05;
   }
 
   const lat = s.stats.latest;
   const infl = clamp(fin(lat.infl30 ?? lat.inflation30 ?? 0), -0.5, 1.5);
-  const heads = hasLevyBase(s, 'head');
   const interestLevies = hasLevyBase(s, 'interest');
   const moneyLevies = hasLevyBase(s, 'money');
   const wc = wageCtx(s);
+  // Take-home wage per firm (one levy/limit lookup per firm, not per worker).
+  const firmNet = new Float64Array(s.firms.length);
+  for (let i = 0; i < s.firms.length; i++) {
+    const f = s.firms[i];
+    if (f && f.alive) firmNet[i] = netWage(s, wc, f);
+  }
+  const depositRate = fin(s.bank.depositRate);
 
   const incSum = new Array(nT).fill(0);
   const incN = new Array(nT).fill(0);
   for (let i = 0; i < s.people.length; i++) {
     const p = s.people[i];
     if (!p || !p.alive) continue;
-    // Disposable income: what came in over the last day, less per-head levies owed.
-    let earned = fin(p.earned);
-    if (heads) earned -= Math.max(0, fin(levyAmount(s, 'head', 'receiver', { person: p, town: p.town }, 0, 0)));
-    p.income = Math.max(0, ema(fin(p.income), Math.max(0, earned), INCOME_EMA));
-    if (p.job >= 0) {
-      const f = s.firms[p.job];
-      if (f && f.alive) p.lastWage = netWage(s, wc, f);
-    }
+    // Disposable income: net of everything booked into `earned` over the last day
+    // (net wages, dividends, rent received, interest, Treasury payments; stock levies
+    // such as per-head takes are booked negative by levies.stockLevies).
+    p.income = Math.max(0, ema(fin(p.income), fin(p.earned), INCOME_EMA));
+    if (p.job >= 0 && p.job < firmNet.length && s.firms[p.job]?.alive) p.lastWage = firmNet[p.job];
     p.expInfl = clamp(ema(fin(p.expInfl), infl, INFL_EXP_EMA), -0.5, 1.5);
 
-    const t = p.town;
-    const prices = c.prices[t] ?? c.prices[0];
+    const t = p.town >= 0 && p.town < nT ? p.town : 0;
     const unemp = c.unemp[t] ?? 0.05;
     // Buffer: first pass with the plain deposit rate to know which balance levies apply to.
-    let m = bufferTarget(p.income, fin(s.bank.depositRate) - p.expInfl, unemp);
+    let m = bufferTarget(p.income, depositRate - p.expInfl, unemp);
     if (interestLevies || moneyLevies) {
       const dep = effectiveDepositRate(s, p, interestLevies, moneyLevies, m);
       m = bufferTarget(p.income, dep - p.expInfl, unemp);
     }
-    const sub = subsistenceCost(prices, c.heat);
+    const sub = c.subsistTown[t] ?? 0;
     p.budget = fin(goodsBudget(p.income, Math.max(0, p.cash), m, rentOf(s, p), sub));
     c.buf[p.id] = m;
     c.subsist[p.id] = sub;
 
-    if (t >= 0 && t < nT) {
+    if (nT > 0) {
       const cpi = s.towns[t].cpi > 1 ? s.towns[t].cpi : 100;
       incSum[t] += p.income / (cpi / 100);
       incN[t] += 1;
@@ -277,19 +258,185 @@ function baseIncome(s: SimState): number {
   return (w > 2 ? w : BASE_WAGE) * 0.9;
 }
 
-// Scratch reused across people (no per-person allocation beyond planDemand's own arrays).
-const _ladder: number[] = [];
-const _inp: DemandInput = { budget: 0, cash: 0, prices: [], pantry: [], heat: 0, heatAhead: 0, hungry: false };
+// ---------------------------------------------------------------------------
+// Allocation-free demand planning. `planInto` and `ladderInto` reproduce
+// demandModel.planDemand / bidLadder exactly (tests/households.test.ts pins them
+// to the shared model); they exist because they run ~1 000 × per day and the
+// per-town parts (food index, subsistence) and the rung powers can be hoisted.
+// ---------------------------------------------------------------------------
+
+/** Output of planInto (reused). */
+export interface PlanScratch {
+  qty: number[];
+  spend: number[];
+  maxSpend: number[];
+  foodPlan: number;
+  alePlan: number;
+  coalExtra: number;
+  subsistence: number;
+}
+
+export function newPlanScratch(): PlanScratch {
+  return { qty: new Array(N_GOODS).fill(0), spend: new Array(N_GOODS).fill(0), maxSpend: new Array(N_GOODS).fill(0), foodPlan: 0, alePlan: 0, coalExtra: 0, subsistence: 0 };
+}
 
 /**
- * For each living person: demandModel.planDemand with expected GROSS prices of
- * their home town (markets.expectedGross), then demandModel.bidLadder per consumer
- * good with config ELASTICITY, adding bids to the home-town books.
+ * demandModel.planDemand without allocation, given the town's CES food index
+ * (`fiIndex`, `shB`, `shF` from demandModel.foodIndex at the same prices).
+ */
+export function planInto(
+  out: PlanScratch,
+  budget: number,
+  cash: number,
+  p: readonly number[],
+  pantry: readonly number[],
+  heat: number,
+  heatAhead: number,
+  hungry: boolean,
+  fiIndex: number,
+  shB: number,
+  shF: number,
+): PlanScratch {
+  const qty = out.qty;
+  const spend = out.spend;
+  const maxSpend = out.maxSpend;
+  for (let g = 0; g < N_GOODS; g++) qty[g] = spend[g] = maxSpend[g] = 0;
+  const sub = FOOD_NEED * fiIndex + heat * p[G.coal];
+  const S = Math.max(0, budget - sub);
+
+  const foodPlan = Math.min(FOOD_MAX, FOOD_NEED + (SHARE_FOOD * S) / fiIndex);
+  const breadEat = (foodPlan * fiIndex * shB) / p[G.bread];
+  const fishEat = (foodPlan * fiIndex * shF) / p[G.fish];
+  const alePlan = Math.min(ALE_MAX_PER_DAY, (SHARE_ALE * S) / p[G.ale]);
+  const coalExtra = (SHARE_COAL * S) / p[G.coal];
+
+  qty[G.bread] = Math.max(0, breadEat * (1 + PANTRY_DAYS_BREAD) - pantry[G.bread]);
+  qty[G.fish] = Math.max(0, fishEat * (1 + PANTRY_DAYS_FISH) - pantry[G.fish]);
+  const coalTarget = heat + PANTRY_DAYS_COAL * Math.max(heat, heatAhead) + coalExtra;
+  qty[G.coal] = Math.max(0, coalTarget - pantry[G.coal]);
+  qty[G.ale] = Math.max(0, alePlan - pantry[G.ale]);
+  qty[G.furniture] = (SHARE_FURNITURE * S) / p[G.furniture];
+  for (const g of CONSUMER_GOODS) spend[g] = qty[g] * p[g];
+
+  // Essentials first: if the essential spend exceeds the budget, luxuries go to zero.
+  const essential = spend[G.bread] + spend[G.fish] + spend[G.coal];
+  const room = Math.max(0, budget - essential);
+  const lux = spend[G.ale] + spend[G.furniture];
+  if (lux > room) {
+    const k = lux > 0 ? room / lux : 0;
+    qty[G.ale] *= k;
+    spend[G.ale] *= k;
+    qty[G.furniture] *= k;
+    spend[G.furniture] *= k;
+  }
+
+  const foodFlex = hungry ? FOOD_FLEX : 1.35;
+  maxSpend[G.bread] = spend[G.bread] * foodFlex;
+  maxSpend[G.fish] = spend[G.fish] * foodFlex;
+  maxSpend[G.coal] = spend[G.coal] * (heat > HEAT_MEAN ? 1.6 : 1.25);
+  maxSpend[G.ale] = spend[G.ale] * 1.1;
+  maxSpend[G.furniture] = spend[G.furniture] * 1.1;
+  capToCash(maxSpend, cash);
+
+  out.foodPlan = foodPlan;
+  out.alePlan = alePlan;
+  out.coalExtra = coalExtra;
+  out.subsistence = sub;
+  return out;
+}
+
+/** Never commit more than cash: shrink luxuries first (furniture, then ale), then essentials pro rata. */
+function capToCash(maxSpend: number[], cash: number): void {
+  let total = 0;
+  for (let g = 0; g < N_GOODS; g++) total += maxSpend[g];
+  if (!(total > cash)) return;
+  let over = total - cash;
+  for (const g of LUX_CUT_ORDER) {
+    const cut = Math.min(maxSpend[g], over);
+    maxSpend[g] -= cut;
+    over -= cut;
+  }
+  if (over > 0) {
+    const rest = maxSpend[G.bread] + maxSpend[G.fish] + maxSpend[G.coal];
+    const k = rest > 0 ? Math.max(0, (rest - over) / rest) : 0;
+    maxSpend[G.bread] *= k;
+    maxSpend[G.fish] *= k;
+    maxSpend[G.coal] *= k;
+  }
+}
+const LUX_CUT_ORDER = [G.furniture, G.ale];
+
+/** RUNG_POW[g][k] = (1/BID_RUNGS[k])^ELASTICITY[g] (the iso-elastic quantity multipliers). */
+const RUNG_POW: number[][] = Array.from({ length: N_GOODS }, (_, g) => BID_RUNGS.map((m) => Math.pow(1 / m, ELASTICITY[g] ?? 0.8)));
+const ALL_RUNGS = BID_RUNGS.map((_, k) => k);
+/** Index of the rung closest to 1.0× the expected price. */
+const UNIT_RUNG = ALL_RUNGS.reduce((best, k) => (Math.abs(BID_RUNGS[k] - 1) < Math.abs(BID_RUNGS[best] - 1) ? k : best), 0);
+/**
+ * rungSets(n): strided subsets of the rung indices with about n rungs each,
+ * {r, r+stride, r+2·stride, …} for r < stride = ceil(len/n). Their union is every
+ * rung, and each subset holds a rung at or below 1.0× (the 1.0× rung is added
+ * to any subset that would otherwise lack one).
+ */
+export function rungSets(n: number): number[][] {
+  const len = BID_RUNGS.length;
+  const stride = Math.max(1, Math.ceil(len / Math.max(1, Math.min(len, n))));
+  const sets: number[][] = [];
+  for (let r = 0; r < stride; r++) {
+    const set: number[] = [];
+    for (let k = r; k < len; k += stride) set.push(k);
+    // Every household must be able to buy at the expected price.
+    if (!set.some((k) => BID_RUNGS[k] <= 1) && set.indexOf(UNIT_RUNG) < 0) set.push(UNIT_RUNG);
+    set.sort((a, b) => BID_RUNGS[b] - BID_RUNGS[a]); // prices descending
+    sets.push(set);
+  }
+  return sets;
+}
+/** Rung subsets per consumer good (from config HH_RUNGS). */
+const RUNG_SETS: number[][][] = Array.from({ length: N_GOODS }, (_, g) => rungSets(HH_RUNGS[g] ?? BID_RUNGS.length));
+
+/**
+ * demandModel.bidLadder without allocation and with the rung powers precomputed,
+ * restricted to the rung indices in `rungs` (all rungs → identical output).
+ * Cumulative quantity at rung price P is min(qty·(1/m)^ε, maxSpend/P), so under
+ * uniform-price clearing the ladder never costs more than maxSpend.
+ */
+export function ladderInto(qty: number, pExp: number, maxSpend: number, good: number, rungs: readonly number[], out: number[]): number[] {
+  out.length = 0;
+  if (!(qty > 1e-6) || !(pExp > 0) || !(maxSpend > 0)) return out;
+  const pw = RUNG_POW[good];
+  let prevCum = 0;
+  for (let i = 0; i < rungs.length; i++) {
+    const k = rungs[i];
+    const price = pExp * BID_RUNGS[k];
+    let cum = qty * pw[k];
+    cum = Math.min(cum, maxSpend / price);
+    if (cum > prevCum + 1e-9) {
+      out.push(price, cum - prevCum);
+      prevCum = cum;
+    }
+  }
+  return out;
+}
+
+// Scratch reused across people.
+const _ladder: number[] = [];
+const _plan: PlanScratch = newPlanScratch();
+
+/**
+ * For each living person: the demandModel plan (planDemand semantics, see planInto)
+ * with expected GROSS prices of their home town (markets.expectedGross), then a bid
+ * ladder per consumer good (bidLadder semantics with config ELASTICITY), added to the
+ * home-town books. Order-load control (config): each household bids on a rotating
+ * strided subset of the rungs (HH_RUNGS per good) — all households of a town share
+ * the same price levels, so the aggregate curve keeps every level; furniture is
+ * bought every FURNITURE_SHOP_DAYS in larger lots; a comfortable coal store is
+ * topped up every COAL_SHOP_DAYS.
  */
 export function householdOrders(s: SimState, books: Books): void {
   const c = householdCache(s);
   if (c.day !== s.day) householdsBeginDay(s); // defensive: plan must exist
   const nT = s.towns.length;
+  if (nT === 0) return;
   // Book lookup per town × consumer good.
   const bk: (Book | undefined)[][] = [];
   for (let t = 0; t < nT; t++) {
@@ -297,49 +444,67 @@ export function householdOrders(s: SimState, books: Books): void {
     for (const g of CONSUMER_GOODS) row[g] = bookFor(books, t, g) ?? undefined;
     bk.push(row);
   }
-  _inp.heat = c.heat;
-  _inp.heatAhead = c.heatAhead;
+  const heat = c.heat;
+  const heatAhead = c.heatAhead;
+  const coalComfort = heat + COAL_COMFORT_DAYS * heatAhead;
+  const bid = addBid; // one binding read per call, not per order
+  const day = s.day;
   for (let i = 0; i < s.people.length; i++) {
     const p = s.people[i];
     if (!p || !p.alive) continue;
-    const t = p.town;
-    const prices = c.prices[t] ?? c.prices[0];
+    const t = p.town >= 0 && p.town < nT ? p.town : 0;
+    const prices = c.prices[t];
     const cash = Math.max(0, p.cash);
-    _inp.budget = Math.min(Math.max(0, p.budget), cash);
-    _inp.cash = cash;
-    _inp.prices = prices;
-    _inp.pantry = p.pantry;
-    _inp.hungry = p.foodSat < HUNGRY_BELOW;
-    const plan = planDemand(_inp);
+    const budget = Math.min(Math.max(0, p.budget), cash);
+    const plan = planInto(_plan, budget, cash, prices, p.pantry, heat, heatAhead, p.foodSat < HUNGRY_BELOW, c.fiIndex[t], c.fiBread[t], c.fiFish[t]);
     c.foodPlan[p.id] = clamp(fin(plan.foodPlan, FOOD_NEED), 0, FOOD_MAX);
     c.alePlan[p.id] = Math.max(0, fin(plan.alePlan));
-    c.coalExtra[p.id] = Math.max(0, fin((SHARE_COAL * Math.max(0, _inp.budget - plan.subsistence)) / prices[G.coal]));
+    c.coalExtra[p.id] = Math.max(0, fin(plan.coalExtra));
+
+    // ---- staggered shopping for storable goods ----
+    const ms = plan.maxSpend;
+    const q = plan.qty;
+    if (FURNITURE_SHOP_DAYS > 1) {
+      if ((p.id + day) % FURNITURE_SHOP_DAYS === 0) {
+        q[G.furniture] *= FURNITURE_SHOP_DAYS;
+        ms[G.furniture] *= FURNITURE_SHOP_DAYS;
+        let other = 0;
+        for (const g of CONSUMER_GOODS) if (g !== G.furniture) other += ms[g];
+        ms[G.furniture] = Math.max(0, Math.min(ms[G.furniture], cash - other));
+      } else {
+        q[G.furniture] = 0;
+        ms[G.furniture] = 0;
+      }
+    }
+    if (COAL_SHOP_DAYS > 1 && p.pantry[G.coal] >= coalComfort && (p.id + day) % COAL_SHOP_DAYS !== 0) {
+      q[G.coal] = 0;
+      ms[G.coal] = 0;
+    }
+
     let committed = 0;
     const ref = personRef(p.id);
     const row = bk[t];
-    if (row) {
-      for (const g of CONSUMER_GOODS) {
-        const q = plan.qty[g];
-        const ms = plan.maxSpend[g];
-        if (!(q > 1e-5) || !(ms >= MIN_BID_SPEND)) continue;
-        const book = row[g];
-        if (!book) continue;
-        const el = ELASTICITY[g] ?? 0.8;
-        bidLadder(q, prices[g], ms, el, _ladder);
-        // Uniform-price clearing: every filled unit pays the same price P, and at most
-        // the rungs with limit ≥ P fill, so the worst case is max_k P_k · cum_k (≤ maxSpend).
-        let cum = 0;
-        let worst = 0;
-        for (let k = 0; k + 1 < _ladder.length; k += 2) {
-          const price = _ladder[k];
-          const qty = _ladder[k + 1];
-          if (!(qty > 0) || !(price > 0)) continue;
-          addBid(book, ref, price, qty);
-          cum += qty;
-          if (price * cum > worst) worst = price * cum;
-        }
-        committed += worst;
+    for (const g of CONSUMER_GOODS) {
+      const qg = q[g];
+      const mg = ms[g];
+      if (!(qg > 1e-5) || !(mg >= MIN_BID_SPEND)) continue;
+      const book = row[g];
+      if (!book) continue;
+      const sets = RUNG_SETS[g];
+      ladderInto(qg, prices[g], mg, g, sets[(p.id + day) % sets.length], _ladder);
+      // Uniform-price clearing: every filled unit pays the same price P, and at most
+      // the rungs with limit ≥ P fill, so the worst case is max_k P_k · cum_k (≤ maxSpend).
+      let cum = 0;
+      let worst = 0;
+      for (let k = 0; k + 1 < _ladder.length; k += 2) {
+        const price = _ladder[k];
+        const qty = _ladder[k + 1];
+        if (!(qty > 0) || !(price > 0)) continue;
+        bid(book, ref, price, qty);
+        cum += qty;
+        if (price * cum > worst) worst = price * cum;
       }
+      committed += worst;
     }
     c.committed[p.id] = committed;
   }
@@ -447,7 +612,8 @@ export function comfortOf(stock: number): number {
  * heat the season demands.
  */
 export function healthTarget(foodSat: number, heatSat: number, heat: number, housed: boolean, age: number): number {
-  const food = Math.pow(clamp(foodSat / 1, 0, 1), HEALTH_FOOD_POW);
+  const fs = clamp(foodSat, 0, 1);
+  const food = fs >= 1 ? 1 : Math.pow(fs, HEALTH_FOOD_POW);
   const wHeat = HEALTH_W_HEAT * clamp(heat / (HEAT_MEAN * (1 + HEAT_AMP)), 0, 1);
   const warmth = 1 - wHeat * (1 - clamp(heatSat, 0, 1));
   const home = housed ? 1 : HOMELESS_HEALTH;
@@ -483,7 +649,8 @@ export function householdsConsume(s: SimState): void {
     const t = p.town;
 
     // ---- food: planned split, topped up from whichever food is at hand ----
-    const foodPlan = planned ? c.foodPlan[p.id] : FOOD_NEED;
+    // A plan is always ≥ FOOD_NEED; 0 means this person had no plan today (created late).
+    const foodPlan = planned && c.foodPlan[p.id] > 0 ? c.foodPlan[p.id] : FOOD_NEED;
     const want = clamp(foodPlan, 0, FOOD_MAX);
     const phi = planned ? (c.breadShare[t] ?? FOOD_W_BREAD_FALLBACK) : FOOD_W_BREAD_FALLBACK;
     const hb = Math.max(0, pan[G.bread]);

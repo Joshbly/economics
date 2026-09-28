@@ -10,11 +10,15 @@
 // and whatever the buyers could not take is returned to the last sellers in
 // price priority. Money legs:
 //   base leg   buyer → seller   base·q          ('buy' for goods, 'asset' for IOUs/gold)
-//   buyer leg  buyer ↔ STATE    (base·(bPct+xPct) + bUnit + xUnit)·q   (take: 'levy', give: 'give')
-//   seller leg seller ↔ STATE   (base·(sPct+xPct) + sUnit + xUnit)·q
+//   buyer leg  buyer ↔ STATE_REF    (base·(bPct+xPct) + bUnit + xUnit)·q   (take: 'levy', give: 'give')
+//   seller leg seller ↔ STATE_REF   (base·(sPct+xPct) + sUnit + xUnit)·q
 // A buyer-side give is paid to the buyer BEFORE the base leg, so a household
 // never needs more cash than the gross price it bid. Exempt (Treasury) orders
 // skip the book wedge. Goods and money are conserved exactly.
+// Consecutive bids of the same buyer with identical terms (a household's bid
+// ladder) are settled as one group — one affordability check and one payment
+// per leg — and the group's result is spread over its orders in proportion to
+// their auction fills (so each order's `paid` is at the group's average cost).
 //
 // Books and orders are pooled per state (runtime bag) and reused every day:
 // orders are transient and must not be held past the day's market phase.
@@ -33,6 +37,12 @@ import { rt } from '../runtime';
 import { BANK, FIRM_BASE, FOREIGN, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
 import type { Book, MarketState, Order, Ref, SimState, TownId, Wedge } from '../types';
 import { pushCapped } from '../util';
+
+// Local copies of hot constants (imported bindings may be getters under some loaders).
+const STATE_REF = STATE;
+const BANK_REF = BANK;
+const FOREIGN_REF = FOREIGN;
+const FIRM_REF_BASE = FIRM_BASE;
 import { attributePortActual, attributeSaleActual, saleWedgeInto } from '../policy/levies';
 import { noteBinding, priceBounds } from '../policy/limits';
 import { buyerPct, buyerUnit, clearBook, curveInto, sellerPct, sellerUnit, type ClearResult } from './auction';
@@ -50,9 +60,10 @@ export interface OrderOpts {
   tag?: number;
 }
 
-/** A book with a private pool of recycled orders. */
+/** A book with a private pool of recycled orders and the list of Treasury orders on it. */
 interface PooledBook extends Book {
   spare: Order[];
+  stateOrders: Order[];
 }
 
 function makeOrder(): Order {
@@ -60,7 +71,7 @@ function makeOrder(): Order {
 }
 
 function makeBook(town: TownId, good: number): PooledBook {
-  return { town, good, bids: [], asks: [], wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1, spare: [] };
+  return { town, good, bids: [], asks: [], wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1, spare: [], stateOrders: [] };
 }
 
 function recycle(b: Book): void {
@@ -71,6 +82,7 @@ function recycle(b: Book): void {
   }
   b.bids.length = 0;
   b.asks.length = 0;
+  if (pb.stateOrders) pb.stateOrders.length = 0;
 }
 
 /**
@@ -147,7 +159,10 @@ function addOrder(book: Book, side: 0 | 1, ref: Ref, limit: number, qty: number,
   o.filled = 0;
   o.price = 0;
   o.paid = 0;
-  if (valid) (side === 0 ? book.bids : book.asks).push(o);
+  if (valid) {
+    (side === 0 ? book.bids : book.asks).push(o);
+    if (ref === STATE_REF && pb.stateOrders) pb.stateOrders.push(o);
+  }
   return o;
 }
 
@@ -174,13 +189,13 @@ const ZERO_SCRATCH: number[] = new Array(N_GOODS).fill(0);
 /**
  * The inventory array (length N_GOODS) where `ref`'s goods live in `town`:
  * person → pantry (their residence town), firm → inv (its own town) or, for
- * traders in other towns, trade.stock[town]; STATE → treasury.goods[town];
- * FOREIGN → a scratch array with effectively unlimited stock.
+ * traders in other towns, trade.stock[town]; STATE_REF → treasury.goods[town];
+ * FOREIGN_REF → a scratch array with effectively unlimited stock.
  * Unknown refs (and the bank) get a zeroed scratch array.
  */
 export function inventoryOf(s: SimState, ref: Ref, town: TownId): number[] {
-  if (ref >= FIRM_BASE) {
-    const f = s.firms[ref - FIRM_BASE];
+  if (ref >= FIRM_REF_BASE) {
+    const f = s.firms[ref - FIRM_REF_BASE];
     if (!f) return zeroScratch();
     if (f.trade && town !== f.town && town >= 0 && f.trade.stock[town]) return f.trade.stock[town];
     return f.inv;
@@ -189,7 +204,7 @@ export function inventoryOf(s: SimState, ref: Ref, town: TownId): number[] {
     const p = s.people[ref];
     return p ? p.pantry : zeroScratch();
   }
-  if (ref === STATE) {
+  if (ref === STATE_REF) {
     const tg = s.treasury.goods;
     if (!tg[town]) {
       if (town >= 0 && town < s.towns.length) {
@@ -198,7 +213,7 @@ export function inventoryOf(s: SimState, ref: Ref, town: TownId): number[] {
     }
     return tg[town];
   }
-  if (ref === FOREIGN) {
+  if (ref === FOREIGN_REF) {
     for (let g = 0; g < N_GOODS; g++) FOREIGN_SCRATCH[g] = UNLIMITED;
     return FOREIGN_SCRATCH;
   }
@@ -211,27 +226,27 @@ function zeroScratch(): number[] {
 }
 
 function canHold(ref: Ref, kind: Kind): boolean {
-  if (kind === K_GOODS) return ref !== BANK;
-  if (kind === K_IOU) return ref === STATE || ref === BANK || (ref >= 0 && ref < FIRM_BASE);
-  return ref === STATE || ref === FOREIGN || (ref >= 0 && ref < FIRM_BASE);
+  if (kind === K_GOODS) return ref !== BANK_REF;
+  if (kind === K_IOU) return ref === STATE_REF || ref === BANK_REF || (ref >= 0 && ref < FIRM_REF_BASE);
+  return ref === STATE_REF || ref === FOREIGN_REF || (ref >= 0 && ref < FIRM_REF_BASE);
 }
 
 function holding(s: SimState, ref: Ref, book: Book, kind: Kind): number {
   if (kind === K_GOODS) {
-    if (ref === FOREIGN) return UNLIMITED;
-    if (ref === BANK) return 0;
+    if (ref === FOREIGN_REF) return UNLIMITED;
+    if (ref === BANK_REF) return 0;
     const v = inventoryOf(s, ref, book.town)[book.good];
     return v > 0 ? v : 0;
   }
   if (kind === K_IOU) {
-    if (ref === STATE) return UNLIMITED; // selling = issuing new IOUs
-    if (ref === BANK) return Math.max(0, s.bank.iou);
-    if (ref >= 0 && ref < FIRM_BASE) return Math.max(0, s.people[ref]?.iou ?? 0);
+    if (ref === STATE_REF) return UNLIMITED; // selling = issuing new IOUs
+    if (ref === BANK_REF) return Math.max(0, s.bank.iou);
+    if (ref >= 0 && ref < FIRM_REF_BASE) return Math.max(0, s.people[ref]?.iou ?? 0);
     return 0;
   }
-  if (ref === STATE) return Math.max(0, s.treasury.gold);
-  if (ref === FOREIGN) return UNLIMITED;
-  if (ref >= 0 && ref < FIRM_BASE) return Math.max(0, s.people[ref]?.gold ?? 0);
+  if (ref === STATE_REF) return Math.max(0, s.treasury.gold);
+  if (ref === FOREIGN_REF) return UNLIMITED;
+  if (ref >= 0 && ref < FIRM_REF_BASE) return Math.max(0, s.people[ref]?.gold ?? 0);
   return 0;
 }
 
@@ -239,25 +254,25 @@ function holding(s: SimState, ref: Ref, book: Book, kind: Kind): number {
 function addHolding(s: SimState, ref: Ref, book: Book, kind: Kind, q: number): void {
   if (!q) return;
   if (kind === K_GOODS) {
-    if (ref === FOREIGN || ref === BANK) return;
+    if (ref === FOREIGN_REF || ref === BANK_REF) return;
     const inv = inventoryOf(s, ref, book.town);
     const v = inv[book.good] + q;
     inv[book.good] = v > 0 ? v : 0;
     return;
   }
   if (kind === K_IOU) {
-    if (ref === STATE) {
+    if (ref === STATE_REF) {
       const v = s.treasury.iouOutstanding - q;
       s.treasury.iouOutstanding = v > 0 ? v : 0;
-    } else if (ref === BANK) s.bank.iou = Math.max(0, s.bank.iou + q);
-    else if (ref >= 0 && ref < FIRM_BASE) {
+    } else if (ref === BANK_REF) s.bank.iou = Math.max(0, s.bank.iou + q);
+    else if (ref >= 0 && ref < FIRM_REF_BASE) {
       const p = s.people[ref];
       if (p) p.iou = Math.max(0, p.iou + q);
     }
     return;
   }
-  if (ref === STATE) s.treasury.gold = Math.max(0, s.treasury.gold + q);
-  else if (ref >= 0 && ref < FIRM_BASE) {
+  if (ref === STATE_REF) s.treasury.gold = Math.max(0, s.treasury.gold + q);
+  else if (ref >= 0 && ref < FIRM_REF_BASE) {
     const p = s.people[ref];
     if (p) p.gold = Math.max(0, p.gold + q);
   }
@@ -288,6 +303,12 @@ interface SettleOut {
 
 const settleOut: SettleOut = { volume: 0, undelivered: 0 };
 
+const byBase = (a: Order, b: Order): number => a.base - b.base;
+
+function zeroFills(orders: Order[], from: number, to: number): void {
+  for (let k = from; k < to; k++) orders[k].filled = 0;
+}
+
 function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
   const w = book.wedge;
   const flow: Flow = kind === K_GOODS ? 'buy' : 'asset';
@@ -314,43 +335,68 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
   recv.length = 0;
   let totalRes = 0;
   let undelivered = 0;
-  for (const o of book.asks) {
+  for (const o of book.asks) if (o.filled > 0) sellers.push(o);
+  // Price priority: cheapest asks deliver first, so any shortfall of paying
+  // buyers falls on the dearest sellers. (Few filled sellers per book.)
+  if (sellers.length > 1) sellers.sort(byBase);
+  let nS = 0;
+  for (let k = 0; k < sellers.length; k++) {
+    const o = sellers[k];
     const f = o.filled;
-    if (!(f > 0)) continue;
     const q = Math.min(f, holding(s, o.ref, book, kind));
     if (q < f) undelivered += f - q;
     o.filled = 0;
     if (!(q > 1e-12)) continue;
     addHolding(s, o.ref, book, kind, -q);
-    sellers.push(o);
+    sellers[nS++] = o;
     res.push(q);
     cons.push(0);
     recv.push(0);
     totalRes += q;
   }
+  sellers.length = nS;
 
   // ---- pass 2: buyers pay and take delivery ----
+  // Consecutive orders of the same buyer with the same terms (a household's bid
+  // ladder) settle as ONE group: one affordability check and one payment per leg.
+  const bids = book.bids;
+  const nb = bids.length;
   let demand = 0;
-  for (const o of book.bids) if (o.filled > 0) demand += o.filled;
+  for (let k = 0; k < nb; k++) if (bids[k].filled > 0) demand += bids[k].filled;
   const scaleB = demand > totalRes && demand > 0 ? totalRes / demand : 1;
   let si = 0;
   let delivered = 0;
-  for (const o of book.bids) {
-    const want = o.filled * scaleB;
-    o.filled = 0;
-    if (!(want > 1e-12) || delivered >= totalRes - 1e-12) continue;
-    if (!canHold(o.ref, kind)) continue;
+  let consQty = 0; // bought by people (goods)
+  let consVal = 0;
+  let i = 0;
+  while (i < nb) {
+    const o = bids[i];
+    const ref = o.ref;
+    let j = i + 1;
+    while (j < nb && bids[j].ref === ref && bids[j].exempt === o.exempt && bids[j].xPct === o.xPct && bids[j].xUnit === o.xUnit) j++;
+    const i0 = i;
+    i = j;
+    let want = 0;
+    for (let k = i0; k < j; k++) {
+      const f = bids[k].filled * scaleB;
+      bids[k].filled = f > 0 ? f : 0; // provisional: scaled auction fill
+      want += bids[k].filled;
+    }
+    if (!(want > 1e-12) || delivered >= totalRes - 1e-12 || !canHold(ref, kind)) {
+      zeroFills(bids, i0, j);
+      continue;
+    }
     const pct = isGoods ? buyerPct(o, w) : 0;
     const unit = isGoods ? buyerUnit(o, w) : 0;
     let grossU = p * (1 + pct) + unit;
     if (!(grossU > 0)) grossU = 0;
     const levyU = grossU - p; // + the buyer owes the Treasury, − the Treasury pays
-    const cash = cashOf(s, o.ref);
+    const cash = cashOf(s, ref);
     let q = grossU > 0 ? Math.min(want, cash / grossU) : want;
     let give = 0;
     if (levyU < 0) {
       const giveU = -levyU;
-      const stateCash = cashOf(s, STATE);
+      const stateCash = cashOf(s, STATE_REF);
       if (giveU * q > stateCash) {
         // The Purse cannot fund the whole give: it pays what it has, the buyer the rest.
         give = stateCash;
@@ -358,10 +404,13 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
         give = Math.min(give, giveU * q);
       } else give = giveU * q;
     }
-    q = Math.min(q, totalRes - delivered);
-    if (!(q > 1e-12)) continue;
+    if (q > totalRes - delivered) q = totalRes - delivered;
+    if (!(q > 1e-12)) {
+      zeroFills(bids, i0, j);
+      continue;
+    }
     let gotGive = 0;
-    if (give > 0) gotGive = pay(s, STATE, o.ref, give, 'give');
+    if (give > 0) gotGive = pay(s, STATE_REF, ref, give, 'give');
     // base legs, consuming the seller queue in price-priority order
     let left = q;
     let paidBase = 0;
@@ -373,7 +422,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       }
       const seg = left < room ? left : room;
       const sref = sellers[si].ref;
-      const a = sref === o.ref ? p * seg : pay(s, o.ref, sref, p * seg, flow);
+      const a = sref === ref ? p * seg : pay(s, ref, sref, p * seg, flow);
       recv[si] += a;
       cons[si] += seg;
       paidBase += a;
@@ -381,15 +430,24 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       if (room - seg <= 1e-12) si++;
     }
     const got = q - left;
-    if (!(got > 0)) continue;
+    if (!(got > 0)) {
+      zeroFills(bids, i0, j);
+      continue;
+    }
     delivered += got;
-    addHolding(s, o.ref, book, kind, got);
-    if (kind === K_IOU && o.ref === BANK) s.bank.iouBook += paidBase;
+    addHolding(s, ref, book, kind, got);
+    if (kind === K_IOU && ref === BANK_REF) s.bank.iouBook += paidBase;
     let taken = 0;
-    if (levyU > 0) taken = pay(s, o.ref, STATE, levyU * got, 'levy');
-    o.filled = got;
+    if (levyU > 0) taken = pay(s, ref, STATE_REF, levyU * got, 'levy');
     const paid = paidBase + taken - gotGive;
-    o.paid = paid;
+    // spread the group's result over its orders in proportion to their fills
+    const fr = got / want;
+    const pu = paid / got;
+    for (let k = i0; k < j; k++) {
+      const b = bids[k];
+      b.filled *= fr;
+      b.paid = b.filled * pu;
+    }
 
     // attribution of the buyer leg: sale part vs per-order extras (→ export rules)
     if (isGoods && (taken || gotGive)) {
@@ -397,39 +455,42 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       const salePart = o.exempt ? 0 : p * w.bPct + w.bUnit;
       const extraPart = p * (o.xPct || 0) + (o.xUnit || 0);
       const th = salePart + extraPart;
-      const k = Math.abs(th) > 1e-12 ? moved / (th * got) : 0;
-      saleBuyer += salePart * got * k;
+      const kk = Math.abs(th) > 1e-12 ? moved / (th * got) : 0;
+      saleBuyer += salePart * got * kk;
       if (extraPart) {
-        expTotal += extraPart * got * k;
+        expTotal += extraPart * got * kk;
         expQty += got;
       }
     }
     if (isGoods && !o.exempt) buyQtyNE += got;
 
     // agent accounting & stats
-    const r = o.ref;
-    if (r >= FIRM_BASE) {
-      const f = s.firms[r - FIRM_BASE];
+    if (ref >= FIRM_REF_BASE) {
+      const f = s.firms[ref - FIRM_REF_BASE];
       if (f) f.spent += paid;
-    } else if (r >= 0) {
+    } else if (ref >= 0) {
       if (isGoods) {
-        const pp = s.people[r];
+        const pp = s.people[ref];
         if (pp) pp.spent += paid;
-        addAcc(acc, K_CONS[good], got);
-        addAcc(acc, 'consval', paid);
+        consQty += got;
+        consVal += paid;
       }
-    } else if (r === STATE) {
+    } else if (ref === STATE_REF) {
       if (isGoods) addAcc(acc, 'gov_goods', paid);
       else if (kind === K_IOU) {
         addAcc(acc, 'iou_retired', got);
         addAcc(acc, 'gov_iou', paid);
       } else addAcc(acc, 'gold_state_bought', got);
-    } else if (r === FOREIGN && isGoods) {
+    } else if (ref === FOREIGN_REF && isGoods) {
       addAcc(acc, K_EXP[good], got);
       addAcc(acc, 'expval', p * got);
       s.foreign.exportsQty[good] = (s.foreign.exportsQty[good] || 0) + got;
       s.foreign.exportValue += p * got;
     }
+  }
+  if (consQty > 0) {
+    addAcc(acc, K_CONS[good], consQty);
+    addAcc(acc, 'consval', consVal);
   }
 
   // ---- pass 3: sellers — return what was not taken, settle seller legs ----
@@ -441,7 +502,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
     if (unused > 1e-12) addHolding(s, o.ref, book, kind, unused);
     if (!(c > 1e-12)) continue;
     volume += c;
-    if (kind === K_IOU && o.ref === BANK) {
+    if (kind === K_IOU && o.ref === BANK_REF) {
       // realise the gain/loss against the average book cost
       const cost = Math.min(s.bank.iouBook, bankAvg * c);
       s.bank.iouBook = Math.max(0, s.bank.iouBook - cost);
@@ -451,8 +512,8 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
     let gotGive = 0;
     if (isGoods) {
       const levyU = p * sellerPct(o, w) + sellerUnit(o, w); // + seller owes, − Treasury pays
-      if (levyU > 0) taken = pay(s, o.ref, STATE, levyU * c, 'levy');
-      else if (levyU < 0) gotGive = pay(s, STATE, o.ref, -levyU * c, 'give');
+      if (levyU > 0) taken = pay(s, o.ref, STATE_REF, levyU * c, 'levy');
+      else if (levyU < 0) gotGive = pay(s, STATE_REF, o.ref, -levyU * c, 'give');
       if (taken || gotGive) {
         const moved = taken - gotGive;
         const salePart = o.exempt ? 0 : p * w.sPct + w.sUnit;
@@ -472,19 +533,19 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
     o.paid = got;
 
     const r = o.ref;
-    if (r >= FIRM_BASE) {
-      const f = s.firms[r - FIRM_BASE];
+    if (r >= FIRM_REF_BASE) {
+      const f = s.firms[r - FIRM_REF_BASE];
       if (f) {
         f.revenue += got;
         if (isGoods && SECTORS[f.sector]?.out === good) f.soldToday += c;
       }
-    } else if (r === STATE) {
+    } else if (r === STATE_REF) {
       if (kind === K_IOU) {
         addAcc(acc, 'iou_issued', c);
         addAcc(acc, 'gov_iou', -recv[k]);
       } else if (kind === K_GOLD) addAcc(acc, 'gold_state_sold', c);
       else addAcc(acc, 'gov_goods_sold', recv[k]);
-    } else if (r === FOREIGN && isGoods) {
+    } else if (r === FOREIGN_REF && isGoods) {
       addAcc(acc, K_IMP[good], c);
       addAcc(acc, 'impval', p * c);
       s.foreign.importsQty[good] = (s.foreign.importsQty[good] || 0) + c;
@@ -504,17 +565,26 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
   return settleOut;
 }
 
-function snapshot(m: MarketState, book: Book, p: number, vol: number): void {
+function snapshot(m: MarketState, book: Book, p: number, vol: number, hasOrders: boolean): void {
   let c = m.curve;
   if (!c) {
     c = { bids: [], asks: [], state: [], price: 0, volume: 0, wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1 };
     m.curve = c;
   }
-  curveInto(book, CURVE_POINTS, c.bids, c.asks);
+  if (hasOrders) curveInto(book, CURVE_POINTS, c.bids, c.asks);
+  else {
+    c.bids.length = 0;
+    c.asks.length = 0;
+  }
   const st = c.state;
   st.length = 0;
-  for (const o of book.bids) if (o.ref === STATE && o.qty > 0) st.push(0, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
-  for (const o of book.asks) if (o.ref === STATE && o.qty > 0) st.push(1, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+  const pb = book as PooledBook;
+  if (pb.stateOrders) {
+    for (const o of pb.stateOrders) if (o.qty > 0) st.push(o.side, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+  } else {
+    for (const o of book.bids) if (o.ref === STATE_REF && o.qty > 0) st.push(0, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+    for (const o of book.asks) if (o.ref === STATE_REF && o.qty > 0) st.push(1, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+  }
   c.price = p;
   c.volume = vol;
   c.wedge.bPct = book.wedge.bPct;
@@ -534,18 +604,16 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
   let r: ClearResult;
   let vol = 0;
   let undelivered = 0;
-  if (book.bids.length === 0 && book.asks.length === 0) {
+  const hasOrders = book.bids.length > 0 || book.asks.length > 0;
+  if (!hasOrders) {
     r = EMPTY_RESULT;
     r.price = ref;
   } else {
-    r = clearBook(book, ref);
+    r = clearBook(book, ref); // leaves every fill at 0 when nothing trades
     if (r.volume > 0) {
       const out = settle(s, book, r.price, kind);
       vol = out.volume;
       undelivered = out.undelivered;
-    } else {
-      for (const o of book.bids) o.filled = 0;
-      for (const o of book.asks) o.filled = 0;
     }
   }
   const p = r.price > 0 && Number.isFinite(r.price) ? r.price : ref;
@@ -572,7 +640,7 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
   m.bestAsk = r.bestAsk;
   pushCapped(m.hist, p, MARKET_HIST_DAYS);
   pushCapped(m.volHist, vol, MARKET_HIST_DAYS);
-  snapshot(m, book, p, vol);
+  snapshot(m, book, p, vol, hasOrders);
 
   const acc = s.stats.acc;
   if (kind === K_GOODS) {
@@ -608,10 +676,10 @@ const EMPTY_RESULT: ClearResult = {
  *  - goods: seller inventory −= filled (never below 0: scale the fill down if the
  *    seller no longer holds the goods), buyer inventory += filled
  *    (inventoryOf); IOUs → person.iou / bank.iou+iouBook / treasury.iouOutstanding;
- *    gold → person.gold / treasury.gold / FOREIGN (unbounded).
+ *    gold → person.gold / treasury.gold / FOREIGN_REF (unbounded).
  *  - money: pay(buyer → seller, base·q, 'buy' or 'asset'), then levy legs:
- *    buyer pays base·(bPct+xPct?)+bUnit per unit to STATE (or receives if negative),
- *    seller pays base·sPct+sUnit to STATE (or receives). Exempt orders skip levies.
+ *    buyer pays base·(bPct+xPct?)+bUnit per unit to STATE_REF (or receives if negative),
+ *    seller pays base·sPct+sUnit to STATE_REF (or receives). Exempt orders skip levies.
  *    If the buyer cannot pay in full, shrink the fill proportionally (goods not delivered).
  *    Bank IOU sales book realised gain/loss to bank.equity; iouBook reduced at average cost.
  *  - order.filled = units actually executed; order.paid = gross paid (buyers) / net received (sellers).
@@ -624,7 +692,7 @@ const EMPTY_RESULT: ClearResult = {
  *  - stats.acc: `vol_<good>`, `val_<good>` (base value), `cons_<good>` (qty bought by
  *    people), `consval` (¤ households spent on goods), `gov_goods` (¤ Treasury bought),
  *    `gov_goods_sold` (¤ Treasury received for goods), `imp_<good>`, `exp_<good>`,
- *    `impval`, `expval` (port trades with FOREIGN, base value), `shortage_<good>`,
+ *    `impval`, `expval` (port trades with FOREIGN_REF, base value), `shortage_<good>`,
  *    `vol_iou`, `val_iou`, `iou_issued`, `iou_retired`, `gov_iou` (net ¤ the Treasury
  *    paid in the IOU market), `vol_gold`, `val_gold`, `gold_state_bought`, `gold_state_sold`,
  *    plus levy_take / levy_give / levyb_<base> from the levy legs.

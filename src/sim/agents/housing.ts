@@ -16,32 +16,28 @@
 //    any legal rent bounds. A binding ceiling therefore shows up as persistent
 //    homelessness and weaker incentives to build.
 // ============================================================================
-import {
-  COMMUTE_COST_PER_TILE,
-  EVICT_ARREARS_DAYS,
-  MAX_RENT_SHARE,
-  MIN_RENT,
-  MOVE_CLOSER_PROB_DAY,
-  MOVE_COMMUTE_TILES,
-  MOVE_MIN_SAVING,
-  RENT_CASH_COVER_DAYS,
-  RENT_CUT_VACANT_DAYS,
-  RENT_DEPOSIT_DAYS,
-  RENT_DOWN,
-  RENT_UP,
-  VACANCY_TIGHT,
-} from '../config';
-import { isMonthStart } from '../calendar';
-import { isFirm, isPerson, pay, personRef, refId } from '../ledger';
+import * as CFG from '../config';
+import * as CAL from '../calendar';
+import * as LEDGER from '../ledger';
 import { chargeLevy } from '../policy/levies';
 import { noteBinding, rentBounds } from '../policy/limits';
-import { rand } from '../rng';
+import * as RNG from '../rng';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
 import type { Building, Firm, Person, Ref, SimState, TownId } from '../types';
-import { STATE } from '../types';
-import { clamp, dist, fin } from '../util';
+import * as TYPES from '../types';
+import * as UTIL from '../util';
 import { commuteTiles, hasLevyBase, workX, workY } from './labor';
+
+// Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
+// import cycles back into agents) bound once at load: hot loops then read locals instead of
+// live import bindings (which cost a getter call per read under tsx/vitest).
+const { rand } = RNG;
+const { isFirm, isPerson, pay, personRef, refId } = LEDGER;
+const { COMMUTE_COST_PER_TILE, EVICT_ARREARS_DAYS, MAX_RENT_SHARE, MIN_RENT, MOVE_CLOSER_PROB_DAY, MOVE_COMMUTE_TILES, MOVE_MIN_SAVING, RENT_CASH_COVER_DAYS, RENT_CUT_VACANT_DAYS, RENT_DEPOSIT_DAYS, RENT_DOWN, RENT_UP, VACANCY_TIGHT } = CFG;
+const { clamp, dist, fin } = UTIL;
+const { isMonthStart } = CAL;
+const { STATE } = TYPES;
 
 function bump(s: SimState, key: string, v = 1): void {
   const acc = s.stats.acc;
@@ -206,11 +202,20 @@ function payRent(s: SimState, p: Person, b: Building, levies: boolean): boolean 
   const paid = pay(s, me, to, rent, 'rent');
   if (isPerson(to)) s.people[to].earned += paid;
   if (levies && paid > 0) {
+    // chargeLevy leaves agent bookkeeping to the caller: a take lowers what the payer
+    // earned today, a give (the Treasury paying part of the rent) raises it.
     const ctx = { town: b.town, person: p, kind: b.kind };
-    chargeLevy(s, 'rent', me, 'tenant', ctx, paid, 1);
+    const netT = chargeLevy(s, 'rent', me, 'tenant', ctx, paid, 1);
+    p.earned -= netT;
     if (to !== STATE) {
-      const lctx = isPerson(to) ? { town: b.town, person: s.people[to], kind: b.kind } : { town: b.town, kind: b.kind };
-      chargeLevy(s, 'rent', to, 'landlord', lctx, paid, 1);
+      const lp = isPerson(to) ? s.people[to] : undefined;
+      const lctx = lp ? { town: b.town, person: lp, kind: b.kind } : { town: b.town, kind: b.kind };
+      const netL = chargeLevy(s, 'rent', to, 'landlord', lctx, paid, 1);
+      if (lp) lp.earned -= netL;
+      else if (isFirm(to)) {
+        const f = s.firms[refId(to)];
+        if (f) f.otherCosts += netL;
+      }
     }
   }
   return paid >= rent - 1e-9;

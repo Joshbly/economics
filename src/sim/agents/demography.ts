@@ -12,51 +12,34 @@
 // Estates pass whole to one heir (cash via the ledger, IOUs, gold, pantry, firms,
 // houses, loans, projects), after any estate levy.
 // ============================================================================
-import {
-  ADULT_AGE,
-  BASE_WAGE,
-  BIRTH_GIFT_MAX_DAYS,
-  BIRTH_GIFT_SHARE,
-  BIRTH_MIN_HEALTH,
-  BIRTH_RATE,
-  DAYS_PER_MONTH,
-  DAYS_PER_YEAR,
-  DEATH_AGE_BASE,
-  DEATH_AGE_PIVOT,
-  DEATH_AGE_SCALE,
-  DEATH_RATE,
-  EMIGRATE_PROB_DAY,
-  EMIGRATE_UNEMP_DAYS,
-  HUNGER_DEATH_DAY,
-  HUNGRY_BELOW,
-  IMMIGRANT_CASH_DAYS,
-  IMMIGRANT_COIN_SHARE,
-  IMMIGRATION_DAY,
-  IMMIGRATION_MAX_SHARE,
-  MIGRATE_MIN_GAIN,
-  MIGRATE_PROB_DAY,
-  MIGRATE_UNEMP_DAYS,
-  OWNER_EMIGRATE_MULT,
-  POOR_HEALTH_MORT,
-  STARVING_HEALTH,
-  UNREST_CONTENT,
-} from '../config';
-import { dayOfMonth } from '../calendar';
+import * as CFG from '../config';
+import * as CAL from '../calendar';
 import { newPerson } from '../factory';
-import { N_GOODS } from '../goods';
-import { firmRef, pay, personRef, writeOff } from '../ledger';
+import * as GOODS_M from '../goods';
+import * as LEDGER from '../ledger';
 import { chargeLevy } from '../policy/levies';
-import { lognormal, rand, randInt, randRange } from '../rng';
+import * as RNG from '../rng';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
 import type { Person, Ref, SimState, TownId } from '../types';
-import { FOREIGN, STATE } from '../types';
-import { clamp, fin } from '../util';
+import * as TYPES from '../types';
+import * as UTIL from '../util';
 import { personName } from '../world/names';
 import { debtOf } from './bank';
 import { firmAssets } from './firms';
 import { findHome, leaveHome } from './housing';
 import { hasLevyBase, leaveJob } from './labor';
+
+// Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
+// import cycles back into agents) bound once at load: hot loops then read locals instead of
+// live import bindings (which cost a getter call per read under tsx/vitest).
+const { lognormal, rand, randInt, randRange } = RNG;
+const { firmRef, pay, personRef, writeOff } = LEDGER;
+const { ADULT_AGE, BASE_WAGE, BIRTH_GIFT_MAX_DAYS, BIRTH_GIFT_SHARE, BIRTH_MIN_HEALTH, BIRTH_RATE, DAYS_PER_MONTH, DAYS_PER_YEAR, DEATH_AGE_BASE, DEATH_AGE_PIVOT, DEATH_AGE_SCALE, DEATH_RATE, EMIGRATE_PROB_DAY, EMIGRATE_UNEMP_DAYS, HUNGER_DEATH_DAY, HUNGRY_BELOW, IMMIGRANT_CASH_DAYS, IMMIGRANT_COIN_SHARE, IMMIGRATION_DAY, IMMIGRATION_MAX_SHARE, MIGRATE_MIN_GAIN, MIGRATE_PROB_DAY, MIGRATE_UNEMP_DAYS, OWNER_EMIGRATE_MULT, POOR_HEALTH_MORT, STARVING_HEALTH, UNREST_CONTENT } = CFG;
+const { N_GOODS } = GOODS_M;
+const { clamp, fin } = UTIL;
+const { dayOfMonth } = CAL;
+const { FOREIGN, STATE } = TYPES;
 
 function bump(s: SimState, key: string, v = 1): void {
   const acc = s.stats.acc;

@@ -22,8 +22,21 @@ vi.mock('../src/sim/market/markets', () => {
   };
 });
 
-import { householdCache, householdOrders, householdPortfolioOrders, householdsBeginDay, householdsConsume, healthTarget } from '../src/sim/agents/households';
-import { planDemand } from '../src/sim/agents/demandModel';
+import {
+  householdCache,
+  householdOrders,
+  householdPortfolioOrders,
+  householdsBeginDay,
+  householdsConsume,
+  healthTarget,
+  ladderInto,
+  newPlanScratch,
+  planInto,
+  rungSets,
+} from '../src/sim/agents/households';
+import { bidLadder, foodIndex, planDemand } from '../src/sim/agents/demandModel';
+import { BID_RUNGS, ELASTICITY, FURNITURE_SHOP_DAYS } from '../src/sim/config';
+import { rand, seedRng } from '../src/sim/rng';
 import { heatNeed } from '../src/sim/calendar';
 import { FOOD_MAX, FOOD_NEED, HUNGRY_BELOW } from '../src/sim/config';
 import { CONSUMER_GOODS, G } from '../src/sim/goods';
@@ -49,6 +62,56 @@ function spendByPerson(books: ReturnType<typeof fakeBooks>): Map<number, number[
   }
   return m;
 }
+
+describe('fast planner matches the shared demand model', () => {
+  it('planInto ≡ demandModel.planDemand and ladderInto ≡ demandModel.bidLadder', () => {
+    const h = { rng: seedRng(42) };
+    const out = newPlanScratch();
+    for (let it = 0; it < 500; it++) {
+      const prices = new Array(11).fill(1).map((_, g) => (g === 10 ? 10 + 30 * rand(h) : 0.5 + 6 * rand(h)));
+      const pantry = new Array(11).fill(0).map(() => (rand(h) < 0.5 ? 0 : 5 * rand(h)));
+      const cash = rand(h) < 0.2 ? 5 * rand(h) : 1000 * rand(h);
+      const budget = Math.min(cash, 20 * rand(h));
+      const heat = 0.05 + 0.5 * rand(h);
+      const heatAhead = 0.05 + 0.5 * rand(h);
+      const hungry = rand(h) < 0.3;
+      const ref = planDemand({ budget, cash, prices, pantry, heat, heatAhead, hungry });
+      const fi = foodIndex(prices[G.bread], prices[G.fish]);
+      planInto(out, budget, cash, prices, pantry, heat, heatAhead, hungry, fi.index, fi.shareBread, fi.shareFish);
+      for (const g of CONSUMER_GOODS) {
+        expect(out.qty[g]).toBeCloseTo(ref.qty[g], 9);
+        expect(out.maxSpend[g]).toBeCloseTo(ref.maxSpend[g], 9);
+      }
+      expect(out.foodPlan).toBeCloseTo(ref.foodPlan, 9);
+      expect(out.alePlan).toBeCloseTo(ref.alePlan, 9);
+      expect(out.subsistence).toBeCloseTo(ref.subsistence, 9);
+      for (const g of CONSUMER_GOODS) {
+        const a = bidLadder(ref.qty[g], prices[g], ref.maxSpend[g], ELASTICITY[g], []);
+        const b = ladderInto(ref.qty[g], prices[g], ref.maxSpend[g], g, BID_RUNGS.map((_, k) => k), []);
+        expect(b.length).toBe(a.length);
+        for (let k = 0; k < a.length; k++) expect(b[k]).toBeCloseTo(a[k], 9);
+      }
+    }
+  });
+
+  it('rung subsets cover every price level, each reaching ≤ 1.0×, and never cost more than maxSpend', () => {
+    for (const n of [1, 2, 3, 4, 8]) {
+      const sets = rungSets(n);
+      const union = new Set(sets.flat());
+      expect(union.size).toBe(BID_RUNGS.length);
+      for (const set of sets) expect(Math.min(...set.map((k) => BID_RUNGS[k]))).toBeLessThanOrEqual(1.0);
+    }
+    const out: number[] = [];
+    for (const rungs of [...rungSets(2), ...rungSets(3), [0, 2, 4, 6]]) {
+      ladderInto(3, 4, 7, G.bread, rungs, out);
+      let cum = 0;
+      for (let k = 0; k < out.length; k += 2) {
+        cum += out[k + 1];
+        expect(out[k] * cum).toBeLessThanOrEqual(7 + 1e-9);
+      }
+    }
+  });
+});
 
 describe('household budgets and bids', () => {
   let s: SimState;
@@ -96,12 +159,16 @@ describe('household budgets and bids', () => {
       const row = spend.get(p.id) ?? new Array(11).fill(0);
       const total = row.reduce((a, b) => a + b, 0);
       expect(total).toBeLessThanOrEqual(p.cash + 1e-6);
-      for (const g of CONSUMER_GOODS) expect(row[g]).toBeLessThanOrEqual(plans[i].maxSpend[g] + 1e-6);
+      for (const g of CONSUMER_GOODS) {
+        // Furniture is bought every few days in proportionally larger lots.
+        const mult = g === G.furniture ? FURNITURE_SHOP_DAYS : 1;
+        expect(row[g]).toBeLessThanOrEqual(plans[i].maxSpend[g] * mult + 1e-6);
+      }
       expect(c.committed[p.id]).toBeCloseTo(total, 6);
     });
     // Bids are ladders: several descending price rungs for bread.
     const breadBids = books.goods[G.bread].bids.filter((o) => o.ref === ps[2].id);
-    expect(breadBids.length).toBeGreaterThan(3);
+    expect(breadBids.length).toBeGreaterThanOrEqual(2);
     for (let k = 1; k < breadBids.length; k++) expect(breadBids[k].limit).toBeLessThan(breadBids[k - 1].limit);
   });
 

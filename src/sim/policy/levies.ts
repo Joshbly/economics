@@ -493,7 +493,11 @@ export function stockLevies(s: SimState): void {
         }
       }
       if (ref === STATE) continue;
-      if (ref >= 0 && ref < FIRM_BASE) {
+      if (ref >= FIRM_BASE && firmIdx < 0) {
+        const f = s.firms[ref - FIRM_BASE];
+        if (!f || !f.alive) continue;
+        firmIdx = f.id;
+      } else if (ref >= 0 && ref < FIRM_BASE) {
         person = s.people[ref] ?? null;
         if (!person || !person.alive) continue;
       }
@@ -562,7 +566,7 @@ export function portDuty(s: SimState, side: 'import' | 'export', good: number): 
     if (l.unit === 'pct') pct += l.dir * l.rate;
     else if (l.unit === 'perUnit') unit += l.dir * l.rate;
   }
-  return { pct: clampNum(pct, -0.95, 0.95), unit: Number.isFinite(unit) ? unit : 0 };
+  return { pct: clampNum(pct, WEDGE_BPCT_MIN, WEDGE_SPCT_MAX), unit: Number.isFinite(unit) ? unit : 0 };
 }
 
 /**

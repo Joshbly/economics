@@ -23,32 +23,21 @@
 //    below the legal minimum simply cannot hire (firms.ts clamps posted wages, so
 //    a binding floor shows up as lower targets and layoffs, i.e. unemployment).
 // ============================================================================
-import {
-  BROKE_DAYS,
-  COMMUTE_COST_PER_TILE,
-  FIRE_RATE,
-  FOOD_NEED,
-  HIRE_RATE,
-  HUNGRY_BELOW,
-  JOB_SAMPLE,
-  MAX_COMMUTE_TILES,
-  OTJ_SEARCH_PROB,
-  OTJ_SWITCH_GAIN,
-  OWN_TOWN_SEARCH_SHARE,
-  RES_WAGE_BROKE_MULT,
-  RES_WAGE_DECAY_DAYS,
-  RES_WAGE_FLOOR,
-  RES_WAGE_HUNGRY_MULT,
-  RES_WAGE_START,
-  BASE_WAGE,
-  VACANCY_SAMPLE_CAP,
-} from '../config';
-import { G, N_GOODS } from '../goods';
+import * as CFG from '../config';
+import * as GOODS_M from '../goods';
 import { levyAmount, wageLevyRates } from '../policy/levies';
 import { wageBounds } from '../policy/limits';
-import { rand, randInt, shuffle } from '../rng';
+import * as RNG from '../rng';
 import type { Firm, Person, SimState } from '../types';
-import { clamp, dist, fin } from '../util';
+import * as UTIL from '../util';
+
+// Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
+// import cycles back into agents) bound once at load: hot loops then read locals instead of
+// live import bindings (which cost a getter call per read under tsx/vitest).
+const { rand, randInt, shuffle } = RNG;
+const { BROKE_DAYS, COMMUTE_COST_PER_TILE, FIRE_RATE, FOOD_NEED, HIRE_RATE, HUNGRY_BELOW, JOB_SAMPLE, MAX_COMMUTE_TILES, OTJ_SEARCH_PROB, OTJ_SWITCH_GAIN, OWN_TOWN_SEARCH_SHARE, RES_WAGE_BROKE_MULT, RES_WAGE_DECAY_DAYS, RES_WAGE_FLOOR, RES_WAGE_HUNGRY_MULT, RES_WAGE_START, BASE_WAGE, VACANCY_SAMPLE_CAP } = CFG;
+const { G, N_GOODS } = GOODS_M;
+const { clamp, dist, fin } = UTIL;
 
 // ---------------------------------------------------------------------------
 // Small shared helpers (also used by households/housing/demography)
@@ -76,7 +65,10 @@ export function hasLevyBase(s: SimState, base: string): boolean {
  * pass is exact.
  */
 export interface WageCtx {
-  rates: Record<string, { pct: number; unit: number }>;
+  /** Per-firm take-home wage cache (−1 = not computed yet). */
+  net: Float64Array;
+  /** True if any wage levy is active (otherwise take-home = legal gross). */
+  levies: boolean;
   min: number[]; // per town, -1 none
   max: number[];
 }
@@ -89,18 +81,8 @@ export function wageCtx(s: SimState): WageCtx {
     min.push(b && b.min >= 0 ? b.min : -1);
     max.push(b && b.max >= 0 ? b.max : -1);
   }
-  return { rates: {}, min, max };
-}
-
-function workerRates(s: SimState, c: WageCtx, f: Firm): { pct: number; unit: number } {
-  const k = f.town + '|' + f.sector;
-  let r = c.rates[k];
-  if (!r) {
-    const w = wageLevyRates(s, f.town, f.sector);
-    r = { pct: fin(w?.workerPct ?? 0), unit: fin(w?.workerUnit ?? 0) };
-    c.rates[k] = r;
-  }
-  return r;
+  const net = new Float64Array(s.firms.length).fill(-1);
+  return { net, levies: hasLevyBase(s, 'wage'), min, max };
 }
 
 /** Gross wage the firm can legally pay (posted wage, capped by any wage maximum). */
@@ -110,11 +92,19 @@ function legalGross(c: WageCtx, f: Firm): number {
   return mx >= 0 ? Math.min(w, mx) : w;
 }
 
-/** Take-home wage per day at firm f (after worker-side wage levies; gives raise it). */
+/** Take-home wage per day at firm f (after worker-side wage levies; gives raise it). Cached per firm in `c`. */
 export function netWage(s: SimState, c: WageCtx, f: Firm): number {
-  const r = workerRates(s, c, f);
+  const cached = f.id < c.net.length ? c.net[f.id] : -1;
+  if (cached >= 0) return cached;
   const g = legalGross(c, f);
-  return Math.max(0, g * (1 - r.pct) - r.unit);
+  let n = g;
+  if (c.levies) {
+    const w = wageLevyRates(s, f.town, f.sector, g);
+    n = g * (1 - fin(w?.workerPct ?? 0)) - fin(w?.workerUnit ?? 0);
+  }
+  n = Math.max(0, fin(n));
+  if (f.id < c.net.length) c.net[f.id] = n;
+  return n;
 }
 
 /** Net offer of a firm to a job seeker, or -1 if it cannot legally hire (posted wage below the legal minimum). */
