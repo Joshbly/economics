@@ -21,8 +21,10 @@
 // home price and its selling lowers the destination price, so arbitrage narrows
 // price gaps between towns down to the cost of moving goods — the law of one price
 // net of transport costs. How much it ships is capped by what the destination can
-// absorb (TRADE_DEST_ABSORB × its daily volume + shortage, less stock already
-// there or on the way) and by any shipment quota.
+// absorb — read off yesterday's order book there (TRADE_CURVE_SHARE of the demand
+// other sellers leave unmet at the break-even price, or TRADE_DEST_ABSORB × volume +
+// shortage), less stock already there or on the way — and by any shipment quota.
+// Fuel is a derived demand: a house pays for oil at most what its best trip can bear.
 //
 // Home stock (goods bought for a trip, not yet loaded) lives in firm.inv, with its
 // average cost in trade.basis[home] and waiting time in trade.age[home]; stock in
@@ -65,6 +67,7 @@ const {
   TRADE_ASK_WEIGHTS,
   TRADE_AGE_MAX_DISCOUNT,
   TRADER_OIL_TRIPS,
+  TRADER_FUEL_DAYS,
   TRADER_OIL_BID_MULT,
   TRADER_OIL_BID_EXTRA,
   TRADER_USE_EMA,
@@ -534,18 +537,48 @@ function tripsFuelMean(s: SimState, home: TownId): number {
   return n ? sum / n : 0;
 }
 
-/** Fuel the trader wants on hand (oil units). */
-function fuelTarget(s: SimState, f: Firm, tr: TraderState): number {
+/** Mean one-way travel days over a town's usable routes (0 if none). */
+function routeDaysMean(s: SimState, home: TownId): number {
   let n = 0;
   let sum = 0;
   for (let d = 0; d < s.towns.length; d++) {
-    const r = usableRoute(s, f.town, d);
+    const r = usableRoute(s, home, d);
     if (!r) continue;
     n++;
-    sum += tripFuel(r);
+    sum += r.days;
   }
-  if (!n) return 0;
-  return (sum / n) * Math.max(TRADER_OIL_TRIPS, 2 * Math.max(0, fin(tr.wantEma)));
+  return n ? sum / n : 0;
+}
+
+/**
+ * Fuel the trader wants on hand (oil units): TRADER_FUEL_DAYS of expected use (wagons it
+ * wants on the road × fuel per trip ÷ round-trip days), at least TRADER_OIL_TRIPS trips.
+ */
+function fuelTarget(s: SimState, f: Firm, tr: TraderState): number {
+  const fuel = tripsFuelMean(s, f.town);
+  if (!(fuel > 0)) return 0;
+  const days2 = Math.max(0.5, 2 * routeDaysMean(s, f.town));
+  const daily = (Math.max(0, fin(tr.wantEma)) * fuel) / days2;
+  return Math.max(TRADER_OIL_TRIPS * fuel, TRADER_FUEL_DAYS * daily);
+}
+
+/**
+ * What oil is fundamentally worth at home: the home market price, or — if that has run
+ * above it (a town without wells whose price went stale) — the landed cost from the
+ * cheapest town where oil actually trades (its price + freight).
+ */
+function oilAnchor(s: SimState, home: TownId): number {
+  let best = expectedGross(s, home, G.oil);
+  for (let t = 0; t < s.towns.length; t++) {
+    if (t === home) continue;
+    const m = marketOf(s, t, G.oil);
+    if (!(m.volEma > 1)) continue;
+    const fr = freightPerUnit(s, t, home);
+    if (!(fr >= 0)) continue;
+    const landed = expectedGross(s, t, G.oil) + fr;
+    if (landed < best) best = landed;
+  }
+  return best;
 }
 
 /**
@@ -556,7 +589,9 @@ function fuelTarget(s: SimState, f: Firm, tr: TraderState): number {
  * cap each by TRADE_DEST_ABSORB × destination volume EMA (+ shortage) and any shipMax quota,
  * and bid in h's book at limit = expected dest net − freight − levies − min margin
  * (tag = destination town). Also: asks for stock held in each non-home town
- * (above landed basis, discounted with age), and an oil bid to keep ~10 trips of fuel.
+ * (above landed basis, discounted with age), and an oil bid for a store of fuel
+ * (TRADER_FUEL_DAYS of use; limit anchored on oil's landed value, capped by what the best
+ * trip can bear). Destination demand is read from yesterday's order book there (room, destPrice).
  * Details: the dest price is discounted for spoilage en route; freight is taken at the
  * planned load (a part-full wagon costs as much as a full one); opportunities are
  * ranked by profit per wagon-day; the bid is a small ladder between the home price and
@@ -703,7 +738,7 @@ export function traderOrders(s: SimState, books: Books): void {
     // cap, the emptier the store the more urgently it bids. With no trip worth making it only
     // keeps a minimal store, bidding below the market.
     if (fuelWant > fuelHave + 0.01 && cash > 0) {
-      const pOil = expectedGross(s, home, G.oil);
+      const pOil = oilAnchor(s, home);
       const lack = clamp(1 - fuelHave / Math.max(1e-9, fuelWant), 0, 1);
       let lim = 0;
       if (opps.length) {
@@ -771,7 +806,7 @@ export function traderOrders(s: SimState, books: Books): void {
     // ---- home stock that is not going anywhere (no route pays, no wagon, no fuel): sell it locally ----
     for (let g = 0; g < N_GOODS; g++) {
       const q = homeLeft[g];
-      if (!(q > 1e-6) || g === G.tools) continue;
+      if (!(q > 1e-6)) continue;
       const age = fin(tr.age[home][g]);
       if (age < (GOODS[g].spoil > 0 ? 1 : TRADE_HOME_SELL_DAYS)) continue;
       stockAsks(s, books, ref, home, g, q, tr.basis[home][g], age - TRADE_HOME_SELL_DAYS, false);
@@ -849,7 +884,7 @@ export function tradersDispatch(s: SimState, books: Books): void {
     const tf = tripFuel(r);
     const fuelOnHand = Math.max(0, f.inv[G.oil]);
     let avail = Math.max(0, f.inv[g]);
-    if (g === G.oil) avail = Math.max(0, avail - tf); // keep at least one trip of fuel
+    if (g === G.oil) avail = Math.max(0, avail - Math.max(tf, fuelTarget(s, f, tr))); // the fuel store is not merchandise
     let q = Math.min(avail, t.homeUse + filled, quotaLeft(s, c, g, home, t.dest));
     if (!(q > 1e-3)) continue;
     if (GOODS[g].spoil === 0 && q < TRADE_MIN_LOAD * WAGON_CAPACITY && fin(tr.age[home][g]) < TRADE_HOLD_DAYS) continue; // wait for a fuller wagon
@@ -859,7 +894,7 @@ export function tradersDispatch(s: SimState, books: Books): void {
     const w = Math.min(Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9)), free, byFuel);
     if (w <= 0) continue;
     q = Math.min(q, w * WAGON_CAPACITY);
-    // fuel for both legs
+    // fuel for the trip
     f.inv[G.oil] = Math.max(0, f.inv[G.oil] - w * tf);
     bump(s, 'oil_burned', w * tf);
     // shipment levies (payer: the owner of the goods)
@@ -929,9 +964,16 @@ export function shipTreasuryGoods(s: SimState, from: TownId, to: TownId, good: G
   const days = Math.max(1, Math.ceil(r.days));
   return {
     ok: true,
-    message: `${fmtQty(q)} ${GOODS[good].unit}${q === 1 ? '' : 's'} of ${GOODS[good].name.toLowerCase()} leave ${s.towns[from].name} for ${s.towns[to].name}, arriving in about ${days} day${days > 1 ? 's' : ''}. Freight paid: ¤${Math.round(paid)}.`,
+    message: `${fmtQty(q)} ${unitName(good, q)} of ${GOODS[good].name.toLowerCase()} leave ${s.towns[from].name} for ${s.towns[to].name}, arriving in about ${days} day${days > 1 ? 's' : ''}. Freight paid: ¤${Math.round(paid)}.`,
     id: sh.id,
   };
+}
+
+/** A good's unit, pluralised ("loaf" → "loaves"). */
+function unitName(g: GoodId, q: number): string {
+  const u = GOODS[g].unit;
+  if (Math.abs(q - 1) < 1e-9) return u;
+  return u.endsWith('f') ? u.slice(0, -1) + 'ves' : u.endsWith('s') ? u + 'es' : u + 's';
 }
 
 function fmtQty(q: number): string {

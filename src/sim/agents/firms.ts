@@ -68,6 +68,7 @@ import {
   INPUT_BID_RUNGS,
   INPUT_BID_WEIGHTS,
   INPUT_BUFFER_DAYS,
+  INPUT_ESSENTIAL_DAYS,
   INV_ADJUST_DAYS,
   INV_ADJUST_DAYS_PERISHABLE,
   INV_MAX_DAYS,
@@ -90,6 +91,7 @@ import {
   TARGET_MAX_STEP_ABS,
   TARGET_SMOOTH,
   TOOLS_BUFFER_DAYS,
+  TOOLS_CASH_SHARE,
   TOOLS_GAP_CLOSE,
   TOOLS_IDLE_WEAR_DAY,
   TOOLS_MAX_BID_MULT,
@@ -587,7 +589,13 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const sPlan = planSeason(d, s.day);
   const gross = pt.gross[t];
   const m = s.markets[t * N_GOODS + g];
-  const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+  // Planning price: the firm's own expectation blended with the market's reference and
+  // today's clearing price (net of levies), so output prices are read with the same lag
+  // as input prices — a cost shock is then met by the price rising, not by output being cut
+  // on a stale price.
+  const pOwn = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+  const pToday = m && m.traded && m.net > 0 && Number.isFinite(m.net) ? m.net : pt.net[t][g];
+  const pNet = (pOwn + pt.net[t][g] + pToday) / 3;
   const mc = materialCostPerUnit(k, gross);
   const tc = toolCostPerUnit(k, gross[G.tools], d.prodPerWorker * site * sPlan * eff, carryRate(s));
   const margin = pNet - mc - tc;
@@ -893,23 +901,28 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
   const t = f.town;
   const book = bookFor(books, t, g);
   const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+  // `sales` (with a floor that keeps unsold stock on offer) sizes the offer; the stock
+  // target must come from real sales only, or it would grow with the stock itself.
   const sales = salesRef(s, f, stock);
-  const target = Math.max(1e-6, inventoryTarget(f.sector, sales, s.day));
+  const young = s.day - f.founded < NEW_FIRM_DAYS;
+  const salesT = young ? sales : Math.max(0, fin(f.sales));
+  const target = Math.max(1e-6, inventoryTarget(f.sector, salesT, s.day));
   let shift = clamp(Math.pow(stock / target, -ASK_INV_ELASTICITY), ASK_SHIFT_MIN, ASK_SHIFT_MAX);
   const sh = f.id < sc.n ? sc.shade[f.id] : 0;
   if (sh > 0) shift *= sh;
   const distressed = f.distress > 0;
   if (distressed) shift *= DISTRESS_ASK_SHIFT;
   const base = pExp * shift;
-  // Cost floor: a share of unit variable cost at the current wage and output per worker.
+  // Cost floor: a share of unit variable cost at the current wage and output per worker
+  // (halved for a distressed firm raising cash; there is no floor for rotting overstock).
   let floor = 0;
-  if (!distressed) {
+  {
     const nW = f.workers.length;
     // Output per worker: realised, but never below half the calibrated norm (a firm idled by
     // missing inputs must not price itself out of the market on a freak cost figure).
     const norm = d.prodPerWorker * siteMultiplier(s, f) * seasonFactor(d.season, s.day);
     const apl = Math.max(nW > 0 ? fin(f.output) / nW : 0, 0.5 * norm);
-    floor = ASK_COST_FLOOR * fin(unitVariableCost(f.sector, f.wage, apl, pt.gross[t]), 0);
+    floor = (distressed ? 0.5 : 1) * ASK_COST_FLOOR * fin(unitVariableCost(f.sector, f.wage, apl, pt.gross[t]), 0);
   }
   const perish = isPerishable(g);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
@@ -976,10 +989,16 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
       const beMax = (pNet - (mc - a * pj) - tc) / a;
       if (!(beMax > 0)) continue;
       const book = bookFor(books, t, j);
+      // The part of the gap needed for the next INPUT_ESSENTIAL_DAYS of production is
+      // funded first (class 0); the rest of the buffer last (class 2).
+      const ess = clamp((a * qPlan * INPUT_ESSENTIAL_DAYS - have) / gap, 0, 1);
       for (let i = 0; i < INPUT_BID_RUNGS.length; i++) {
         const r = INPUT_BID_RUNGS[i];
         const m = r > 1 ? 1 + (r - 1) * (1 + u) : r;
-        pushBid(book, Math.min(pj * m, beMax), gap * INPUT_BID_WEIGHTS[i], 0);
+        const price = Math.min(pj * m, beMax);
+        const q = gap * INPUT_BID_WEIGHTS[i];
+        pushBid(book, price, q * ess, 0);
+        pushBid(book, price, q * (1 - ess), 2);
       }
     }
   }
@@ -1007,52 +1026,52 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
   }
   if (pBook.length === 0) return;
 
-  // ---- budget: cash less tomorrow's payroll ----
+  // ---- budget: cash less tomorrow's payroll, spent in order of necessity ----
+  // Inputs for the next days' production come first (without them nothing is made),
+  // tools next (without them output falls to TOOLLESS) — but never more than
+  // TOOLS_CASH_SHARE of what is left, so a firm does not trade its liquidity for
+  // equipment — and the rest of the input buffer last. Worst-case cost = Σ limit × qty.
   const wageDay = Math.max(nW, tgtW) * employerCost(s, f, f.wage, levies);
-  const budget = Math.max(0, fin(f.cash) - WAGE_RESERVE_DAYS * wageDay);
-  let costIn = 0;
-  let costT = 0;
-  for (let i = 0; i < pBook.length; i++) {
-    const c = pPrice[i] * pQty[i];
-    if (pClass[i] === 0) costIn += c;
-    else costT += c;
-  }
-  let kIn = 1;
-  let kT = 1;
-  if (costIn + costT > budget) {
-    const wIn = costIn;
-    const wT = costT * (1 + 2 * sh);
-    let aIn = wIn + wT > 0 ? (budget * wIn) / (wIn + wT) : 0;
-    let aT = budget - aIn;
-    if (aIn > costIn) {
-      aT += aIn - costIn;
-      aIn = costIn;
+  let budget = Math.max(0, fin(f.cash) - WAGE_RESERVE_DAYS * wageDay);
+  const cost = [0, 0, 0];
+  for (let i = 0; i < pBook.length; i++) cost[pClass[i]] += pPrice[i] * pQty[i];
+  const kc = [1, 1, 1];
+  const total = cost[0] + cost[1] + cost[2];
+  if (total > budget) {
+    for (const c of [0, 1, 2]) {
+      const room = c === 1 ? TOOLS_CASH_SHARE * budget : budget;
+      const spend = Math.min(cost[c], room);
+      kc[c] = cost[c] > 0 ? clamp(spend / cost[c], 0, 1) : 0;
+      budget -= spend;
     }
-    if (aT > costT) {
-      aIn = Math.min(costIn, aIn + aT - costT);
-      aT = costT;
-    }
-    kIn = costIn > 0 ? clamp(aIn / costIn, 0, 1) : 0;
-    kT = costT > 0 ? clamp(aT / costT, 0, 1) : 0;
-    if (f.id < sc.n) sc.short[f.id] += costIn + costT - budget;
+    if (f.id < sc.n) sc.short[f.id] += total - Math.max(0, fin(f.cash) - WAGE_RESERVE_DAYS * wageDay);
   }
+  void sh;
   const fref = firmRef(f.id);
   for (let i = 0; i < pBook.length; i++) {
-    const q = pQty[i] * (pClass[i] === 0 ? kIn : kT);
+    const q = pQty[i] * kc[pClass[i]];
     if (q > 1e-6) addBid(pBook[i], fref, pPrice[i], q);
   }
   pBook.length = 0;
 }
 
-/** Liquidating firms dump everything they hold at fire-sale prices. */
-function fireSale(books: Books, f: Firm, pt: PriceTable): void {
+/**
+ * Liquidating firms dump everything they hold at fire-sale prices: FIRE_SALE × the price
+ * the firm expected before it closed (its own output) or the market's (anything else),
+ * never below a quarter of what the good costs to make — anchored so that several days
+ * of dumping by several firms cannot compound a market down to nothing.
+ */
+function fireSale(s: SimState, books: Books, f: Firm, pt: PriceTable): void {
   const ref = firmRef(f.id);
   const t = f.town;
   if (t < 0 || t >= pt.net.length) return;
+  const out = SECTORS[f.sector]?.out ?? -1;
   for (let g = 0; g < N_GOODS; g++) {
     const q = f.inv[g];
     if (!(q > 1e-6)) continue;
-    addAsk(bookFor(books, t, g), ref, FIRE_SALE * pt.net[t][g], q);
+    const ref0 = g === out && f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+    const price = Math.max(FIRE_SALE * ref0, 0.25 * fairPrice(s, t, g, pt.gross[t]));
+    addAsk(bookFor(books, t, g), ref, price, q);
   }
 }
 
@@ -1071,7 +1090,7 @@ export function firmOrders(s: SimState, books: Books): void {
   for (const f of s.firms) {
     if (!f || !f.alive) continue;
     if (f.status === 'liquidating') {
-      if (f.sector !== 'stateworks') fireSale(books, f, pt);
+      if (f.sector !== 'stateworks') fireSale(s, books, f, pt);
       continue;
     }
     const d = SECTORS[f.sector];

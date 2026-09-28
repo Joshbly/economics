@@ -97,6 +97,20 @@ describe('foreign ships at the port', () => {
   });
 });
 
+describe('foreign ships never trade with themselves', () => {
+  it('a large payment on imports that undercuts the foreign bid removes that export bid', () => {
+    s.policy.levies.push(levy({ good: G.iron, dir: -1, rate: 0.5 })); // the Treasury pays half of every import
+    const books = openBooks(s);
+    foreignOrders(s, books);
+    const b = bookFor(books, 1, G.iron);
+    expect(b.asks.filter((o) => o.ref === FOREIGN).length).toBeGreaterThan(0);
+    expect(b.bids.filter((o) => o.ref === FOREIGN).length).toBe(0);
+    const purse0 = s.treasury.purse;
+    clearAll(s, books);
+    expect(s.treasury.purse).toBeCloseTo(purse0, 10); // no phantom flows
+  });
+});
+
 describe('gold market dealers', () => {
   it('quote DEALER_DEPTH oz per 1 % band around the dealer centre', () => {
     const books = openBooks(s);
@@ -169,6 +183,15 @@ describe('evening: world prices, parity, capacity', () => {
   });
 });
 
+/** The daily counters stats.beginDayStats resets in the game. */
+function resetDaily(st: SimState): void {
+  st.stats.acc = {};
+  st.foreign.importValue = 0;
+  st.foreign.exportValue = 0;
+  st.foreign.importsQty.fill(0);
+  st.foreign.exportsQty.fill(0);
+}
+
 describe('balance of payments', () => {
   it('a persistent import surplus fills the desk with coin and weakens the coin against gold (bounded)', () => {
     const buyer = newPerson(s, 1, 'Importer');
@@ -179,6 +202,7 @@ describe('balance of payments', () => {
     const coin0 = s.foreign.coin;
     const path: number[] = [];
     for (let d = 0; d < 240; d++) {
+      resetDaily(s);
       const books = openBooks(s);
       foreignOrders(s, books);
       addBid(bookFor(books, 1, G.iron), buyer.id, 40, 20); // the realm buys iron abroad every day
@@ -207,6 +231,7 @@ describe('balance of payments', () => {
     reconcileBank(s);
     const g0 = s.goldMarket.ema;
     for (let d = 0; d < 60; d++) {
+      resetDaily(s);
       const books = openBooks(s);
       foreignOrders(s, books);
       addBid(bookFor(books, -1, GOLD_GOOD), hoarder.id, s.goldMarket.ema * 1.05, 20);

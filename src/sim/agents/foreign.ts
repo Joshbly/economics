@@ -64,6 +64,7 @@ const {
   INIT_GOLD_PRICE,
   PRICE_MIN,
   BASE_WAGE,
+  DESK_TRADE_EMA,
 } = CFG;
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ function sanitize(fo: Foreign): void {
   if (!Number.isFinite(fo.piers) || fo.piers < 0) fo.piers = 0;
   if (!Number.isFinite(fo.importValue)) fo.importValue = 0;
   if (!Number.isFinite(fo.exportValue)) fo.exportValue = 0;
+  if (!Number.isFinite(fo.tradeEma) || fo.tradeEma < 0) fo.tradeEma = 0; // (older saves: recalibrated on use)
 }
 
 /** E: the reference gold price (¤ per oz) foreign merchants price their goods with. */
@@ -129,22 +131,16 @@ export function exportPrice(s: SimState, g: GoodId): number {
 }
 
 /**
- * The desk's target coin: DESK_COIN_DAYS of potential port trade (ship capacity × world
- * price, one way), at least DESK_WORKING_COIN, scaled up when domestic deposits pay more
- * than the world rate (interest parity: foreigners want to hold more coin).
+ * The desk's target coin: DESK_COIN_DAYS of its recent port trade (foreign.tradeEma, the EMA of
+ * (imports + exports) / 2 in coin), at least DESK_WORKING_COIN, scaled up when domestic deposits
+ * pay more than the world rate (interest parity: foreigners want to hold more coin).
+ * Before any trade has been measured, tradeEma is calibrated so the target equals the coin the
+ * desk holds (a new world starts in balance).
  */
 export function deskTargetCoin(s: SimState): number {
   const fo = s.foreign;
-  const E = goldRate(s);
-  // Capacity net of piers: building a pier should not by itself move the exchange rate.
-  const pierMult = 1 + Math.max(0, fin(fo.piers)) * PIER_CAP_BONUS;
-  let pot = 0;
-  for (let g = 0; g < N_GOODS; g++) {
-    const w = fin(fo.world[g]);
-    const c = fin(fo.shipCap[g]);
-    if (w > 0 && c > 0) pot += (c / pierMult) * w * E;
-  }
-  const base = Math.max(DESK_WORKING_COIN, DESK_COIN_DAYS * pot);
+  if (!(fo.tradeEma > 0)) fo.tradeEma = Math.max(DESK_WORKING_COIN, fin(fo.coin)) / DESK_COIN_DAYS;
+  const base = Math.max(DESK_WORKING_COIN, DESK_COIN_DAYS * fo.tradeEma);
   const gap = clamp(fin(s.bank.depositRate) - WORLD_RATE, -0.1, 0.2);
   return base * Math.exp(DESK_RATE_SENS * gap);
 }
@@ -206,17 +202,27 @@ export function foreignOrders(s: SimState, books: Books): void {
         const lim = quota(s, 'importMax', g, port, -1);
         if (lim >= 0) qi = Math.min(qi, lim);
       }
+      let importBase = Infinity; // lowest base price of the foreign asks
       if (qi > 1e-6) {
         const d = portDuty(s, 'import', g);
         const opts = d.pct || d.unit ? { xPct: d.pct, xUnit: d.unit } : undefined;
         const book = bookFor(books, port, g);
-        for (const [m, share] of IMPORT_TRANCHES) addAsk(book, FOREIGN, wp * (1 + IMPORT_MARKUP) * m, qi * share, opts);
+        const lim0 = wp * (1 + IMPORT_MARKUP);
+        importBase = (lim0 * IMPORT_TRANCHES[0][0] + d.unit) / Math.max(0.05, 1 - d.pct);
+        for (const [m, share] of IMPORT_TRANCHES) addAsk(book, FOREIGN, lim0 * m, qi * share, opts);
       }
       // exports (collected; posted below)
       let qe = cap;
       if (hasLimits) {
         const lim = quota(s, 'exportMax', g, port, -1);
         if (lim >= 0) qe = Math.min(qe, lim);
+      }
+      // Never bid for goods the foreign ships themselves offer cheaper (after duties): the desk
+      // would only trade with itself, and any duty/give on both legs would be a phantom flow.
+      if (qe > 1e-6 && importBase < Infinity) {
+        const d = portDuty(s, 'export', g);
+        const exportBase = (wp * (1 - EXPORT_DISCOUNT) * EXPORT_TRANCHES[0][0] - d.unit) / Math.max(0.05, 1 + d.pct);
+        if (exportBase >= importBase * 0.999) qe = 0;
       }
       if (qe > 1e-6) {
         const lim0 = wp * (1 - EXPORT_DISCOUNT);
@@ -419,6 +425,9 @@ export function foreignEndDay(s: SimState): void {
   // ---- capacity, quotas ----
   updateShipCap(s);
   noteQuotas(s, portTown(s));
+  // ---- the desk's trade turnover (sets its working-coin target) ----
+  deskTargetCoin(s); // (calibrates tradeEma on first use)
+  fo.tradeEma = Math.max(DESK_WORKING_COIN / DESK_COIN_DAYS, ema(fo.tradeEma, 0.5 * (Math.max(0, fo.importValue) + Math.max(0, fo.exportValue)), DESK_TRADE_EMA));
   // ---- stats ----
   const acc = s.stats.acc;
   acc.imports = fo.importValue;

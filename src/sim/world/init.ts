@@ -48,9 +48,11 @@
 //     INIT_LOAN_SHARE of producers; bank reserves so that equity ≈ max(INIT_BANK_EQUITY_MIN,
 //     INIT_BANK_EQUITY_RATIO × loans), then ledger.reconcileBank; Treasury purse, gold and
 //     rates; foreign coin ≈ INIT_FOREIGN_COIN_DAYS of port trade.
-//  8. Inventories: firms INIT_OUTPUT_STOCK_DAYS of output (farms INIT_FARM_STOCK_DAYS: it is
-//     early spring), INPUT_BUFFER_DAYS of inputs, tools for full productivity + a wear
-//     buffer; pantries 1–2 days; wagons in transit and a little stock already delivered.
+//  8. Inventories: firms at their own stock targets (INV_TARGET_DAYS, perishables
+//     INV_TARGET_DAYS_PERISHABLE, plus the seasonal carry: it is early spring, so farms
+//     still hold the tail of last year's harvest), INPUT_BUFFER_DAYS of inputs, tools for
+//     full productivity + TOOLS_BUFFER_DAYS of wear; pantries 1–2 days; wagons in transit
+//     and a little stock already delivered at the destinations.
 //  9. Markets: every town × good at the calibrated local price, volEma = expected
 //     local purchases (traders need it from day one); IOU at par; gold at INIT_GOLD_PRICE.
 // 10. Foreign: world prices = harbour price / gold price × a seeded factor (a few goods
@@ -73,7 +75,6 @@ import {
   INIT_CASH_SIGMA,
   INIT_DRIVER_SLACK,
   INIT_FARM_CAPACITY_HEADROOM,
-  INIT_FARM_STOCK_DAYS,
   INIT_FIRM_CASH_DAYS,
   INIT_FOREIGN_COIN_DAYS,
   INIT_GOLD_PRICE,
@@ -84,9 +85,7 @@ import {
   INIT_LOAN_SHARE,
   INIT_LOAN_TO_CAPITAL,
   INIT_MAX_LEVEL,
-  INIT_OUTPUT_STOCK_DAYS,
   INIT_OWNER_CASH_DAYS,
-  INIT_PERISHABLE_STOCK_DAYS,
   INIT_PURSE,
   INIT_RENT_SPREAD,
   INIT_RESERVE_MIN_SHARE,
@@ -101,6 +100,9 @@ import {
   INIT_WORLD_N_DEAR,
   INIT_WORLD_NEUTRAL,
   INPUT_BUFFER_DAYS,
+  INV_TARGET_DAYS,
+  INV_TARGET_DAYS_PERISHABLE,
+  COAL_HEAT_SHARE,
   EXPORT_DISCOUNT,
   IMPORT_MARKUP,
   OIL_PER_TILE,
@@ -119,7 +121,7 @@ import {
   BANK_RISK_PREMIUM,
   DESK_WORKING_COIN,
 } from '../config';
-import { heatNeed } from '../calendar';
+import { farmSeason, heatNeed, seasonFactor } from '../calendar';
 import { newFirm, newLoan, newMarket, newPerson, newProject, newShipment, newSimState, newTown, newTreasury } from '../factory';
 import { G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
 import { deposits, firmRef, loansOutstanding, personRef, reconcileBank } from '../ledger';
@@ -136,6 +138,7 @@ import { clamp, fin } from '../util';
 import { generateMap, type TownSite } from './mapgen';
 import {
   computeDistricts,
+  connectBuilding,
   findCoreSite,
   findSite,
   footprintOf,
@@ -386,8 +389,9 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
   // Steady-state health (full food, warm, housed) → effective labour per worker.
   let hsum = 0;
   for (let age = 18; age <= 76; age++) hsum += healthTarget(1, 1, HEAT_MEAN, true, age);
-  const health = 0.985 * (hsum / 59);
-  const healthEff = 0.5 + 0.5 * health;
+  const health = 0.995 * (hsum / 59);
+  // Effective labour per worker as firms count it: (0.5 + 0.5·health) × skill.
+  const healthEff = (0.5 + 0.5 * health) * Math.exp((INIT_SKILL_SIGMA * INIT_SKILL_SIGMA) / 2);
   const wEff = W / healthEff;
 
   // Routes (days, lengths) between towns along the founding tracks.
@@ -462,8 +466,9 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
         if (hs.includes(t)) {
           const h = hostAt(sec, t) as Host;
           const d = SECTORS[sec];
-          const opw = wEff / (d.alpha * Math.max(1e-6, h.M)); // output per effective worker at the optimum
-          best = materialCostPerUnit(sec, P[t]) + toolCostPerUnit(sec, P[t][G.tools], opw) + h.M;
+          // Tool cost per unit as firms reckon it (typical output per worker on this site, at the bank's base rate).
+          const opw = d.prodPerWorker * meanMult(h) * healthEff;
+          best = materialCostPerUnit(sec, P[t]) + toolCostPerUnit(sec, P[t][G.tools], opw, s.bank.baseRate) + h.M;
           from = t;
         }
         for (const hh of hs) {
@@ -621,12 +626,55 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
   };
 }
 
+/** Output-weighted site multiplier of a host's firms (1 before any are sized). */
+function meanMult(h: Host): number {
+  let q = 0;
+  let qm = 0;
+  for (let i = 0; i < h.q.length; i++) {
+    q += h.q[i];
+    qm += h.q[i] * (h.mult[i] ?? 1);
+  }
+  return q > 0 ? qm / q : h.sites.length ? 0.6 + 0.8 * h.sites[0].q : 1;
+}
+
+/**
+ * Seasonal stock a producer carries on `day` (days of mean flow): the cumulative
+ * surplus of a mean-1 seasonal profile above its lowest point — farms carry the
+ * harvest into spring, coal mines stock up through summer for the winter
+ * (mirrors firms.seasonalCarryDays / demandCarryDays).
+ */
+export function seasonalCarry(profile: (d: number) => number, sign: 1 | -1, day: number): number {
+  const n = DAYS_PER_YEAR;
+  let mean = 0;
+  for (let d = 0; d < n; d++) mean += profile(d);
+  mean /= n;
+  let c = 0;
+  let lo = Infinity;
+  const cum: number[] = [];
+  for (let d = 0; d < n; d++) {
+    c += sign * (profile(d) - mean);
+    cum.push(c);
+    if (c < lo) lo = c;
+  }
+  const i = ((Math.floor(day) % n) + n) % n;
+  return Math.max(0, (cum[i] - lo) / Math.max(1e-9, mean));
+}
+
+/** Seasonal factor of coal demand (part of all coal is burnt for heat; mean ≈ 1). */
+function coalDemandSeason(day: number): number {
+  return 1 - COAL_HEAT_SHARE + (COAL_HEAT_SHARE * heatNeed(day)) / Math.max(1e-6, HEAT_MEAN);
+}
+
 /** Number of firms, margin and per-firm labour for a host producing h.X. */
 function solveHost(h: Host, wEff: number, healthEff: number, chooseN: boolean): void {
   const d = SECTORS[h.sector];
   const M0 = wEff / (d.alpha * d.prodPerWorker);
   const res = isResourceSector(h.sector);
-  const multOf = (i: number) => (res ? 0.6 + 0.8 * (h.sites[i]?.q ?? 0) : 1);
+  // The season scales output like the site does. Firms plan farms at the annual mean
+  // (they carry stock) but other seasonal sectors (fisheries) at today's season, so
+  // those are sized for the founding day.
+  const S = d.season === 'farm' ? 1 : seasonFactor(d.season, 0);
+  const multOf = (i: number) => S * (res ? 0.6 + 0.8 * (h.sites[i]?.q ?? 0) : 1);
   const maxN = res ? h.sites.length : 80;
   if (!(h.X > 1e-6) || maxN === 0) {
     h.n = 0;
@@ -872,18 +920,21 @@ export function createWorld(opts: WorldOptions): SimState {
   }
 
   const firmPlan: { firm: Firm; q: number; leff: number; workers: number }[] = [];
-  const makeFirm = (sec: Sector, town: TownId, x: number, y: number, workers: number, q: number, leff: number): Firm => {
+  const makeFirm = (sec: Sector, town: TownId, x: number, y: number, workers: number, q: number, leff: number, connect = true): Firm => {
     const d = SECTORS[sec];
-    const b = placeBuilding(s, 'firm', sec, town, x, y, 'active');
+    const b = placeBuilding(s, 'firm', sec, town, x, y, 'active', { connect });
     const head = sec === 'farm' ? INIT_FARM_CAPACITY_HEADROOM : INIT_CAPACITY_HEADROOM;
     b.level = clamp(Math.ceil((workers * head) / d.capacityPerLevel), 1, INIT_MAX_LEVEL);
     const f = newFirm(s, sec, town, b.id, STATE, firmName(R, d.name, s.towns[town].name));
+    f.founded = -Math.round(randRange(R, 400, 3600)); // established long before the founding of the Treasury
     b.firm = f.id;
     f.capacity = d.capacityPerLevel * b.level;
     b.cost = round2(materialsValue(d.buildCost, P[town], W, BUILD_MARGIN) + (b.level - 1) * materialsValue(d.expandCost, P[town], W, BUILD_MARGIN));
     firmPlan.push({ firm: f, q, leff, workers });
     return f;
   };
+  const unplaced: string[] = [];
+  const pendingTracks: Building[] = [];
   // Resource firms first (the calibrated sites), then town workshops.
   const order = cal.hosts.slice().sort((a, b) => Number(isResourceSector(b.sector)) - Number(isResourceSector(a.sector)));
   for (const h of order) {
@@ -894,8 +945,24 @@ export function createWorld(opts: WorldOptions): SimState {
         if (c && isValidSite(s, h.sector, c.x, c.y, h.town)) site = c;
       }
       if (!site) site = findSite(s, h.sector, h.town);
-      if (!site) continue;
-      makeFirm(h.sector, h.town, site.x, site.y, h.workers[i], h.q[i], h.leff[i]);
+      if (!site) {
+        unplaced.push(`${h.sector}@${h.town}`);
+        continue;
+      }
+      const res = isResourceSector(h.sector);
+      const f = makeFirm(h.sector, h.town, site.x, site.y, h.workers[i], h.q[i], h.leff[i], !res);
+      if (res) pendingTracks.push(s.buildings[f.building]);
+    }
+    // Once every resource site is taken, lay their tracks, nearest the town first.
+    const next = order[order.indexOf(h) + 1];
+    if (isResourceSector(h.sector) && (!next || !isResourceSector(next.sector))) {
+      pendingTracks.sort((a, b) => {
+        const ta = s.towns[a.town];
+        const tb = s.towns[b.town];
+        return Math.hypot(a.x - ta.x, a.y - ta.y) - Math.hypot(b.x - tb.x, b.y - tb.y) || a.id - b.id;
+      });
+      for (const b of pendingTracks) if (connectBuilding(s, b) > 0) invalidateRoutes(s);
+      pendingTracks.length = 0;
     }
   }
   // Traders' and builders' yards.
@@ -929,7 +996,7 @@ export function createWorld(opts: WorldOptions): SimState {
       const p = newPerson(s, t, personName(R));
       p.age = Math.round(18 + 58 * Math.pow(rand(R), 1.15));
       p.skill = round3(clamp(lognormal(R, 1, INIT_SKILL_SIGMA), 0.7, 1.4));
-      p.health = round3(clamp(healthTarget(1, 1, heat0, true, p.age) * randRange(R, 0.96, 1), 0.3, 1));
+      p.health = round3(clamp(healthTarget(1, 1, HEAT_MEAN, true, p.age) * randRange(R, 0.99, 1), 0.3, 1));
       p.contentment = round3(randRange(R, 0.58, 0.7));
       p.joy = round3(randRange(R, 0.35, 0.55));
       p.foodSat = 1;
@@ -1017,27 +1084,34 @@ export function createWorld(opts: WorldOptions): SimState {
   }
 
   // ---- 6. jobs ------------------------------------------------------------------------------------
+  // Firms count effective labour Σ(0.5 + 0.5·health)·skill, and their optimal size reacts
+  // several-fold to it, so every firm gets a representative mix of workers: the employed are
+  // chosen at random, then dealt best-first to whichever firm has the largest share of its
+  // need still open (owners first take a place in their own shop).
+  const effOf = (p: Person) => (0.5 + 0.5 * p.health) * p.skill;
   for (let t = 0; t < NT; t++) {
-    const pool = shuffle(R, peopleOf[t].filter((pid) => s.people[pid].job < 0));
-    const take = new Set<number>();
-    const fs = firmPlan.filter((fp) => fp.firm.town === t);
-    // Owners work in their own shops first.
+    const fs = firmPlan.filter((fp) => fp.firm.town === t && fp.workers > 0);
     for (const fp of fs) {
       const f = fp.firm;
-      const ownerId = f.owner >= 0 ? f.owner : -1;
-      if (ownerId >= 0 && f.workers.length < fp.workers && s.people[ownerId] && s.people[ownerId].job < 0) {
-        employ(s, f, s.people[ownerId]);
-        take.add(ownerId);
-      }
+      const owner = f.owner >= 0 ? s.people[f.owner] : undefined;
+      if (owner && owner.town === t && owner.job < 0 && f.workers.length < fp.workers) employ(s, f, owner);
     }
-    let k = 0;
-    for (const fp of fs) {
-      const f = fp.firm;
-      while (f.workers.length < fp.workers && k < pool.length) {
-        const pid = pool[k++];
-        if (take.has(pid)) continue;
-        employ(s, f, s.people[pid]);
+    let need = 0;
+    for (const fp of fs) need += Math.max(0, fp.workers - fp.firm.workers.length);
+    const pool = shuffle(R, peopleOf[t].filter((pid) => s.people[pid].job < 0)).slice(0, need);
+    pool.sort((a, b) => effOf(s.people[b]) - effOf(s.people[a]) || a - b);
+    for (const pid of pool) {
+      let best: (typeof fs)[number] | null = null;
+      let bestOpen = 0;
+      for (const fp of fs) {
+        const open = (fp.workers - fp.firm.workers.length) / fp.workers;
+        if (open > bestOpen + 1e-12) {
+          bestOpen = open;
+          best = fp;
+        }
       }
+      if (!best) break;
+      employ(s, best.firm, s.people[pid]);
     }
   }
   // Remaining homes: employed people nearest their work, the rest anywhere in town.
@@ -1092,12 +1166,15 @@ export function createWorld(opts: WorldOptions): SimState {
       const q = fp.workers > 0 ? fp.q * Math.pow(f.workers.length / fp.workers, d.alpha) : 0;
       const out = d.out;
       f.pExp = round4(Pt[out]);
-      f.sales = round4(q);
+      // Sales EMA as realised today: coal sells above its annual mean while homes are heated.
+      f.sales = round4(out === G.coal ? q * coalDemandSeason(0) : q);
       f.output = round4(q);
-      const opw = leff > 0 ? q / leff : d.prodPerWorker;
       f.unitCost = round4(fin(unitVariableCost(f.sector, W, Math.max(1e-6, q / Math.max(1, f.workers.length)), Pt), Pt[out]));
+      // Stock at the firms' own target: INV_TARGET days (perishables less) plus the seasonal carry.
       const perish = GOODS[out].spoil >= 0.01;
-      const stockDays = f.sector === 'farm' ? INIT_FARM_STOCK_DAYS : perish ? INIT_PERISHABLE_STOCK_DAYS : INIT_OUTPUT_STOCK_DAYS;
+      let stockDays = perish ? INV_TARGET_DAYS_PERISHABLE : INV_TARGET_DAYS;
+      if (d.season === 'farm') stockDays += seasonalCarry(farmSeason, 1, 0);
+      if (out === G.coal) stockDays += seasonalCarry(coalDemandSeason, -1, 0);
       f.inv[out] = round3(q * stockDays);
       for (const [g, a] of d.inputs) f.inv[g] = round3(a * q * INPUT_BUFFER_DAYS);
       const matCost = materialCostPerUnit(f.sector, Pt) * q;
@@ -1105,7 +1182,6 @@ export function createWorld(opts: WorldOptions): SimState {
       const costs = W * f.workers.length + matCost + toolWear;
       f.profit = round4(Pt[out] * q - costs);
       f.cash = round2(INIT_FIRM_CASH_DAYS * costs);
-      void opw;
     }
   };
   for (const fp of firmPlan) setupProducer(fp);
@@ -1349,7 +1425,7 @@ export function createWorld(opts: WorldOptions): SimState {
   s.stats.baseWage = W;
   s.stats.baseRent = RENT0;
   initStats(s);
-  rt(s).bag.worldCalibration = summarizeCalibration(cal, s);
+  rt(s).bag.worldCalibration = { ...summarizeCalibration(cal, s), unplaced };
   applyScenario(s, scen.id);
   const names = s.towns.map((t) => t.name);
   news(
@@ -1386,6 +1462,8 @@ export interface CalibrationSummary {
   profitTown: number[];
   ownerIncome: number[];
   workerIncome: number;
+  /** Planned firms that found no site ("sector@town"); normally empty. */
+  unplaced?: string[];
 }
 
 function summarizeCalibration(cal: Cal, s: SimState): CalibrationSummary {

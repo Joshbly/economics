@@ -323,6 +323,7 @@ export function newForeign(): Foreign {
     exportValue: 0,
     shocks: [],
     piers: 0,
+    tradeEma: 0,
   };
 }
 

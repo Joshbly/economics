@@ -432,8 +432,8 @@ function serviceLoans(s: SimState, cap: number): void {
 const _ctx: LevyCtx = {};
 
 /**
- * Deposit interest on every private balance and IOU coupons to every holder, in one pass
- * over people. Returns the deposits counted (before today's interest).
+ * Deposit interest on every private balance (people, firms, the foreign desk) and IOU
+ * coupons to every holder (people in the same pass, and the bank), with 'interest' levies.
  */
 function payHolders(s: SimState): void {
   const b = s.bank;

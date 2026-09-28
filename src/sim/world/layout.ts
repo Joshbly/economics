@@ -383,6 +383,8 @@ export function connectBuilding(s: SimState, b: Building): number {
  * Status as given ('construction' for new projects). Uses s.ids.building.
  * Houses get HOUSE_SLOTS slots when placed active (0 while under construction;
  * construction sets them on completion). Rent, owner and cost are the caller's.
+ * `opts.connect = false` skips the track (world init places a batch, then connects
+ * them all with connectBuilding so no track cuts across a site chosen for the batch).
  */
 export function placeBuilding(
   s: SimState,
@@ -392,6 +394,7 @@ export function placeBuilding(
   x: number,
   y: number,
   status: Building['status'],
+  opts?: { connect?: boolean },
 ): Building {
   const m = s.map;
   const [w, h] = footprintOf(kind, kind === 'firm' ? sector : '');
@@ -406,7 +409,7 @@ export function placeBuilding(
     }
   }
   let laid = 0;
-  if (kind !== 'market') laid = connectBuilding(s, b);
+  if (kind !== 'market' && opts?.connect !== false) laid = connectBuilding(s, b);
   touchBuildings(s);
   // A building on a former route tile or a new track can change travel routes.
   if (laid > 0 || kind !== 'house') invalidateRoutes(s);

@@ -56,7 +56,28 @@ export type UiEvent =
   | 'placing'
   | 'toast' // payload: { text, kind }
   | 'newgame' // game replaced (load / new realm)
-  | 'action'; // an action was dispatched (payload: ActionResult)
+  | 'action' // an action was dispatched (payload: ActionResult)
+  | 'center' // ask the map to pan to a tile (payload: { x, y, zoom? })
+  | 'prefill'; // ask the Levers panel to open a form prefilled (payload: PrefillRequest)
+
+/** Request from another panel to open a Levers form prefilled (e.g. "Trade here" from Markets). */
+export type PrefillRequest =
+  | { lever: 'trade'; market: import('../sim/types').OrderMarket; side?: 'buy' | 'sell'; price?: number }
+  | { lever: 'levy'; base?: import('../sim/types').LevyBase; good?: number; town?: number }
+  | { lever: 'limit'; kind?: import('../sim/types').LimitKind; good?: number; town?: number }
+  | { lever: 'build'; kind?: 'road' | 'house' | 'firm' | 'pier'; town?: number; sector?: string };
+
+/** Ask the map to centre on a tile. */
+export function centerMap(x: number, y: number, zoom?: number): void {
+  emit('center', { x, y, zoom });
+}
+
+/** Open the Levers tab with a prefilled form. */
+export function prefill(req: PrefillRequest): void {
+  ui.tab = 'levers';
+  emit('tab', 'levers');
+  emit('prefill', req);
+}
 
 type Handler = (payload?: unknown) => void;
 const handlers = new Map<UiEvent, Set<Handler>>();

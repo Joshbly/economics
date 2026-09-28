@@ -51,11 +51,6 @@ export const INIT_LEND_RATE = 0.05;
 // buffer-stock rule (where their planned spending equals their income — food and ale caps make
 // the well-off hold more than m*); INIT_OWNER_CASH_DAYS × BASE_WAGE caps that extra. Cash above
 // the stationary level would be spent down within ~SPEND_DOWN_DAYS as a demand boom.
-/** Grain in store at founding (early spring, near the end of the winter drawdown), days of mean farm output. */
-export const INIT_FARM_STOCK_DAYS = 12;
-/** Output inventory at founding in days of output: durable goods / perishables. */
-export const INIT_OUTPUT_STOCK_DAYS = 5;
-export const INIT_PERISHABLE_STOCK_DAYS = 0.8;
 /** Workers on each town's founding construction project (a house nearly finished). */
 export const INIT_BUILDERS = 3;
 /** Building capacity over the calibrated workforce (farms get more for the harvest peak). */
@@ -82,8 +77,9 @@ export const INIT_WORLD_N_DEAR = 3;
 export const INIT_FOREIGN_COIN_DAYS = 30;
 /** Rent spread within a town at founding (centre dearer), ± this share. */
 export const INIT_RENT_SPREAD = 0.1;
-/** Skill dispersion at founding (lognormal sigma, clamped 0.7..1.4). */
-export const INIT_SKILL_SIGMA = 0.1;
+/** Skill dispersion at founding (lognormal sigma, clamped 0.7..1.4). Firms count skill in effective labour, and with
+ *  α ≈ 0.8 a firm's optimal size reacts ~5× to its workers' efficiency, so the founding spread is kept small. */
+export const INIT_SKILL_SIGMA = 0.06;
 /** Scenario presets (world/scenarios.ts). */
 export const SCEN_WINTER_DROUGHT_DAYS = 120;
 export const SCEN_WINTER_GRAIN_FACTOR = 1.6;
@@ -255,7 +251,7 @@ export const TARGET_MAX_STEP_ABS = 0.2;
 export const ASK_QS_MIN = 0.5;
 export const ASK_QS_MAX = 2.5;
 /** Asks move at most this share a day toward the price at which the firm's optimal output meets demand (P = MC). */
-export const ASK_COMPETE_STEP = 0.03;
+export const ASK_COMPETE_STEP = 0.05;
 /** Output inventory gaps are closed over this many days (perishables: faster). */
 export const INV_ADJUST_DAYS = 20;
 export const INV_ADJUST_DAYS_PERISHABLE = 2;
@@ -292,6 +288,9 @@ export const FIRE_SALE = 0.5;
 /** Input bid ladder: price multipliers of the expected gross price (steeper when stocks run low) and quantity shares. */
 export const INPUT_BID_RUNGS = [1.3, 1.12, 1.03, 0.96, 0.9];
 export const INPUT_BID_WEIGHTS = [0.1, 0.2, 0.3, 0.2, 0.2];
+/** Cash goes first to inputs for this many days of production, then tools (at most TOOLS_CASH_SHARE of what is left), then the rest of the input buffer. */
+export const INPUT_ESSENTIAL_DAYS = 2;
+export const TOOLS_CASH_SHARE = 0.5;
 /** Firms badly short of tools bid up to this multiple of the expected tools price (tools are essential complements),
  *  but never above this multiple of what tools cost to make (firms.fairPrice). */
 export const TOOLS_MAX_BID_MULT = 2.5;
@@ -399,11 +398,13 @@ export const TRADE_ASK_RUNGS = [1.06, 1.0, 0.95];
 export const TRADE_ASK_WEIGHTS = [0.3, 0.4, 0.3];
 /** Unsold stock may be offered this far below its landed cost after STOCK_AGE_DISCOUNT_DAYS. */
 export const TRADE_AGE_MAX_DISCOUNT = 0.4;
-/** Traders keep fuel for this many average round trips. */
-export const TRADER_OIL_TRIPS = 10;
-/** Traders pay up to this multiple of the expected oil price for fuel, plus up to EXTRA more as their fuel runs out. */
-export const TRADER_OIL_BID_MULT = 1.15;
-export const TRADER_OIL_BID_EXTRA = 1.35;
+/** Traders keep fuel for TRADER_FUEL_DAYS of expected use, and never less than TRADER_OIL_TRIPS trips. */
+export const TRADER_FUEL_DAYS = 6;
+export const TRADER_OIL_TRIPS = 3;
+/** Traders pay up to this multiple of oil's value at home for fuel, plus up to EXTRA more as their fuel runs out
+ *  (never more than the oil price at which their best trip still breaks even). */
+export const TRADER_OIL_BID_MULT = 1.1;
+export const TRADER_OIL_BID_EXTRA = 3;
 /** EMA speed of the wagons a trader wanted on the road (drives drivers and wagon investment). */
 export const TRADER_USE_EMA = 0.05;
 /** Drivers hired = wagons wanted × this; wagons wanted in the fleet = wagons wanted × TRADER_WAGON_SLACK. */
@@ -546,10 +547,11 @@ export const WORLD_PRICE_MIN_MULT = 0.25;
 export const WORLD_PRICE_MAX_MULT = 4;
 /** Dealer quote centre: V' = dealerValue · (coin/target)^DESK_COIN_ELASTICITY (log-ratio clamped to ±2). */
 export const DESK_COIN_ELASTICITY = 0.15;
-/** Desk target coin = this many days of potential port trade (half of ship capacity both ways), ≥ DESK_WORKING_COIN. */
+/** Desk target coin = this many days of its port trade (EMA of (imports + exports)/2, speed DESK_TRADE_EMA), ≥ DESK_WORKING_COIN. */
 export const DESK_COIN_DAYS = 30;
-/** Interest parity: the desk's target coin × exp(DESK_RATE_SENS · (deposit rate − WORLD_RATE)). */
-export const WORLD_RATE = 0.02;
+export const DESK_TRADE_EMA = 0.02;
+/** Interest parity: the desk's target coin × exp(DESK_RATE_SENS · (deposit rate − WORLD_RATE)). WORLD_RATE = founding deposit rate. */
+export const WORLD_RATE = 0.01;
 export const DESK_RATE_SENS = 8;
 /** Dealer quotes extend ±DEALER_BANDS % around V' (DEALER_DEPTH oz per 1 % band). */
 export const DEALER_BANDS = 10;

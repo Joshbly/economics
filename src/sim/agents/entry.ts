@@ -211,8 +211,10 @@ function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal |
   if (n > 0) annual = (sum / n) * DAYS_PER_YEAR;
   else if (any) return null; // only young firms: wait for evidence
   else {
-    // A trade new to the town: there must be buyers here already.
-    if (!(fin(m.volEma) > 1e-6 || fin(m.shortage) > 1e-6)) return null;
+    // A trade new to (or gone from) the town: there must be buyers here already — trade,
+    // unmet demand, or at least bids standing in the order book with nobody to sell.
+    const bids = (m.curve?.bids.length ?? 0) > 0 || m.bestBid > 0;
+    if (!(fin(m.volEma) > 1e-6 || fin(m.shortage) > 1e-6 || bids)) return null;
     annual = typicalAnnualProfit(s, town, sector) * ENTRY_NEW_SECTOR_DISCOUNT;
   }
   let roc = annual / capital;

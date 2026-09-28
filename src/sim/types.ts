@@ -384,6 +384,7 @@ export interface Foreign {
   exportValue: number; // today ¤
   shocks: WorldShock[];
   piers: number; // pier count (raises shipCap)
+  tradeEma: number; // EMA of daily port trade (¤, (imports + exports) / 2) — sets the desk's working-coin target; 0 = not yet known // added by finance-trade
 }
 
 export interface WorldShock {

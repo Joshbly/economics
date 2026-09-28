@@ -21,7 +21,7 @@ vi.mock('../src/sim/world/layout', async () => {
   };
 });
 
-import { closeFirm, createFirm, firmAssets, firmOrders, firmsEndDay, firmsPayWages, firmsPlan, firmsProduce, inventoryTarget, seasonalCarryDays } from '../src/sim/agents/firms';
+import { closeFirm, createFirm, fairPrice, firmAssets, firmOrders, firmsEndDay, firmsPayWages, firmsPlan, firmsProduce, inventoryTarget, seasonalCarryDays } from '../src/sim/agents/firms';
 import { potentialOutput } from '../src/sim/agents/production';
 import { DISTRESS_BANKRUPT_DAYS, LIQUIDATION_DAYS, TOOLLESS, TOOLS_MAX_BID_MULT } from '../src/sim/config';
 import { newBuilding, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
@@ -338,6 +338,39 @@ describe('orders', () => {
     expect(Math.max(...furn.map((o) => o.limit))).toBeGreaterThan(23 * 1.4); // the rest waits
   });
 
+  it('a tools price spike cannot ratchet bids: the cap follows production cost, not the market', () => {
+    const s = world();
+    s.markets[G.tools].ema = PRICES[G.tools] * 10; // a shortage has already pushed tools up tenfold
+    const f = firm(s, 'bakery', { workers: 5, cash: 1e5 });
+    f.output = 70;
+    f.pExp = 4.2;
+    reconcile(s);
+    const books = openBooks(s);
+    firmOrders(s, books);
+    const tools = books.goods[G.tools].bids.filter((o) => o.ref === firmRef(f.id));
+    const top = Math.max(...tools.map((o) => o.limit));
+    expect(top).toBeLessThanOrEqual(TOOLS_MAX_BID_MULT * fairPrice(s, 0, G.tools) + 1e-9);
+    expect(top).toBeLessThan(PRICES[G.tools] * 3);
+  });
+
+  it('a cash-short firm funds the inputs it needs to keep producing before buying tools', () => {
+    const s = world();
+    const f = firm(s, 'fishery', { workers: 5, cash: 5 * 10 + 40 }); // a day of wages + 40
+    f.target = 5;
+    f.output = 25;
+    f.sales = 25;
+    f.pExp = 3.4;
+    f.tools = 0; // badly short of tools too
+    reconcile(s);
+    const books = openBooks(s);
+    firmOrders(s, books);
+    const oil = books.goods[G.oil].bids.filter((o) => o.ref === firmRef(f.id)).reduce((a, o) => a + o.qty, 0);
+    expect(oil).toBeGreaterThan(0.08 * 25 * 1.5); // at least ~2 days of oil
+    let toolsCost = 0;
+    for (const o of books.goods[G.tools].bids) if (o.ref === firmRef(f.id)) toolsCost += o.limit * o.qty;
+    expect(toolsCost).toBeLessThanOrEqual(0.5 * 40 + 1e-6);
+  });
+
   it('input and tool bids are capped by cash; a firm short of tools bids high', () => {
     const s = world();
     const f = firm(s, 'bakery', { workers: 5, cash: 10000 });
@@ -352,7 +385,8 @@ describe('orders', () => {
     const tools = books.goods[G.tools].bids.filter((o) => o.ref === firmRef(f.id));
     expect(tools.length).toBeGreaterThan(0);
     const top = Math.max(...tools.map((o) => o.limit));
-    expect(top).toBeCloseTo(PRICES[G.tools] * TOOLS_MAX_BID_MULT, 1);
+    expect(top).toBeGreaterThan(PRICES[G.tools] * 2.2); // up to ~2.5 × the expected price …
+    expect(top).toBeLessThanOrEqual(TOOLS_MAX_BID_MULT * fairPrice(s, 0, G.tools) + 1e-9); // … never above 2.5 × what tools cost to make
     const grain = books.goods[G.grain].bids.filter((o) => o.ref === firmRef(f.id));
     expect(grain.reduce((a, o) => a + o.qty, 0)).toBeGreaterThan(300);
 
