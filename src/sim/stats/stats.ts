@@ -197,8 +197,9 @@ export function roundSig(x: number, digits = STATS_SIG_DIGITS): number {
 /** Annualised rate from a price ratio over `days` days (compounded; 360-day year). Clamped to [−0.99, 50]. */
 export function annualise(ratio: number, days: number): number {
   if (!(ratio > 0) || !(days > 0) || !Number.isFinite(ratio)) return 0;
-  const r = Math.pow(ratio, DAYS_PER_YEAR / days) - 1;
-  return Number.isFinite(r) ? clamp(r, -0.99, 50) : 0;
+  const lr = (DAYS_PER_YEAR / days) * Math.log(ratio); // log space: no overflow
+  if (lr > Math.log(51)) return 50;
+  return clamp(Math.exp(lr) - 1, -0.99, 50);
 }
 
 function meanRange(a: readonly number[], from: number, to: number): number {

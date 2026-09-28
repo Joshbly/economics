@@ -172,9 +172,14 @@ describe('CPI', () => {
     initStats(s);
     const st = s.stats;
     expect(st.basketRent).toBe(1);
-    const q = steadyStateDemand(PRICES, 9 + 3.5 * 0.5 * (7 / 3.5) / 2 + 0, st.baseRent); // shape only
-    for (const g of CONSUMER_GOODS) expect(st.basket[g]).toBeGreaterThan(0);
-    expect(q[G.bread]).toBeGreaterThan(0);
+    // steady-state demand at the (uniform) consumer prices, mean income 10.75 and the
+    // occupied-slot average rent (4 × 1.5 + 2 × 2.5) / 6
+    expect(st.baseRent).toBeCloseTo(11 / 6, 10);
+    const q = steadyStateDemand(PRICES, 10.75, 11 / 6);
+    for (const g of CONSUMER_GOODS) {
+      expect(st.basket[g]).toBeGreaterThan(0);
+      expect(st.basket[g]).toBeCloseTo(q[g], 6);
+    }
     expect(st.latest.cpi).toBeCloseTo(100, 6);
     // the town with dearer rent has the higher CPI; national = population-weighted
     const [a, b] = s.towns;
@@ -272,7 +277,7 @@ describe('daily indicators and town fields', () => {
     const L = s.stats.latest;
     expect(L.credit).toBe(500);
     expect(L.loanRate).toBeCloseTo((400 * 0.07 + 100 * 0.09) / 500, 6);
-    expect(L.capRatio).toBeCloseTo(roundSig(s.bank.equity / 500), 4);
+    expect(L.capRatio).toBeCloseTo(Math.min(5, s.bank.equity / 500), 4); // clamped to [−1, 5]
     expect(L.iouYield).toBeCloseTo(0.05, 10);
   });
 
