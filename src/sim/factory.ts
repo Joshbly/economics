@@ -107,13 +107,14 @@ export function newFirm(s: SimState, sector: Sector, town: TownId, building: num
     distress: 0,
     founded: s.day,
     liquidationDays: 0,
+    lossDays: 0,
     trade: null,
     build: null,
   };
   if (sector === 'trader') {
     const nt = s.towns.length;
     const grid = () => Array.from({ length: nt }, () => new Array(N_GOODS).fill(0));
-    f.trade = { wagons: 0, busy: [], stock: grid(), basis: grid(), age: grid(), freightEma: 0, shippedToday: 0 };
+    f.trade = { wagons: 0, busy: [], stock: grid(), basis: grid(), age: grid(), freightEma: 0, shippedToday: 0, wantEma: 0 };
   }
   if (sector === 'builder') f.build = { queue: [] };
   s.firms[f.id] = f;
@@ -192,6 +193,8 @@ export function newProject(s: SimState, kind: ProjectKind, town: TownId, owner: 
     loan: -1,
     stalledDays: 0,
     label,
+    prepaid: 0,
+    loanWanted: 0,
   };
   s.projects.push(p);
   return p;

@@ -106,3 +106,64 @@ export function setTab(tab: TabId): void {
 export function toast(text: string, kind: 'info' | 'good' | 'bad' = 'info'): void {
   emit('toast', { text, kind });
 }
+
+// ---------------------------------------------------------------------------
+// Convenience helpers (added by ui-foundation). Additive: the exports above are
+// the original contract.
+// ---------------------------------------------------------------------------
+import type { ActionResult, PlayerAction } from '../sim/types';
+
+/**
+ * Dispatch a player action the standard way: game.dispatch → emit('action') →
+ * toast the message on failure (and on success when `announce` is true).
+ * Returns the result so callers can read `id` / `message`.
+ */
+export function act(a: PlayerAction, announce = false): ActionResult {
+  let r: ActionResult;
+  try {
+    r = ui.game.dispatch(a);
+  } catch (e) {
+    r = { ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
+  emit('action', r);
+  if (!r.ok) toast(r.message || 'That could not be done.', 'bad');
+  else if (announce && r.message) toast(r.message, 'good');
+  return r;
+}
+
+/** Last non-zero speed, restored by togglePause(). */
+let lastSpeed = 2;
+
+/** Set the sim speed (0 = paused, 1..SPEEDS.length-1). */
+export function setSpeed(n: number): void {
+  const v = Math.max(0, Math.min(SPEEDS.length - 1, Math.round(n)));
+  if (v > 0) lastSpeed = v;
+  if (ui.speed === v) return;
+  ui.speed = v;
+  emit('speed', v);
+}
+
+/** Pause, or resume at the last speed. */
+export function togglePause(): void {
+  setSpeed(ui.speed > 0 ? 0 : lastSpeed);
+}
+
+/** Enter / leave map placement mode. */
+export function setPlacing(p: Placing | null): void {
+  ui.placing = p;
+  emit('placing', p);
+}
+
+/** Change the map overlay (and optionally the good it shows). */
+export function setOverlay(overlay: OverlayId, good?: number): void {
+  ui.overlay = overlay;
+  if (good !== undefined) ui.overlayGood = good;
+  emit('overlay', overlay);
+}
+
+/** Focus the Markets tab on one market. */
+export function focusMarket(town: number, good: number): void {
+  ui.marketTown = town;
+  ui.marketGood = good;
+  setTab('markets');
+}

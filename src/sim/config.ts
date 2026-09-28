@@ -198,18 +198,110 @@ export const ASK_RUNGS = [0.85, 0.95, 1.0, 1.08, 1.2]; // multipliers of pExp
 export const ASK_WEIGHTS = [0.15, 0.2, 0.25, 0.2, 0.2];
 export const ASK_COST_FLOOR = 0.6; // never ask below this × unit variable cost (unless distressed)
 export const LIQUIDATION_DAYS = 5;
-
-// ---- Entry / expansion (agents/entry.ts) --------------------------------------
+// -- added by firms engineer --
+/** A lower workforce target is adopted only once the plan falls this share below it (hysteresis vs hire-fire churn). */
+export const TARGET_HYSTERESIS = 0.08;
+/** Output inventory gaps are closed over this many days (perishables: faster). */
+export const INV_ADJUST_DAYS = 10;
+export const INV_ADJUST_DAYS_PERISHABLE = 2;
+/** Firms plan to produce a little more than they expect to sell, so that unmet demand can reveal itself. */
+export const DEMAND_SLACK = 0.05;
+/** Share of the town market's unmet demand (shortage) a firm adds to its sales expectation, pro rata to its market share. */
+export const SHORTAGE_WEIGHT = 0.5;
+/** Firms younger than this (days) with little sales history plan with a capacity heuristic: NEW_FIRM_SCALE × typical size. */
+export const NEW_FIRM_DAYS = 45;
+export const NEW_FIRM_SCALE = 0.6;
+/** Output multiplier on farms while a drought is on (town.droughtDays > 0). */
+export const DROUGHT_FACTOR = 0.5;
+/** Posted wages are cut (WAGE_DOWN_DAY) only while local unemployment is above this and the firm loses money. */
+export const WAGE_CUT_UNEMP = 0.06;
+/** Absolute floor on any posted wage (¤/day), a numerical guard. */
+export const WAGE_MIN_ABS = 0.5;
+/** Cash held back from market purchases, in days of the firm's wage bill (tomorrow's payroll comes first). */
+export const WAGE_RESERVE_DAYS = 1;
+/** Ask ladder: the quantity offered at ≤ pExp equals planned sales; stock beyond the ladder waits at this multiple (durables hold out). */
+export const ASK_TOP_RUNG = 1.5;
+/** Asks shift by (stock / target)^(−this), clamped to [ASK_SHIFT_MIN, ASK_SHIFT_MAX]. */
+export const ASK_INV_ELASTICITY = 0.12;
+export const ASK_SHIFT_MIN = 0.8;
+export const ASK_SHIFT_MAX = 1.12;
+/** Perishable overstock (above INV_TARGET_DAYS_PERISHABLE of sales) is cleared at pExp × (1 − K·excess days·spoil/5 %), ≥ MIN. */
+export const PERISH_CLEAR_K = 0.1;
+export const PERISH_CLEAR_MIN = 0.5;
+/** Distressed firms (unpaid wages, overdue loans) cut their asks by this factor to raise cash. */
+export const DISTRESS_ASK_SHIFT = 0.93;
+/** Liquidating firms dump all stock at this multiple of the market's net price. */
+export const FIRE_SALE = 0.5;
+/** Input bid ladder: price multipliers of the expected gross price (steeper when stocks run low) and quantity shares. */
+export const INPUT_BID_RUNGS = [1.3, 1.12, 1.03, 0.96, 0.9];
+export const INPUT_BID_WEIGHTS = [0.1, 0.2, 0.3, 0.2, 0.2];
+/** Firms badly short of tools bid up to this multiple of the expected tools price (tools are essential complements). */
+export const TOOLS_MAX_BID_MULT = 2.5;
+/** Distress counter falls by this per day without distress (so intermittent trouble still accumulates). */
+export const DISTRESS_RECOVER = 2;
+/** Working-capital loans: retry at most every this many days (daily while wages go unpaid); total working debt ≤ MAX days of costs. */
+export const WORKING_LOAN_RETRY_DAYS = 5;
+export const WORKING_DEBT_MAX_DAYS = 60;
+/** Firms holding more than this many days of costs in cash repay working loans early (month end). */
+export const PREPAY_CASH_DAYS = 30;
+/** Working capital a new firm starts with, in days of typical costs (financed with the building). */
+export const NEW_FIRM_WC_DAYS = 20;
 export const ENTRY_HURDLE = 0.12; // required return above the loan rate (risk + scarcity of entrepreneurs)
 export const ENTRY_MAX_PROB = 0.5;
 export const ENTRY_OWNER_EQUITY = 0.25; // owner must fund this share of cost
 export const HOUSE_HURDLE = 0.04;
-
-// ---- Construction (agents/construction.ts) -----------------------------------
+// -- added by firms engineer --
+/** Entry decisions are taken on this day of the month. */
+export const ENTRY_DAY = 15;
+/** At most this many new private projects per town per month; none while the builder already has this many private jobs queued. */
+export const ENTRY_MAX_PER_TOWN = 2;
+export const BUILDER_MAX_PRIVATE_QUEUE = 3;
+/** Entry probability = ENTRY_PROB_SLOPE × (expected return − required)/required, capped at ENTRY_MAX_PROB. */
+export const ENTRY_PROB_SLOPE = 1.0;
+/** A firm's profits count in its sector's return signal once it is this old (days). */
+export const ENTRY_MIN_AGE = 60;
+/** Return estimates for sectors with no local firm yet are discounted by this (uncertainty). */
+export const ENTRY_NEW_SECTOR_DISCOUNT = 0.8;
+/** Extra return credited per unit of (market shortage / volume). */
+export const ENTRY_SHORTAGE_BONUS = 0.1;
+/** Spread over the bank's base rate assumed when screening sectors (before a borrower is chosen). */
+export const ENTRY_SCREEN_SPREAD = 0.02;
+/** An entrepreneur keeps at least this many days of income after putting up the equity. */
+export const ENTRY_OWNER_RESERVE_DAYS = 60;
+/** Most firms one person will own. */
+export const ENTRY_MAX_OWNED = 4;
+/** Vacant buildings are reopened for this share of a new building's cost. */
+export const REOPEN_COST_SHARE = 0.35;
+/** Most levels a building can be expanded to. */
+export const MAX_BUILDING_LEVEL = 4;
+/** Developers build when the town's housing vacancy is below this (or homeless outnumber empty slots). */
+export const HOUSE_VACANCY_TRIGGER = 0.03;
+/** A project waiting for its loan is dropped if no loan arrives within this many days. */
+export const FINANCING_WAIT_DAYS = 3;
+/** Voluntary exit: a firm older than EXIT_MIN_AGE days whose profit EMA has been negative for EXIT_LOSS_DAYS closes. */
+export const EXIT_LOSS_DAYS = 90;
+export const EXIT_MIN_AGE = 180;
 export const BUILD_MARGIN = 1.12; // builders bill cost × this
 export const BUILD_TARGET_DAYS = 60; // builders size workforce to clear queue in this many days
 export const MAX_ACTIVE_PROJECTS = 3;
 export const STALL_CANCEL_DAYS = 120;
+// -- added by firms engineer --
+/** Labour on a project may run at most this share ahead of its least-supplied material. */
+export const LABOR_AHEAD_MAX = 0.1;
+/** Builders keep in stock up to this share of each active project's material needs (or all that remains). */
+export const BUILDER_STOCK_SHARE = 0.25;
+/** Share of the material gap bid for per day, and the bid ladder (multiples of expected gross price) with quantity shares. */
+export const BUILDER_BID_CLOSE = 0.5;
+export const BUILDER_BID_RUNGS = [1.25, 1.1, 1.0];
+export const BUILDER_BID_WEIGHTS = [0.3, 0.3, 0.4];
+/** Remaining labour of a project waiting for materials counts only this share when sizing the builder's workforce. */
+export const BUILDER_BLOCKED_SHARE = 0.3;
+/** Effective labour of a Treasury worker on construction (no tools of their own). */
+export const STATEWORKS_BUILD_EFF = 0.8;
+/** Routes are recomputed after this many newly paved tiles (and on completion). */
+export const ROAD_INVALIDATE_TILES = 5;
+/** Finished/cancelled projects kept in s.projects for the UI (most recent). */
+export const PROJECT_KEEP_DONE = 24;
 
 // ---- Traders (agents/traders.ts) ---------------------------------------------
 export const SPEED_OFFROAD = 6; // tiles per day
@@ -223,6 +315,44 @@ export const TRADE_MIN_MARGIN_PCT = 0.05;
 export const TRADE_MIN_MARGIN_ABS = 0.05;
 export const TRADE_DEST_ABSORB = 0.35; // don't ship more than this × destination daily volume (+shortage)
 export const STOCK_AGE_DISCOUNT_DAYS = 10;
+// -- added by finance-trade engineer --
+/** Stop shipping a good to a town once traders' stock there + in transit exceeds this many days of the daily allowance. */
+export const TRADE_PENDING_DAYS = 6;
+/** Smallest daily allowance (units) a destination with no recorded volume still offers (lets a route start). */
+export const TRADE_MIN_ABSORB = 2;
+/** Durable goods bought for a trip wait at home up to this many days for a fuller wagon. */
+export const TRADE_HOLD_DAYS = 3;
+/** A wagon leaves at once when loaded to at least this share of WAGON_CAPACITY (else it may wait, see TRADE_HOLD_DAYS). */
+export const TRADE_MIN_LOAD = 0.5;
+/** Merchandise at home that no route pays for is sold back locally after this many days. */
+export const TRADE_HOME_SELL_DAYS = 6;
+/** Routes slower than this (one way, days) are not served. */
+export const TRADE_MAX_ROUTE_DAYS = 20;
+/** Remote stock ask ladder (multipliers of the expected net price) and quantity shares. */
+export const TRADE_ASK_RUNGS = [1.06, 1.0, 0.95];
+export const TRADE_ASK_WEIGHTS = [0.3, 0.4, 0.3];
+/** Unsold stock may be offered this far below its landed cost after STOCK_AGE_DISCOUNT_DAYS. */
+export const TRADE_AGE_MAX_DISCOUNT = 0.4;
+/** Traders keep fuel for this many average round trips. */
+export const TRADER_OIL_TRIPS = 10;
+/** Traders pay up to this multiple of the expected oil price for fuel. */
+export const TRADER_OIL_BID_MULT = 1.15;
+/** EMA speed of the wagons a trader wanted on the road (drives drivers and wagon investment). */
+export const TRADER_USE_EMA = 0.05;
+/** Drivers hired = wagons wanted × this; wagons wanted in the fleet = wagons wanted × TRADER_WAGON_SLACK. */
+export const TRADER_DRIVER_SLACK = 1.2;
+export const TRADER_WAGON_SLACK = 1.25;
+/** Spare tools (fraction of one wagon) kept so wear does not immediately cost a wagon. */
+export const TRADER_WEAR_BUFFER = 0.5;
+/** Most wagons bought per day, and the premium over the expected tools price a trader pays for them. */
+export const TRADER_INVEST_WAGONS_DAY = 1;
+export const TRADER_TOOLS_BID_MULT = 1.1;
+/** Cash kept back from merchandise bids, in days of the trader's wage bill. */
+export const TRADER_CASH_RESERVE_DAYS = 4;
+/** EMA speed of the freight-per-unit-per-tile index. */
+export const FREIGHT_EMA = 0.1;
+/** Extra charged to the Treasury when it has its own goods carried (on top of the full-wagon trip cost). */
+export const TREASURY_FREIGHT_PREMIUM = 0.1;
 
 // ---- Bank (agents/bank.ts) ----------------------------------------------------
 export const BANK_BASE_SPREAD = 0.025;
@@ -239,6 +369,57 @@ export const WORKING_LOAN_TERM = 180;
 export const INVEST_LOAN_TERM = 720;
 export const STARTUP_LOAN_TERM = 1440;
 export const HOUSE_LOAN_TERM = 3600;
+// -- added by finance-trade engineer --
+/** Operating reserves the bank keeps above any legal requirement (share of deposits). */
+export const BANK_RESERVE_BUFFER = 0.01;
+/** Window debt is repaid only once reserves exceed the target by this share of deposits (avoids daily churn). */
+export const BANK_REPAY_HYST = 0.005;
+/** Window debt (+ reserve shortfall) of this share of deposits makes the window rate the full marginal funding cost. */
+export const BANK_TIGHT_SCALE = 0.02;
+/** Lending stance: resting level, sensitivity to the annualised loss rate and to thin capital, daily speeds. */
+export const BANK_STANCE_BASE = 0.2;
+export const BANK_STANCE_LOSS_SENS = 25;
+export const BANK_STANCE_CAP_SENS = 6;
+export const BANK_STANCE_UP = 0.03; // per day, when tightening
+export const BANK_STANCE_DOWN = 0.003; // per day, when loosening
+/** Extra annual spread charged on new loans at stance 1. */
+export const BANK_STANCE_SPREAD = 0.02;
+/** Tighter stance raises the DSCR requirement by up to this share and cuts the leverage limit by up to this share. */
+export const BANK_STANCE_DSCR = 0.6;
+export const BANK_STANCE_LEVERAGE = 0.3;
+/** Capital headroom above the minimum demanded at stance 1. */
+export const BANK_STANCE_CAPITAL = 0.03;
+/** EMA speed of the daily default-loss rate. */
+export const BANK_DEFAULT_EMA = 1 / 90;
+/** Extra spreads by borrower type (annual). */
+export const BANK_STARTUP_PREMIUM = 0.01;
+export const BANK_PERSON_PREMIUM = 0.005;
+/** Share of a household's income the bank counts as available for debt service. */
+export const BANK_INCOME_DEBT_SHARE = 0.35;
+/** Annual cash yield the bank assumes on newly financed capital (firm investment / start-ups). */
+export const BANK_PROJECT_YIELD = 0.15;
+/** Firms younger than this are judged on their assets' assumed yield, not on a profit history. */
+export const BANK_YOUNG_FIRM_DAYS = 90;
+/** Smallest loan written (¤); working-capital requests may be cut down to this share of the request. */
+export const BANK_MIN_LOAN = 5;
+export const BANK_PARTIAL_MIN = 0.4;
+/** A payment counts as made if at least this share of what was due was paid. */
+export const BANK_PAY_TOLERANCE = 0.98;
+/** On default the bank seizes the borrower's deposit, but a household keeps this many days of its income. */
+export const BANK_DEFAULT_KEEP_DAYS = 5;
+/** Dividends only while the capital ratio exceeds this. */
+export const BANK_DIVIDEND_CAPITAL = 0.12;
+/** Bail-in restores equity to this share of loans. */
+export const BANK_BAILIN_TARGET = 0.02;
+/** IOUs must yield more than the reserve rate + BANK_IOU_MARGIN + this term premium (they are perpetual). */
+export const BANK_IOU_TERM_PREMIUM = 0.01;
+/** IOU book capped at this share of deposits; this share of excess reserves bid per day. */
+export const BANK_IOU_MAX_SHARE = 0.3;
+export const BANK_IOU_BUY_FRACTION = 0.2;
+/** Loan rates never go below this (annual). */
+export const BANK_MIN_LOAN_RATE = 0;
+/** Days of news silence between repeated warnings of the same kind. */
+export const BANK_NEWS_GAP_DAYS = 30;
 
 // ---- IOUs ---------------------------------------------------------------------
 export const IOU_COUPON = 5; // ¤ per IOU per year
@@ -282,6 +463,36 @@ export const WORLD_DRIFT_SIGMA = 0.004; // daily log-random-walk of world prices
 export const DEALER_DEPTH = 6; // oz per 1 % deviation from dealer value
 export const DEALER_PPP_PULL = 0.01; // per day
 export const DESK_WORKING_COIN = 500;
+// -- added by finance-trade engineer --
+/** Foreign order tranches: [price multiplier, share of capacity]. Imports: dearer tranches; exports: cheaper. */
+export const IMPORT_TRANCHES: [number, number][] = [[1.0, 0.5], [1.04, 0.3], [1.1, 0.2]];
+export const EXPORT_TRANCHES: [number, number][] = [[1.0, 0.5], [0.96, 0.3], [0.9, 0.2]];
+/** World prices mean-revert to their baseline (× any active shock) at this daily speed; faster while a shock is on. */
+export const WORLD_REVERT_DAY = 0.004;
+export const WORLD_SHOCK_PULL = 0.08;
+/** World prices stay within these multiples of their baseline. */
+export const WORLD_PRICE_MIN_MULT = 0.25;
+export const WORLD_PRICE_MAX_MULT = 4;
+/** Dealer quote centre: V' = dealerValue · (coin/target)^DESK_COIN_ELASTICITY (log-ratio clamped to ±2). */
+export const DESK_COIN_ELASTICITY = 0.15;
+/** Desk target coin = this many days of potential port trade (half of ship capacity both ways), ≥ DESK_WORKING_COIN. */
+export const DESK_COIN_DAYS = 30;
+/** Interest parity: the desk's target coin × exp(DESK_RATE_SENS · (deposit rate − WORLD_RATE)). */
+export const WORLD_RATE = 0.02;
+export const DESK_RATE_SENS = 8;
+/** Dealer quotes extend ±DEALER_BANDS % around V' (DEALER_DEPTH oz per 1 % band). */
+export const DEALER_BANDS = 10;
+/** Dealer value follows the traded gold price at this daily speed. */
+export const DEALER_PRICE_PULL = 0.02;
+/** Share of the desk's coin it may commit per day to buying exports / buying gold. */
+export const DESK_EXPORT_COIN_SHARE = 0.5;
+export const DESK_GOLD_COIN_SHARE = 0.4;
+/** EMA speeds of foreign.goldEma and of the purchasing-power-parity estimate. */
+export const GOLD_EMA = 0.05;
+export const PPP_EMA = 0.02;
+/** Ship capacity floor per good (units/day) and monthly smoothing toward the use-based level. */
+export const SHIP_CAP_FLOOR = 3;
+export const SHIP_CAP_SMOOTH = 0.4;
 
 // ---- Demography (agents/demography.ts) --------------------------------------
 export const BIRTH_RATE = 0.012; // per person per year (healthy, housed)
@@ -342,8 +553,66 @@ export const UNREST_CONTENT = 0.3;
 export const UNREST_DAYS = 10;
 export const STRIKE_DAYS = 5;
 export const STRIKE_FACTOR = 0.4;
+// -- added by stats engineer --
+/** No random events before this many days have passed since the player took control (and never during warm-up). */
+export const EVENT_GRACE_DAYS = 30;
+/** Expected number of each random event per year (0 disables it). */
+export const EVENT_DROUGHT_PER_YEAR = 0.5;
+export const EVENT_BUMPER_PER_YEAR = 0.5;
+export const EVENT_STORM_PER_YEAR = 0.5;
+export const EVENT_MINE_PER_YEAR = 0.7;
+export const EVENT_WORLD_SHOCK_PER_YEAR = 1.0;
+/** Droughts strike in the growing season (day-of-year window) and last this long (farms produce ×0.5, see firms.ts). */
+export const EVENT_DROUGHT_FROM_DOY = 30;
+export const EVENT_DROUGHT_TO_DOY = 210;
+export const EVENT_DROUGHT_DAYS = 60;
+/** Bumper harvests come in the harvest window and add this many days of each farm's usual output. */
+export const EVENT_BUMPER_FROM_DOY = 150;
+export const EVENT_BUMPER_TO_DOY = 270;
+export const EVENT_BUMPER_DAYS = 8;
+/** A storm wrecks this share of every fishery's boats and nets (tools) in the stricken town. */
+export const EVENT_STORM_TOOL_LOSS = 0.5;
+/** A mine collapse buries this share of the mine's tools and costs each of its workers this much health. */
+export const EVENT_MINE_TOOL_LOSS = 0.8;
+export const EVENT_MINE_INJURY = 0.25;
+/** World price shocks: factor ranges (up / down), probability of an upward shock (oil: higher), duration range (days). */
+export const EVENT_SHOCK_UP_MIN = 1.35;
+export const EVENT_SHOCK_UP_MAX = 1.9;
+export const EVENT_SHOCK_DOWN_MIN = 0.6;
+export const EVENT_SHOCK_DOWN_MAX = 0.8;
+export const EVENT_SHOCK_UP_PROB = 0.55;
+export const EVENT_SHOCK_UP_PROB_OIL = 0.75;
+export const EVENT_SHOCK_MIN_DAYS = 90;
+export const EVENT_SHOCK_MAX_DAYS = 180;
+/** Market news: a monthly price move beyond this share is reported (at most EVENT_SWING_MAX items a month). */
+export const EVENT_SWING = 0.25;
+export const EVENT_SWING_MAX = 3;
+/** Markets with a smoothed volume below this (units/day) are too thin to report on. */
+export const EVENT_MIN_VOLUME = 0.5;
+/** Shortage news: rationed share of demand at or above this for EVENT_SHORTAGE_DAYS days in a row. */
+export const EVENT_SHORTAGE_SHARE = 0.25;
+export const EVENT_SHORTAGE_DAYS = 5;
+/** Minimum days between two news items of the same kind (per town / market where applicable). */
+export const EVENT_NEWS_COOLDOWN = 60;
+/** Alarm thresholds for the monthly realm-wide news. */
+export const EVENT_ALARM_INFLATION = 0.1;
+export const EVENT_ALARM_DEFLATION = -0.05;
+export const EVENT_ALARM_UNEMP = 0.12;
+export const EVENT_ALARM_HUNGER = 0.08;
+export const EVENT_ALARM_HOMELESS = 0.08;
+/** Population milestones are announced every this many households. */
+export const EVENT_POP_STEP = 100;
 
 // ---- Stats / history ---------------------------------------------------------
 export const STATS_DAILY_CAP = 1440;
 export const MARKET_HIST_DAYS = 360;
 export const NEWS_CAP = 300;
+// -- added by stats engineer --
+/** Inflation is measured between trailing means of this many daily CPI values (damps auction noise). */
+export const STATS_INFL_WINDOW = 7;
+/** With less history than the full lag, inflation blends the partial-window rate with the carried rate; below this span (days) only the carried rate is used. */
+export const STATS_INFL_MIN_SPAN = 10;
+/** Daily/monthly series values are rounded to this many significant digits (compact saves). */
+export const STATS_SIG_DIGITS = 6;
+/** Wealth share reported as `top10` (the richest this share of households). */
+export const STATS_TOP_SHARE = 0.1;

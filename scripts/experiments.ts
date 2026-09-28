@@ -1,0 +1,620 @@
+// ============================================================================
+// Policy experiments (DESIGN §9): same world, same RNG state, baseline vs
+// treatment. The directional results below define what "accurate" means.
+//
+//   npm run experiments -- [--only <substr>] [--days N] [--seed N] [--pre N] [--verbose]
+//
+// Procedure: build the world and run the warm-up once (Game.create), switch random
+// events off (they would add noise that differs between arms) and let the Purse
+// mint on demand (so high window rates or large payments never stall), run a short
+// observation period (--pre, default 60 days) from which each experiment sizes its
+// actions, then serialise that state. Every arm — the baseline and each treatment —
+// starts from a deserialised copy of the same JSON (identical RNG state), applies
+// its actions on day 0 (plus optional per-day hooks) and runs for the experiment's
+// length. Checks compare arm means over an evaluation window (default: the last
+// 90 days). The baseline is simulated once, for the longest experiment, and every
+// experiment reads its own window from it (a baseline has no actions, so its first
+// N days are the same whatever its length).
+//
+// This is a report: the exit code is 0 even when checks fail (1 only on a crash).
+// ============================================================================
+import { WARMUP_DAYS } from '../src/sim/config';
+import { G, GOODS, N_GOODS, TRADABLE_GOODS } from '../src/sim/goods';
+import { Game } from '../src/sim/game';
+import { netWage, wageCtx } from '../src/sim/agents/labor';
+import { roadPlan } from '../src/sim/world/paths';
+import type { Levy, Limit, PlayerAction, SimState, TownKind } from '../src/sim/types';
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+interface Opts {
+  only: string;
+  days: number;
+  seed: number;
+  pre: number;
+  verbose: boolean;
+}
+
+function parseArgs(argv: string[]): Opts {
+  const o: Opts = { only: '', days: 360, seed: 1, pre: 60, verbose: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const val = (): string => {
+      const v = argv[++i];
+      if (v === undefined) {
+        console.error(`experiments: missing value after ${a}`);
+        process.exit(1);
+      }
+      return v;
+    };
+    if (a === '--only') o.only = val().toLowerCase();
+    else if (a === '--days') o.days = Math.max(30, Math.floor(Number(val()) || 360));
+    else if (a === '--seed') o.seed = Math.floor(Number(val()) || 1);
+    else if (a === '--pre') o.pre = Math.max(0, Math.floor(Number(val()) || 0));
+    else if (a === '--verbose' || a === '-v') o.verbose = true;
+    else if (a === '--help' || a === '-h') {
+      console.log('usage: npm run experiments -- [--only <substr>] [--days N] [--seed N] [--pre N] [--verbose]');
+      process.exit(0);
+    } else {
+      console.error(`experiments: unknown option ${a}`);
+      process.exit(1);
+    }
+  }
+  return o;
+}
+
+// ---------------------------------------------------------------------------
+// Context observed on the base state (used to size the actions)
+// ---------------------------------------------------------------------------
+interface Ctx {
+  capital: number;
+  farm: number;
+  mining: number;
+  harbor: number;
+  pop: number;
+  wage: number;
+  /** Smoothed base price per [town][good]. */
+  price: number[][];
+  /** Smoothed volume per [town][good]. */
+  vol: number[][];
+  /** National smoothed volume per good. */
+  natVol: number[];
+  /** National price per good (volume-weighted). */
+  natPrice: number[];
+  /** The good most imported through the port during the observation period. */
+  importGood: number;
+  importNote: string;
+}
+
+function townOfKind(s: SimState, kind: TownKind, fallback: number): number {
+  const t = s.towns.find((x) => x.kind === kind);
+  return t ? t.id : Math.min(fallback, s.towns.length - 1);
+}
+
+function mean(a: readonly number[]): number {
+  let x = 0;
+  for (const v of a) x += v;
+  return a.length ? x / a.length : 0;
+}
+
+function observe(s: SimState): Ctx {
+  const nT = s.towns.length;
+  const price: number[][] = [];
+  const vol: number[][] = [];
+  const natVol = new Array(N_GOODS).fill(0);
+  const natPrice = new Array(N_GOODS).fill(0);
+  for (let t = 0; t < nT; t++) {
+    price.push([]);
+    vol.push([]);
+    for (let g = 0; g < N_GOODS; g++) {
+      const m = s.markets[t * N_GOODS + g];
+      price[t][g] = m && m.ema > 0 ? m.ema : 1;
+      vol[t][g] = m ? Math.max(0, m.volEma) : 0;
+      natVol[g] += vol[t][g];
+    }
+  }
+  for (let g = 0; g < N_GOODS; g++) {
+    let num = 0;
+    let den = 0;
+    for (let t = 0; t < nT; t++) {
+      num += price[t][g] * (vol[t][g] + 1e-6);
+      den += vol[t][g] + 1e-6;
+    }
+    natPrice[g] = den > 0 ? num / den : 1;
+  }
+  // most imported good (by value) over the observation period
+  let importGood = -1;
+  let best = 0;
+  for (const g of TRADABLE_GOODS) {
+    const q = mean(s.stats.daily['imp_' + g] ?? []);
+    const v = q * natPrice[g];
+    if (v > best) {
+      best = v;
+      importGood = g;
+    }
+  }
+  let importNote = importGood >= 0 ? `most imported: ${GOODS[importGood].name.toLowerCase()} (${(best / Math.max(1e-9, natPrice[importGood])).toFixed(1)}/day)` : '';
+  if (importGood < 0) {
+    // Nothing imported yet: the tradable good that is dearest at home relative to abroad.
+    const E = s.goldMarket.ema > 0 ? s.goldMarket.ema : 100;
+    let ratio = -1;
+    for (const g of TRADABLE_GOODS) {
+      const w = s.foreign.world[g];
+      if (!(w > 0)) continue;
+      const r = natPrice[g] / (E * w);
+      if (r > ratio) {
+        ratio = r;
+        importGood = g;
+      }
+    }
+    if (importGood < 0) importGood = G.iron;
+    importNote = `no imports observed; using ${GOODS[importGood].name.toLowerCase()} (dearest at home vs abroad)`;
+  }
+  return {
+    capital: townOfKind(s, 'capital', 0),
+    farm: townOfKind(s, 'farm', 1),
+    mining: townOfKind(s, 'mining', 2),
+    harbor: townOfKind(s, 'harbor', 3),
+    pop: s.people.filter((p) => p && p.alive).length,
+    wage: s.stats.latest.wage > 0 ? s.stats.latest.wage : 10,
+    price,
+    vol,
+    natVol,
+    natPrice,
+    importGood,
+    importNote,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Metrics (evaluated every day in every arm)
+// ---------------------------------------------------------------------------
+type MetricFn = (s: SimState, c: Ctx) => number;
+const L = (s: SimState, k: string): number => s.stats.latest[k] ?? 0;
+const mkt = (s: SimState, t: number, g: number) => s.markets[t * N_GOODS + g];
+
+const METRICS: Record<string, { label: string; fn: MetricFn }> = {
+  cpi: { label: 'CPI', fn: (s) => L(s, 'cpi') },
+  money: { label: 'money (Σ deposits)', fn: (s) => L(s, 'money') },
+  breadGross: { label: 'bread price paid (national)', fn: (s) => L(s, 'gross_' + G.bread) },
+  breadQty: { label: 'bread bought by households/day', fn: (s) => L(s, 'cons_' + G.bread) },
+  fishQty: { label: 'fish bought by households/day', fn: (s) => L(s, 'cons_' + G.fish) },
+  levyTake: { label: 'levy revenue ¤/day', fn: (s) => L(s, 'levyTake') },
+  breadShort: { label: 'bread demand turned away/day', fn: (s) => L(s, 'shortage_' + G.bread) },
+  hunger: { label: 'share of households hungry', fn: (s) => L(s, 'hunger') },
+  unemp: { label: 'unemployment rate', fn: (s) => L(s, 'unemp') },
+  credit: { label: 'bank credit', fn: (s) => L(s, 'credit') },
+  inv: { label: 'investment ¤/day', fn: (s) => L(s, 'inv') },
+  toolsPrice: { label: 'tools price (capital)', fn: (s, c) => mkt(s, c.capital, G.tools)?.ema ?? 0 },
+  grainGap: { label: 'grain price gap farm↔capital', fn: (s, c) => Math.abs((mkt(s, c.capital, G.grain)?.ema ?? 0) - (mkt(s, c.farm, G.grain)?.ema ?? 0)) },
+  roadLeft: { label: 'unpaved tiles farm→capital', fn: (s, c) => safe(() => roadPlan(s, c.farm, c.capital).length) },
+  freight: { label: 'shipping rate', fn: (s) => L(s, 'freight') },
+  importPrice: { label: 'port price paid for the imported good', fn: (s, c) => mkt(s, c.harbor, c.importGood)?.gross ?? 0 },
+  importQty: { label: 'imports of that good/day', fn: (s, c) => L(s, 'imp_' + c.importGood) },
+  takeHome: { label: 'take-home wage (employment-weighted)', fn: (s) => takeHome(s) },
+  employed: { label: 'people employed', fn: (s) => L(s, 'employed') },
+};
+
+function safe(f: () => number): number {
+  try {
+    const v = f();
+    return Number.isFinite(v) ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function takeHome(s: SimState): number {
+  const wc = wageCtx(s);
+  let sum = 0;
+  let n = 0;
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.workers.length === 0) continue;
+    sum += netWage(s, wc, f) * f.workers.length;
+    n += f.workers.length;
+  }
+  return n > 0 ? sum / n : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Experiments
+// ---------------------------------------------------------------------------
+type Act = (g: Game, c: Ctx) => void;
+
+interface Arm {
+  name: string;
+  /** Actions on day 0 (before the first simulated day). */
+  setup?: Act;
+  /** Called before each simulated day (d = 0 .. days−1), after setup. */
+  hook?: (g: Game, c: Ctx, d: number) => void;
+}
+
+type CheckKind = 'up' | 'down' | 'similar' | 'positive' | 'persistent';
+
+interface Check {
+  label: string;
+  metric: string;
+  kind: CheckKind;
+  /** Arm evaluated (default: the first treatment arm). */
+  arm?: string;
+  /** Reference arm (default 'baseline'). */
+  vs?: string;
+  /** Relative threshold (up/down: minimum |Δ|/ref; similar: maximum). Default 0.01. */
+  tol?: number;
+  /** Absolute threshold on |Δ| for up/down (either this or tol must be met; used when the reference is ~0). */
+  minAbs?: number;
+  /** persistent: share of days the metric exceeds `level` (default 0.8 of days, level 0). */
+  level?: number;
+}
+
+interface Experiment {
+  id: string;
+  name: string;
+  days?: (o: Opts) => number;
+  /** Evaluation window [from, to) in day indices; default the last 90 days. */
+  window?: (days: number) => [number, number];
+  arms: Arm[];
+  checks: Check[];
+  /** Extra metrics shown with --verbose. */
+  show?: string[];
+  note?: (res: Results, c: Ctx) => string;
+}
+
+const act = (g: Game, a: PlayerAction, what: string): number => {
+  const r = g.dispatch(a);
+  if (!r.ok) throw new Error(`${what}: ${r.message}`);
+  return r.id ?? -1;
+};
+
+type LevyDraft = Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total'>;
+function levy(p: Partial<LevyDraft>): LevyDraft {
+  return {
+    label: '',
+    enabled: true,
+    dir: 1,
+    base: 'sale',
+    unit: 'pct',
+    rate: 0,
+    payer: 'buyer',
+    threshold: 0,
+    good: -1,
+    town: -1,
+    toTown: -1,
+    sector: 'any',
+    group: 'all',
+    buildingKind: 'any',
+    until: -1,
+    ...p,
+  };
+}
+type LimitDraft = Omit<Limit, 'id' | 'created' | 'binding'>;
+function limit(p: Partial<LimitDraft>): LimitDraft {
+  return { label: '', enabled: true, kind: 'priceMax', good: -1, town: -1, toTown: -1, value: 0, until: -1, ...p };
+}
+
+const EXPERIMENTS: Experiment[] = [
+  {
+    id: '1',
+    name: 'Mint + per-head payment → prices rise',
+    arms: [
+      {
+        name: 'per-head payment',
+        setup: (g, c) => {
+          act(g, { type: 'mint', amount: Math.round(30 * c.pop * c.wage) }, 'mint');
+          act(g, { type: 'addLevy', levy: levy({ base: 'head', unit: 'flat', dir: -1, rate: Math.round(0.3 * c.wage * 100) / 100, payer: 'receiver', group: 'all' }) }, 'per-head payment');
+        },
+      },
+    ],
+    checks: [
+      { label: 'CPI higher', metric: 'cpi', kind: 'up', tol: 0.01 },
+      { label: 'money stock higher', metric: 'money', kind: 'up', tol: 0.05 },
+    ],
+  },
+  {
+    id: '2',
+    name: '30 % levy on bread sales',
+    arms: [{ name: 'bread levy', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'sale', unit: 'pct', rate: 0.3, payer: 'seller', good: G.bread }) }, 'bread levy') }],
+    checks: [
+      { label: 'consumer bread price up', metric: 'breadGross', kind: 'up', tol: 0.02 },
+      { label: 'bread bought down', metric: 'breadQty', kind: 'down', tol: 0.01 },
+      { label: 'fish bought up (substitution)', metric: 'fishQty', kind: 'up', tol: 0.01 },
+      { label: 'Purse revenue > 0', metric: 'levyTake', kind: 'positive' },
+    ],
+  },
+  {
+    id: '3',
+    name: 'Bread price ceiling well below market',
+    arms: [{ name: 'ceiling 60 %', setup: (g, c) => act(g, { type: 'addLimit', limit: limit({ kind: 'priceMax', good: G.bread, value: Math.round(0.6 * c.natPrice[G.bread] * 1000) / 1000 }) }, 'ceiling') }],
+    checks: [
+      { label: 'persistent shortage (≥ 80 % of days)', metric: 'breadShort', kind: 'persistent', level: 1 },
+      { label: 'shortage larger than baseline', metric: 'breadShort', kind: 'up', minAbs: 1 },
+      { label: 'hunger up', metric: 'hunger', kind: 'up', minAbs: 0.005 },
+    ],
+  },
+  {
+    id: '4',
+    name: 'Wage floor far above market',
+    arms: [{ name: 'floor 150 %', setup: (g, c) => act(g, { type: 'addLimit', limit: limit({ kind: 'wageMin', value: Math.round(1.5 * c.wage * 100) / 100 }) }, 'wage floor') }],
+    checks: [{ label: 'unemployment up', metric: 'unemp', kind: 'up', minAbs: 0.02 }],
+    show: ['takeHome', 'employed'],
+  },
+  {
+    id: '5',
+    name: 'Window rates to 15 %',
+    arms: [{ name: 'window 15 %', setup: (g) => act(g, { type: 'setWindow', reserveRate: 0.15, lendRate: 0.16 }, 'window') }],
+    checks: [
+      { label: 'credit down', metric: 'credit', kind: 'down', tol: 0.03 },
+      { label: 'investment down', metric: 'inv', kind: 'down', tol: 0.03 },
+      { label: 'prices lower (less inflation)', metric: 'cpi', kind: 'down', tol: 0.005 },
+    ],
+    show: ['money', 'unemp'],
+  },
+  {
+    id: '6',
+    name: 'Paved road farm town ↔ capital',
+    days: (o) => Math.max(o.days, 540),
+    arms: [{ name: 'paved road', setup: (g, c) => act(g, { type: 'build', kind: 'road', from: c.farm, to: c.capital }, 'road') }],
+    checks: [{ label: 'grain price gap narrows', metric: 'grainGap', kind: 'down', tol: 0.05 }],
+    show: ['roadLeft', 'freight'],
+    note: (r) => {
+      const left = r.arms['paved road']?.roadLeft;
+      return left && left.length ? `unpaved tiles left at the end: ${left[left.length - 1].toFixed(0)} (of ${r.arms.baseline?.roadLeft?.[0]?.toFixed(0) ?? '?'})` : '';
+    },
+  },
+  {
+    id: '7a',
+    name: 'Big Treasury buy order for tools',
+    arms: [
+      {
+        name: 'Treasury buys tools',
+        setup: (g, c) =>
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.capital, good: G.tools }, side: 'buy', price: Math.round(2 * c.price[c.capital][G.tools] * 100) / 100, qty: Math.max(1, 0.5 * c.natVol[G.tools]) }, 'buy order'),
+      },
+    ],
+    checks: [{ label: 'tools price up', metric: 'toolsPrice', kind: 'up', tol: 0.03 }],
+  },
+  {
+    id: '7b',
+    name: 'Big Treasury sale of tools below market',
+    // Stock up for 30 days, wait, then sell at 60 % of the pre-experiment price from day 120.
+    window: () => [150, 240],
+    arms: [
+      {
+        name: 'Treasury sells tools',
+        setup: (g, c) =>
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.capital, good: G.tools }, side: 'buy', price: Math.round(1.5 * c.price[c.capital][G.tools] * 100) / 100, qty: Math.max(1, 0.6 * c.natVol[G.tools]), days: 30 }, 'stock-up order'),
+        hook: (g, c, d) => {
+          if (d !== 120) return;
+          const have = g.s.treasury.goods[c.capital]?.[G.tools] ?? 0;
+          if (!(have > 0)) return;
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.capital, good: G.tools }, side: 'sell', price: Math.round(0.6 * c.price[c.capital][G.tools] * 100) / 100, qty: have / 120 }, 'sell order');
+        },
+      },
+    ],
+    checks: [{ label: 'tools price down while selling', metric: 'toolsPrice', kind: 'down', tol: 0.03 }],
+  },
+  {
+    id: '8',
+    name: 'Levy on oil → dearer shipping',
+    arms: [{ name: 'oil levy 100 %', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'sale', unit: 'pct', rate: 1, payer: 'buyer', good: G.oil }) }, 'oil levy') }],
+    checks: [{ label: 'shipping rate up', metric: 'freight', kind: 'up', tol: 0.03 }],
+  },
+  {
+    id: '9',
+    name: 'Import levy → dearer imports at the port',
+    arms: [{ name: 'import levy 50 %', setup: (g, c) => act(g, { type: 'addLevy', levy: levy({ base: 'import', unit: 'pct', rate: 0.5, payer: 'buyer', good: c.importGood }) }, 'import levy') }],
+    checks: [{ label: 'port price of the imported good up', metric: 'importPrice', kind: 'up', tol: 0.03 }],
+    show: ['importQty'],
+    note: (_r, c) => c.importNote,
+  },
+  {
+    id: '10',
+    name: 'Wage levy on workers vs on employers (incidence)',
+    days: (o) => Math.max(o.days, 720),
+    arms: [
+      { name: 'worker pays 20 %', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'worker' }) }, 'worker-side wage levy') },
+      { name: 'employer pays 20 %', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'employer' }) }, 'employer-side wage levy') },
+    ],
+    checks: [
+      { label: 'similar take-home pay', metric: 'takeHome', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.05 },
+      { label: 'similar employment', metric: 'employed', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.03 },
+    ],
+    show: ['takeHome', 'employed'],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Running
+// ---------------------------------------------------------------------------
+interface Results {
+  days: number;
+  window: [number, number];
+  arms: Record<string, Record<string, number[]>>;
+}
+
+function runArm(json: string, c: Ctx, arm: Arm | null, days: number, metrics: string[], label: string, verbose: boolean): Record<string, number[]> {
+  const g = Game.load(json);
+  const out: Record<string, number[]> = {};
+  for (const k of metrics) out[k] = [];
+  const t0 = performance.now();
+  if (arm?.setup) arm.setup(g, c);
+  for (let d = 0; d < days; d++) {
+    if (arm?.hook) arm.hook(g, c, d);
+    g.step(1);
+    for (const k of metrics) {
+      const v = METRICS[k].fn(g.s, c);
+      out[k].push(Number.isFinite(v) ? v : 0);
+    }
+  }
+  if (verbose) console.error(`  ${label}: ${days} days in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  return out;
+}
+
+function windowMean(a: readonly number[] | undefined, w: [number, number]): number {
+  if (!a || a.length === 0) return 0;
+  const from = Math.max(0, Math.min(w[0], a.length - 1));
+  const to = Math.max(from + 1, Math.min(w[1], a.length));
+  let x = 0;
+  for (let i = from; i < to; i++) x += a[i];
+  return x / (to - from);
+}
+
+interface Verdict {
+  exp: Experiment;
+  check: Check;
+  ref: number;
+  val: number;
+  delta: number; // relative
+  pass: boolean;
+  refName: string;
+  armName: string;
+}
+
+function judge(exp: Experiment, check: Check, res: Results): Verdict {
+  const armName = check.arm ?? exp.arms[0].name;
+  const refName = check.vs ?? 'baseline';
+  const A = res.arms[armName]?.[check.metric];
+  const B = res.arms[refName]?.[check.metric];
+  const val = windowMean(A, res.window);
+  const ref = windowMean(B, res.window);
+  const scale = Math.max(Math.abs(ref), 1e-9);
+  const delta = (val - ref) / scale;
+  // up/down: the move must beat the relative threshold, or the absolute one when given
+  // (a check with only `minAbs` is judged on the absolute move alone).
+  const tolRel = check.tol ?? (check.minAbs === undefined ? 0.01 : Infinity);
+  const meets = (d: number): boolean => d > 0 && (d / scale >= tolRel || (check.minAbs !== undefined && d >= check.minAbs));
+  let pass = false;
+  switch (check.kind) {
+    case 'up':
+      pass = meets(val - ref);
+      break;
+    case 'down':
+      pass = meets(ref - val);
+      break;
+    case 'similar':
+      pass = Math.abs(val - ref) / Math.max(Math.abs(val), Math.abs(ref), 1e-9) <= (check.tol ?? 0.05);
+      break;
+    case 'positive':
+      pass = val > 1e-9;
+      break;
+    case 'persistent': {
+      const lvl = check.level ?? 0;
+      let n = 0;
+      let hit = 0;
+      if (A) {
+        const from = Math.max(0, res.window[0]);
+        const to = Math.min(A.length, res.window[1]);
+        for (let i = from; i < to; i++) {
+          n++;
+          if (A[i] > lvl) hit++;
+        }
+      }
+      pass = n > 0 && hit / n >= 0.8;
+      break;
+    }
+  }
+  return { exp, check, ref, val, delta, pass, refName, armName };
+}
+
+function fmt(x: number): string {
+  const a = Math.abs(x);
+  if (a >= 1e6) return (x / 1e6).toFixed(2) + 'M';
+  if (a >= 1e4) return (x / 1e3).toFixed(1) + 'k';
+  if (a >= 100) return x.toFixed(1);
+  if (a >= 1) return x.toFixed(3);
+  return x.toFixed(4);
+}
+
+function pad(s: string, w: number, right = false): string {
+  if (s.length > w) return s.slice(0, w - 1) + '…';
+  return right ? s.padStart(w) : s.padEnd(w);
+}
+
+function main(): void {
+  const o = parseArgs(process.argv.slice(2));
+  const selected = EXPERIMENTS.filter((e) => !o.only || e.id.toLowerCase() === o.only || e.name.toLowerCase().includes(o.only) || e.id.toLowerCase().startsWith(o.only));
+  if (selected.length === 0) {
+    console.error(`experiments: nothing matches "${o.only}"`);
+    process.exit(1);
+  }
+  const t0 = performance.now();
+  console.error(`Building the realm (seed ${o.seed}) and running the ${WARMUP_DAYS}-day warm-up…`);
+  const game = Game.create({ seed: o.seed });
+  act(game, { type: 'setEvents', value: false }, 'events off');
+  act(game, { type: 'setAutoMint', value: true }, 'auto-mint');
+  game.step(o.pre);
+  const json = game.save();
+  const ctx = observe(game.s);
+  console.error(`base state ready on day ${game.s.day} in ${((performance.now() - t0) / 1000).toFixed(1)} s (${(json.length / 1e6).toFixed(1)} MB); ${ctx.importNote}`);
+
+  // Baseline: once, as long as the longest experiment, with every metric any experiment needs.
+  const lengths = selected.map((e) => (e.days ? e.days(o) : o.days));
+  const maxDays = Math.max(...lengths);
+  const allMetrics = new Set<string>();
+  for (const e of selected) {
+    for (const c of e.checks) allMetrics.add(c.metric);
+    for (const m of e.show ?? []) allMetrics.add(m);
+  }
+  const metricList = [...allMetrics];
+  console.error(`baseline: ${maxDays} days…`);
+  const baseline = runArm(json, ctx, null, maxDays, metricList, 'baseline', true);
+
+  const verdicts: Verdict[] = [];
+  const notes: string[] = [];
+  for (const exp of selected) {
+    const days = exp.days ? exp.days(o) : o.days;
+    const window = exp.window ? exp.window(days) : ([Math.max(0, days - 90), days] as [number, number]);
+    const metrics = [...new Set([...exp.checks.map((c) => c.metric), ...(exp.show ?? [])])];
+    const res: Results = { days, window, arms: { baseline: {} } };
+    for (const k of metrics) res.arms.baseline[k] = baseline[k].slice(0, days);
+    console.error(`[${exp.id}] ${exp.name}`);
+    for (const arm of exp.arms) {
+      try {
+        res.arms[arm.name] = runArm(json, ctx, arm, days, metrics, arm.name, true);
+      } catch (e) {
+        console.error(`  ${arm.name}: FAILED TO RUN — ${e instanceof Error ? e.message : String(e)}`);
+        res.arms[arm.name] = {};
+      }
+    }
+    for (const c of exp.checks) verdicts.push(judge(exp, c, res));
+    if (o.verbose && exp.show) {
+      for (const m of exp.show) {
+        const parts = Object.keys(res.arms).map((a) => `${a} ${fmt(windowMean(res.arms[a][m], window))}`);
+        notes.push(`[${exp.id}] ${METRICS[m].label}: ${parts.join(' · ')}`);
+      }
+    }
+    const n = exp.note?.(res, ctx);
+    if (n) notes.push(`[${exp.id}] ${n}`);
+  }
+
+  // ---- report ----
+  const W = { id: 4, name: 34, check: 36, ref: 11, val: 11, d: 8, r: 5 };
+  const line = (cols: string[]) => console.log(cols.join('  '));
+  console.log('');
+  line([pad('#', W.id), pad('experiment', W.name), pad('check', W.check), pad('reference', W.ref, true), pad('treatment', W.val, true), pad('Δ %', W.d, true), pad('', W.r)]);
+  line(['-'.repeat(W.id), '-'.repeat(W.name), '-'.repeat(W.check), '-'.repeat(W.ref), '-'.repeat(W.val), '-'.repeat(W.d), '-'.repeat(W.r)]);
+  let last = '';
+  for (const v of verdicts) {
+    const first = v.exp.id !== last;
+    last = v.exp.id;
+    const d = Math.abs(v.ref) > 1e-9 ? (100 * v.delta).toFixed(1) : v.val > 0 ? '+∞' : '0.0';
+    const lbl = v.refName === 'baseline' ? v.check.label : `${v.check.label} (${v.armName} vs ${v.refName})`;
+    line([pad(first ? v.exp.id : '', W.id), pad(first ? v.exp.name : '', W.name), pad(lbl, W.check), pad(fmt(v.ref), W.ref, true), pad(fmt(v.val), W.val, true), pad(d, W.d, true), v.pass ? 'PASS' : 'FAIL']);
+  }
+  if (notes.length) {
+    console.log('');
+    for (const n of notes) console.log(n);
+  }
+  const passed = verdicts.filter((v) => v.pass).length;
+  const expPassed = selected.filter((e) => verdicts.filter((v) => v.exp === e).every((v) => v.pass)).length;
+  console.log('');
+  console.log(`${passed}/${verdicts.length} checks passed; ${expPassed}/${selected.length} experiments fully passed (seed ${o.seed}, window = last 90 days unless noted, ${((performance.now() - t0) / 1000).toFixed(0)} s).`);
+}
+
+try {
+  main();
+} catch (e) {
+  console.error(`experiments: crashed — ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  process.exit(1);
+}

@@ -218,6 +218,7 @@ export interface Firm {
   distress: number; // consecutive distress days
   founded: number; // day
   liquidationDays: number;
+  lossDays: number; // consecutive days the profit EMA has been negative (voluntary exit) // added by firms engineer
   // specialisations
   trade: TraderState | null;
   build: BuilderState | null;
@@ -234,6 +235,7 @@ export interface TraderState {
   age: number[][];
   freightEma: number; // ¤ per unit per tile (EMA), for the shipping index
   shippedToday: number; // units
+  wantEma: number; // EMA of wagons the trader wanted on the road (busy + wanted today) — drives drivers & wagon investment // added by finance-trade
 }
 
 export interface BuilderState {
@@ -270,6 +272,8 @@ export interface Project {
   loan: number; // financing loan id or -1
   stalledDays: number;
   label: string;
+  prepaid: number; // ¤ the owner has advanced to the builder and not yet been billed (a liability of the builder) // added by firms engineer
+  loanWanted: number; // ¤ of financing requested from the bank and not yet granted; > 0 = waiting, no work starts // added by firms engineer
 }
 
 // ---------------------------------------------------------------------------
