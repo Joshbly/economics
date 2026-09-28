@@ -85,3 +85,14 @@ export function stockLevies(s: SimState): void {
 export function levyMonthRollover(s: SimState): void {
   // TODO(market-policy)
 }
+
+/**
+ * Combined port duty for foreign orders on a good (used by foreign.ts to set
+ * per-order xPct/xUnit): 'import' levies apply to foreign SELL orders (payer: the
+ * domestic buyer), 'export' levies to foreign BUY orders (payer: the domestic
+ * seller). Signed like levies (gives negative).
+ */
+export function portDuty(s: SimState, side: 'import' | 'export', good: number): { pct: number; unit: number } {
+  // TODO(market-policy)
+  return { pct: 0, unit: 0 };
+}
