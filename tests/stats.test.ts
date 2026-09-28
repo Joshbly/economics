@@ -439,7 +439,7 @@ describe('events', () => {
     expect(s.towns[1].droughtDays).toBe(1);
     beginDayEvents(s);
     expect(s.towns[1].droughtDays).toBe(0);
-    expect(s.news.at(-1)?.text).toMatch(/Rain has returned to Millbrook/);
+    expect(s.news[s.news.length - 1]?.text).toMatch(/Rain has returned to Millbrook/);
   });
 
   it('no random events during warm-up; news wording stays neutral', () => {
