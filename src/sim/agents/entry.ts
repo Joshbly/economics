@@ -262,11 +262,15 @@ function houseSignal(s: SimState, town: TownId): number | null {
 
 /** A person with at least `minFree` to invest, weighted by wealth (same town counts double). */
 function pickEntrepreneur(s: SimState, town: TownId, minFree: number): Ref | null {
+  // One venture at a time: whoever still has a project under way (or awaiting its loan)
+  // keeps their means for it — it may cost more than planned.
+  const busy = new Set<number>();
+  for (const pr of s.projects) if (pr.status !== 'done' && pr.status !== 'cancelled' && isPerson(pr.owner)) busy.add(pr.owner);
   let total = 0;
   const cands: number[] = [];
   const weights: number[] = [];
   for (const p of s.people) {
-    if (!p || !p.alive || p.owns.length >= ENTRY_MAX_OWNED) continue;
+    if (!p || !p.alive || p.owns.length >= ENTRY_MAX_OWNED || busy.has(p.id)) continue;
     const free = investableCash(s, p.id);
     if (free < minFree) continue;
     const w = free * (p.town === town ? 2 : 1);
