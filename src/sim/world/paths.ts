@@ -266,15 +266,21 @@ function travelSearch(s: SimState, start: number, goal: number): number[] {
 }
 
 /** Construction cost of laying track on a tile (planning), or -1 if impossible. */
-function planCost(m: MapData, i: number): number {
+function planCost(m: MapData, i: number, onDirt = PLAN_ROAD_DIRT, onPaved = PLAN_ROAD_PAVED): number {
   const t = m.terrain[i];
   if (t === Terrain.Water || t === Terrain.DeepWater) return -1;
   const r = m.road[i];
-  if (r >= 2) return PLAN_ROAD_PAVED;
-  if (r >= 1) return PLAN_ROAD_DIRT;
+  if (r >= 2) return onPaved;
+  if (r >= 1) return onDirt;
   if (m.river[i]) return PLAN_BRIDGE;
   const f = PLAN_FACTOR[t] ?? 1;
   return f > 0 ? f : -1;
+}
+
+/** Planning costs of tiles that already carry a road (new grass = 1). */
+export interface PlanOpts {
+  onDirt?: number;
+  onPaved?: number;
 }
 
 /**
@@ -283,7 +289,9 @@ function planCost(m: MapData, i: number): number {
  * impassable except start/goal; rivers are crossed straight over (one-tile bridge).
  * Returns the tile path (start … end) or [].
  */
-export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e9): number[] {
+export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e9, opts?: PlanOpts): number[] {
+  const onDirt = opts?.onDirt ?? PLAN_ROAD_DIRT;
+  const onPaved = opts?.onPaved ?? PLAN_ROAD_PAVED;
   const m = s.map;
   const w = m.w;
   const h = m.h;
@@ -307,7 +315,7 @@ export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e
   const lx = gx - sx;
   const ly = gy - sy;
   const ll = Math.hypot(lx, ly) || 1;
-  const hmin = PLAN_ROAD_PAVED;
+  const hmin = Math.min(onDirt, onPaved);
   const heur = (x: number, y: number) => (toRoad ? 0 : hmin * (Math.abs(x - gx) + Math.abs(y - gy)));
   const lineOff = (x: number, y: number) => (toRoad ? 0 : (PLAN_LINE * Math.abs((x - sx) * ly - (y - sy) * lx)) / ll);
   g[start] = 0;
@@ -341,7 +349,7 @@ export function planTrack(s: SimState, start: number, goal: number, maxCost = 1e
       const ni = ny * w + nx;
       if (closed[ni] === st) continue;
       if (occ[ni] >= 0 && ni !== goal) continue;
-      let pc = planCost(m, ni);
+      let pc = planCost(m, ni, onDirt, onPaved);
       if (pc <= 0) continue;
       // Never lay track along the river: a new bridge must land on the far bank.
       if (onNewBridge && river[ni] === 1 && road[ni] < 1) continue;
@@ -484,6 +492,27 @@ export function roadPlan(s: SimState, a: TownId, b: TownId): number[] {
     out.push(i);
   }
   return out;
+}
+
+/**
+ * A road from tile `a` to tile `b` at `grade` (1 a dirt track, 2 paving): the way a road-builder
+ * would lay it (planTrack; an existing road is reused when it lies roughly on the way — it costs
+ * half as much to follow as new ground), and of that way the tiles that still need work (below
+ * the grade, not under a building, not open water), in order. [] when there is no way.
+ */
+export function trackPlan(s: SimState, a: number, b: number, grade: 1 | 2): { path: number[]; tiles: number[] } {
+  const m = s.map;
+  const n = m.w * m.h;
+  if (!(a >= 0 && a < n && b >= 0 && b < n) || a === b) return { path: [], tiles: [] };
+  const path = planTrack(s, a, b, 1e9, { onDirt: grade >= 2 ? 0.8 : 0.5, onPaved: 0.35 });
+  const tiles: number[] = [];
+  for (const i of path) {
+    if (m.road[i] >= grade || m.occ[i] >= 0) continue;
+    const t = m.terrain[i];
+    if (t === Terrain.Water || t === Terrain.DeepWater) continue;
+    tiles.push(i);
+  }
+  return { path, tiles };
 }
 
 /** Tile a building is reached at: its footprint tile nearest to its town centre. */

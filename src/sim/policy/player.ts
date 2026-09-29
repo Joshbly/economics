@@ -74,9 +74,10 @@ import { addAsk, addBid, type Books } from '../market/markets';
 import { aimedRateAt, bankClaimRoom, inGroup, isAimed, isTargetedSale, primeAimedRates, rateIn, steerLevies } from './levies';
 import { carriesBeginDay, carryById, carryLabel, describeCarry, runCarries, shortTargets } from './carry';
 import { news } from '../stats/events';
-import { cancelProject, estimateCost, startProject, treasuryCrewWanted } from '../agents/construction';
+import { cancelProject, needCost, startProject, treasuryCrewWanted } from '../agents/construction';
 import { deliverTreasuryDue, freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
-import { roadPlan } from '../world/paths';
+import { roadPlan, trackPlan } from '../world/paths';
+import { nearestTown, townCentreTile } from '../world/layout';
 import { LINE_MAX_FARE, LINE_MAX_WAGONS, TOOLS_PER_WAGON } from '../config';
 import { G } from '../goods';
 import type { FreightLine, LineFare } from '../types';
@@ -1517,16 +1518,34 @@ function build(s: SimState, a: Extract<PlayerAction, { type: 'build' }>): Action
     case 'road': {
       if (!validTown(s, a.from) || !validTown(s, a.to)) return fail('Unknown town.');
       if (a.from === a.to) return fail('Choose two different towns.');
-      const plan = roadPlan(s, a.from, a.to);
-      if (!plan || plan.length === 0) return fail(`The road between ${townName(s, a.from)} and ${townName(s, a.to)} is already paved (or there is no route).`);
-      // Skip tiles an unfinished road project already covers, or the same road is built (and billed) twice.
-      const busy = new Set<number>();
-      for (const p of s.projects) if (p && p.kind === 'road' && p.status !== 'done' && p.status !== 'cancelled') for (const i of p.tiles) busy.add(i);
-      const tiles = plan.filter((i) => !busy.has(i));
-      if (tiles.length === 0) return fail(`Already being paved: the builders are at work on the road between ${townName(s, a.from)} and ${townName(s, a.to)}.`);
-      const label = `Paved road ${townName(s, a.from)}–${townName(s, a.to)}`;
-      const r = startProject(s, { kind: 'road', town: a.from, owner: STATE, tiles: tiles.slice(), label });
-      return projectResult(s, r, label, a.from, `${tiles.length} tiles of paving`);
+      if (a.grade !== undefined && a.grade !== 1 && a.grade !== 2) return fail('A road is either a dirt track or paved.');
+      const dirt = a.grade === 1;
+      const plan = dirt ? trackPlan(s, townCentreTile(s, a.from), townCentreTile(s, a.to), 1).tiles : roadPlan(s, a.from, a.to);
+      if (!plan || plan.length === 0)
+        return fail(dirt ? `A road already runs between ${townName(s, a.from)} and ${townName(s, a.to)} (or there is no way through).` : `The road between ${townName(s, a.from)} and ${townName(s, a.to)} is already paved (or there is no route).`);
+      const tiles = notBusy(s, plan, dirt ? 1 : 2);
+      if (tiles.length === 0) return fail(`Already under way: the builders are at work on the road between ${townName(s, a.from)} and ${townName(s, a.to)}.`);
+      const label = `${dirt ? 'Track' : 'Paved road'} ${townName(s, a.from)}–${townName(s, a.to)}`;
+      const r = startProject(s, { kind: 'road', town: a.from, owner: STATE, tiles: tiles.slice(), grade: dirt ? 1 : 2, label });
+      return projectResult(s, r, label, a.from, `${tiles.length} tiles of ${dirt ? 'new track' : 'paving'}`);
+    }
+    case 'track': {
+      const n = s.map.w * s.map.h;
+      if (!isInt(a.a) || !isInt(a.b) || a.a < 0 || a.b < 0 || a.a >= n || a.b >= n) return fail('Choose two places on the map.');
+      if (a.a === a.b) return fail('Choose two different places.');
+      if (a.grade !== undefined && a.grade !== 1 && a.grade !== 2) return fail('A road is either a dirt track or paved.');
+      const grade = a.grade === 1 ? 1 : 2;
+      const plan = trackPlan(s, a.a, a.b, grade);
+      if (!plan.path.length) return fail('No road can be laid between those places: open water or the mountains are in the way.');
+      if (!plan.tiles.length) return fail(grade === 1 ? 'A road already runs all the way between those places.' : 'The road between those places is already paved all the way.');
+      const tiles = notBusy(s, plan.tiles, grade);
+      if (!tiles.length) return fail('Already under way: the builders are at work on that road.');
+      const w = s.map.w;
+      const town = nearestTown(s, a.a % w, Math.floor(a.a / w));
+      if (!validTown(s, town)) return fail('Unknown town.');
+      const label = `${grade === 1 ? 'Track' : 'Paved road'} ${placeName(s, a.a)}–${placeName(s, a.b)}`;
+      const r = startProject(s, { kind: 'road', town, owner: STATE, tiles: tiles.slice(), grade, label });
+      return projectResult(s, r, label, town, `${tiles.length} tiles of ${grade === 1 ? 'new track' : 'paving'}; the builders of ${townName(s, town)}`);
     }
     case 'house':
     case 'pier': {
@@ -1568,12 +1587,36 @@ function checkXY(s: SimState, x: unknown, y: unknown): { x: number; y: number } 
   return { x, y };
 }
 
+/** Of `tiles`, those an unfinished road project does not already bring to `grade` (or the same road is built, and billed, twice). */
+function notBusy(s: SimState, tiles: readonly number[], grade: 1 | 2): number[] {
+  const busy = new Set<number>();
+  for (const p of s.projects) if (p && p.kind === 'road' && p.status !== 'done' && p.status !== 'cancelled' && (p.grade === 1 ? 1 : 2) >= grade) for (const i of p.tiles) busy.add(i);
+  return tiles.filter((i) => !busy.has(i));
+}
+
+/** A place on the map in words: a town (within its houses), or the side of the nearest town it lies on. */
+export function placeName(s: SimState, tile: number): string {
+  const w = s.map.w;
+  const x = tile % w;
+  const y = Math.floor(tile / w);
+  const t = s.towns[nearestTown(s, x, y)];
+  if (!t) return 'the wilds';
+  const dx = x - t.x;
+  const dy = y - t.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= Math.max(3, t.radius) + 1) return t.name;
+  const ang = (Math.atan2(-dy, dx) * 180) / Math.PI; // map y grows southward
+  const dirs = ['east', 'north-east', 'north', 'north-west', 'west', 'south-west', 'south', 'south-east'];
+  const dir = dirs[((Math.round(ang / 45) % 8) + 8) % 8];
+  return `${Math.round(d)} tiles ${dir} of ${t.name}`;
+}
+
 function projectResult(s: SimState, r: ReturnType<typeof startProject>, label: string, town: number, what: string): ActionResult {
   if (typeof r === 'string') return fail(r || 'The project could not be started.');
   if (!r) return fail('The project could not be started.');
   let cost = 0;
   try {
-    cost = estimateCost(s, r.kind, r.town, r.sector || undefined, r.tiles.length);
+    cost = needCost(s, r.town, r.need);
   } catch {
     cost = 0;
   }

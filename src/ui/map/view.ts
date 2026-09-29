@@ -21,6 +21,9 @@ import { ensureCrew } from '../crew';
 import { rt } from '../../sim/runtime';
 import { STATE, Terrain, type PlayerAction, type Sector, type SimState } from '../../sim/types';
 import { footprintOf, isResourceSector, isValidSite, nearestTown, siteQuality, type SiteWhat } from '../../sim/world/layout';
+import { trackPlan } from '../../sim/world/paths';
+import { needCost, roadNeed } from '../../sim/agents/construction';
+import { fmtMoneyShort } from '../format';
 import { dayOfYear } from '../../sim/calendar';
 import { DAYS_PER_YEAR } from '../../sim/config';
 import { isTyping } from '../dom';
@@ -360,7 +363,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   // ---------------------------------------------------------------------------
   function placingWhat(): { what: SiteWhat; town: number | undefined; w: number; h: number } | null {
     const p = ui?.placing;
-    if (!p) return null;
+    if (!p || p.kind === 'road') return null;
     const what: SiteWhat = p.kind === 'firm' ? ((p.sector || 'bakery') as Sector) : p.kind;
     const [w, h] = p.kind === 'house' ? [1, 1] : p.kind === 'pier' ? footprintOf('pier', '') : footprintOf('firm', what as Sector);
     return { what, town: p.town, w, h };
@@ -488,6 +491,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       toast(whyNot(s, pl.what, pl.x, pl.y, pl.town), 'info');
       return;
     }
+    if (p.kind === 'road') return;
     let a: PlayerAction;
     if (p.kind === 'firm') a = { type: 'build', kind: 'firm', sector: (p.sector || 'bakery') as Sector, town: pl.town, x: pl.x, y: pl.y };
     else a = { type: 'build', kind: p.kind, town: pl.town, x: pl.x, y: pl.y };
@@ -560,7 +564,11 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }
     let t = hitTest(s, px, py);
     let note = '';
-    if (ui.placing) {
+    if (ui.placing?.kind === 'road') {
+      const i = tileAt(s, px, py);
+      t = i >= 0 ? { kind: 'tile', i } : t;
+      note = roadNote(s, i);
+    } else if (ui.placing) {
       const pl = placementAt(s, px, py);
       t = pl ? { kind: 'tile', i: Math.max(0, pl.y) * s.map.w + Math.max(0, pl.x) } : t;
       if (pl) note = pl.ok ? 'Click to build here.' : whyNot(s, pl.what, pl.x, pl.y, pl.town);
@@ -594,6 +602,10 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   function click(cssX: number, cssY: number): void {
     const s = S;
     if (!s) return;
+    if (ui.placing?.kind === 'road') {
+      roadClick(s, cssX, cssY);
+      return;
+    }
     if (ui.placing) {
       place(s, cssX, cssY);
       return;
@@ -884,6 +896,104 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     ctx.restore();
   }
 
+  // ---------------------------------------------------------------------------
+  // Drawing a road: first click where it starts, then the planned way follows the pointer
+  // (with its length and cost); the second click commissions it.
+  // ---------------------------------------------------------------------------
+  let rpKey = '';
+  let rpPlan: { path: number[]; tiles: number[]; cost: number; town: number } | null = null;
+
+  function tileAt(s: SimState, cssX: number, cssY: number): number {
+    const x = Math.floor(wx(cam, cssX));
+    const y = Math.floor(wy(cam, cssY));
+    if (x < 0 || y < 0 || x >= s.map.w || y >= s.map.h) return -1;
+    return y * s.map.w + x;
+  }
+
+  /** The plan from the chosen start to tile `b` (cached while nothing changes). */
+  function roadPlanTo(s: SimState, b: number): typeof rpPlan {
+    const p = ui?.placing;
+    if (!p || p.kind !== 'road' || p.a === undefined || p.a < 0 || b < 0 || b === p.a) return null;
+    const grade = p.grade === 1 ? 1 : 2;
+    const key = `${p.a}>${b}:${grade}:${rt(s).roadVersion}:${rt(s).buildingVersion}:${s.day}`;
+    if (key === rpKey) return rpPlan;
+    rpKey = key;
+    const w = s.map.w;
+    const town = nearestTown(s, p.a % w, Math.floor(p.a / w));
+    try {
+      const pl = trackPlan(s, p.a, b, grade);
+      rpPlan = { ...pl, town, cost: pl.tiles.length ? needCost(s, town, roadNeed(s, pl.tiles, grade)) : 0 };
+    } catch {
+      rpPlan = null;
+    }
+    return rpPlan;
+  }
+
+  function roadNote(s: SimState, i: number): string {
+    const p = ui?.placing;
+    if (!p || i < 0) return '';
+    const water = s.map.terrain[i] === Terrain.Water || s.map.terrain[i] === Terrain.DeepWater;
+    if (p.a === undefined || p.a < 0) return water ? 'A road cannot start on open water.' : 'Click where the road starts.';
+    if (i === p.a) return 'Click where the road ends.';
+    const pl = roadPlanTo(s, i);
+    if (!pl || !pl.path.length) return 'No road can reach there: open water or mountains are in the way.';
+    if (!pl.tiles.length) return p.grade === 1 ? 'A road already runs all the way there.' : 'The road there is already paved all the way.';
+    const what = p.grade === 1 ? 'new track' : 'paving';
+    return `${pl.tiles.length} tiles of ${what} · ≈ ${fmtMoneyShort(pl.cost)} · click to commission`;
+  }
+
+  function roadClick(s: SimState, cssX: number, cssY: number): void {
+    const p = ui.placing;
+    if (!p || p.kind !== 'road') return;
+    const i = tileAt(s, cssX, cssY);
+    if (i < 0) return;
+    if (p.a === undefined || p.a < 0) {
+      const t = s.map.terrain[i];
+      if (t === Terrain.Water || t === Terrain.DeepWater) {
+        toast('A road cannot start on open water.', 'info');
+        return;
+      }
+      setPlacing({ ...p, a: i });
+      return;
+    }
+    if (i === p.a) return;
+    const r = act({ type: 'build', kind: 'track', a: p.a, b: i, grade: p.grade === 1 ? 1 : 2 }, true);
+    if (!r.ok) {
+      toast(r.message, 'info');
+      return;
+    }
+    const town = rpPlan?.town ?? nearestTown(s, p.a % s.map.w, Math.floor(p.a / s.map.w));
+    setPlacing(null);
+    rpKey = '';
+    ensureCrew(s, town);
+    toast(r.message, 'good');
+  }
+
+  function drawRoadPlan(s: SimState, v: View): void {
+    const p = ui?.placing;
+    if (!p || p.kind !== 'road' || p.a === undefined || p.a < 0) return;
+    const k = v.k;
+    const w = s.map.w;
+    const dot = (i: number, r: number) => {
+      const sx = v.ox + ((i % w) + 0.5) * k;
+      const sy = v.oy + (Math.floor(i / w) + 0.5) * k;
+      ctx.fillRect(sx - r, sy - r, 2 * r, 2 * r);
+    };
+    ctx.save();
+    const pl = inside ? roadPlanTo(s, tileAt(s, px, py)) : null;
+    if (pl && pl.path.length) {
+      const work = new Set(pl.tiles);
+      const r = Math.max(1.6 * v.dpr, 0.16 * k);
+      for (const i of pl.path) {
+        ctx.fillStyle = work.has(i) ? 'rgba(242,205,114,0.95)' : 'rgba(242,205,114,0.35)';
+        dot(i, work.has(i) ? r : r * 0.6);
+      }
+    }
+    ctx.fillStyle = 'rgba(130,230,160,0.95)';
+    dot(p.a, Math.max(2.5 * v.dpr, 0.3 * k));
+    ctx.restore();
+  }
+
   function drawRoadWorks(s: SimState, v: View): void {
     const k = v.k;
     const w = s.map.w;
@@ -894,8 +1004,9 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         any = true;
         ctx.fillStyle = 'rgba(242,205,114,0.85)';
       }
+      const grade = p.grade === 1 ? 1 : 2;
       for (const i of p.tiles) {
-        if (s.map.road[i] >= 2) continue;
+        if (s.map.road[i] >= grade) continue;
         const x = (i % w) + 0.5;
         const y = Math.floor(i / w) + 0.5;
         const sx = v.ox + x * k;
@@ -1232,6 +1343,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }
     drawPlacementArea(s, v);
     drawRoadWorks(s, v);
+    drawRoadPlan(s, v);
     drawSelection(s, v, true);
     const infos = blds.list();
     if (!skip.buildings) blds.draw(ctx, L, k, v.ox, v.oy, v.vw, v.vh, time);
@@ -1333,6 +1445,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     const x = v.ox + pl.x * k;
     const y = v.oy + pl.y * k;
     const p = ui.placing;
+    if (p.kind === 'road') return;
     const look: Look = {
       id: 999_999,
       kind: p.kind === 'pier' ? 'port' : p.kind,

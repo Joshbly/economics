@@ -12,9 +12,10 @@ import { LINE_MAX_FARE, LINE_MAX_WAGONS, PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED
 import { freightPerUnit } from '../../../sim/agents/traders';
 import { estimateLine, lineBetween } from '../../../sim/policy/lines';
 import type { LineFare, LineStaffing } from '../../../sim/types';
-import { estimateCost, projectNeed } from '../../../sim/agents/construction';
+import { estimateCost, needCost, projectNeed, roadNeed } from '../../../sim/agents/construction';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
-import { roadPlan } from '../../../sim/world/paths';
+import { roadPlan, trackPlan } from '../../../sim/world/paths';
+import { townCentreTile } from '../../../sim/world/layout';
 import { paveEffect } from '../../../sim/world/roadEffect';
 import { STATE, type Materials, type ProjectKind, type Sector, type SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
@@ -53,6 +54,12 @@ function matText(m: Materials): string {
   return parts.join(' · ');
 }
 
+/** What a new dirt track does: the ground it clears, the rivers it bridges. */
+function trackText(s: SimState, plan: readonly number[]): string {
+  const bridges = plan.filter((i) => s.map.river[i] === 1).length;
+  return `Clears and lays ${plural(plan.length, 'tile')} of new dirt track${bridges ? `, with ${plural(bridges, 'timber bridge')}` : ''}; it joins the roads already there. Wagons and walkers cover about ${SPEED_DIRT} tiles a day on dirt, far more than across open country. To lay one anywhere else, draw it on the map.`;
+}
+
 /** What paving the planned tiles does: the track it upgrades, and the trips it speeds up. */
 function roadText(s: SimState, plan: readonly number[]): string {
   const fresh = plan.filter((i) => !(s.map.road[i] >= 1)).length;
@@ -76,6 +83,7 @@ function roadText(s: SimState, plan: readonly number[]): string {
 
 export function buildLever(): Lever {
   let kind: BKind = 'road';
+  let grade: 1 | 2 = 2;
   let from = 0;
   let to = 1;
   let town = 0;
@@ -96,7 +104,7 @@ export function buildLever(): Lever {
 
   const kindSeg = segmented<BKind>({
     options: [
-      { value: 'road', label: 'Road', title: 'Pave the track between two towns' },
+      { value: 'road', label: 'Road', title: 'A road between two towns, or between any two places you draw on the map: paved, or a dirt track' },
       { value: 'house', label: 'Houses', title: `A block of ${HOUSE_SLOTS} homes the Treasury lets` },
       { value: 'firm', label: 'Workshop', title: 'A Treasury-owned workplace of any trade' },
       { value: 'pier', label: 'Pier', title: 'More room for foreign ships at the port' },
@@ -115,6 +123,17 @@ export function buildLever(): Lever {
   const firmSel = selectInput<number>({ options: [{ value: -1, label: 'No Treasury workshops yet' }], value: -1, onChange: (v) => ((firmId = v), changed()) });
 
   const routeRow = row('Between', fromSel.el, h('span', { class: 'lv-w' }, 'and'), toSel.el);
+  const gradeSeg = segmented<1 | 2>({
+    options: [
+      { value: 2, label: 'Paved', title: 'Paving: the fastest going; over new ground it clears a track first' },
+      { value: 1, label: 'Dirt track', title: 'A cleared dirt track: cheap, slower than paving, much faster than open country' },
+    ],
+    value: grade,
+    size: 'sm',
+    onChange: (v) => ((grade = v), (planKey = ''), changed()),
+  });
+  const gradeRow = row('Surface', gradeSeg.el);
+  const drawRoad = button({ label: 'Draw on map', kind: 'secondary', title: 'Click where the road starts and where it ends — anywhere on the map; Esc cancels', icon: icon('target', 14), onClick: () => startPlacing() });
   // freight line
   const wagonsIn = numberInput({ value: wagons, min: 1, max: LINE_MAX_WAGONS, integer: true, unit: 'wagons', width: '120px', onChange: (v) => ((wagons = v), changed()) });
   const fareSeg = segmented<LineFare>({
@@ -164,7 +183,7 @@ export function buildLever(): Lever {
   const lineCount = h('span', { class: 'lv-sub-v' });
   const linesHead = subhead('Treasury freight lines', lineCount);
 
-  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, staffRow, fareRow, townRow.el, sectorRow, firmRow, what, crewRow, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
+  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), gradeRow, routeRow, wagonsRow, staffRow, fareRow, townRow.el, sectorRow, firmRow, what, crewRow, placingNote, formFoot(preview, msg, showRoute, drawRoad, pickSite, go));
   const body = h('div', { class: 'lv-body-in' }, form, h('div', { class: 'lv-sep' }), linesHead, lines.el, subhead('Treasury projects', projCount), projects.el);
 
   on('placing', () => last && paint());
@@ -182,13 +201,13 @@ export function buildLever(): Lever {
     let t = town;
     let sec: Sector | undefined;
     if (kind === 'road') {
-      const key = `${from}>${to}:${s.day}`;
+      const key = `${from}>${to}:${grade}:${s.day}`;
       if (key !== planKey) {
         planKey = key;
-        plan = from === to ? [] : safe(() => roadPlan(s, from, to), [] as number[]);
+        plan = from === to ? [] : grade === 1 ? safe(() => trackPlan(s, townCentreTile(s, from), townCentreTile(s, to), 1).tiles, [] as number[]) : safe(() => roadPlan(s, from, to), [] as number[]);
       }
-      tiles = plan.length;
-      t = from;
+      const need = safe(() => roadNeed(s, plan, grade), { labor: 0, wood: 0, iron: 0, tools: 0 });
+      return { money: fin(safe(() => needCost(s, from, need), 0)), need, tiles: plan.length };
     } else if (kind === 'firm') sec = sector;
     else if (kind === 'expand') {
       const f = s.firms[firmId];
@@ -221,6 +240,9 @@ export function buildLever(): Lever {
     firmId = firmSel.value;
 
     show(routeRow, kind === 'road' || kind === 'line');
+    show(gradeRow, kind === 'road');
+    show(drawRoad, kind === 'road');
+    gradeSeg.set(grade);
     show(wagonsRow, kind === 'line');
     show(staffRow, kind === 'line');
     show(fareRow, kind === 'line');
@@ -254,14 +276,14 @@ export function buildLever(): Lever {
     let ok = true;
     switch (kind) {
       case 'road':
-        title = `Paved road ${townName(s, from)} – ${townName(s, to)}`;
+        title = `${grade === 1 ? 'Track' : 'Paved road'} ${townName(s, from)} – ${townName(s, to)}`;
         if (from === to) {
-          desc = 'Choose two different towns.';
+          desc = 'Choose two different towns — or draw the road anywhere on the map.';
           ok = false;
         } else if (c.tiles === 0) {
-          desc = 'This road is already paved all the way (or there is no route).';
+          desc = grade === 1 ? 'A road already runs between these towns (or there is no way through). Draw a new one on the map to take another way.' : 'This road is already paved all the way (or there is no route).';
           ok = false;
-        } else desc = roadText(s, plan);
+        } else desc = grade === 1 ? trackText(s, plan) : roadText(s, plan);
         break;
       case 'house':
         title = `Treasury houses in ${townName(s, town)}`;
@@ -316,7 +338,11 @@ export function buildLever(): Lever {
     // placement mode note
     const p = ui.placing;
     show(placingNote, !!p);
-    if (p) {
+    if (p && p.kind === 'road') {
+      const t = placingNote.querySelector('.lv-placing-t');
+      const road = p.grade === 1 ? 'track' : 'paved road';
+      if (t) setText(t, p.a === undefined || p.a < 0 ? `Click the map where the ${road} starts — a town, a building or open ground.` : `Now click where it ends: the planned way and its cost follow the pointer. Esc cancels.`);
+    } else if (p) {
       const t = placingNote.querySelector('.lv-placing-t');
       const what2 = p.kind === 'house' ? 'the houses' : p.kind === 'pier' ? 'the pier' : `the ${SECTORS[p.sector as Sector]?.name ?? 'workshop'}`;
       if (t) setText(t, `Click the map to choose a site for ${what2}${p.town !== undefined ? ' near ' + townName(s, p.town) : ''}. Esc cancels.`);
@@ -406,6 +432,11 @@ export function buildLever(): Lever {
   function startPlacing(): void {
     const s = last;
     if (!s) return;
+    if (kind === 'road') {
+      setPlacing({ kind: 'road', grade });
+      paint();
+      return;
+    }
     if (kind !== 'house' && kind !== 'firm' && kind !== 'pier') return;
     setPlacing({ kind, town, sector: kind === 'firm' ? sector : undefined });
     const t = s.towns[town];
@@ -419,7 +450,7 @@ export function buildLever(): Lever {
     let r;
     switch (kind) {
       case 'road':
-        r = run({ type: 'build', kind: 'road', from, to }, msg, '✓ Commissioned — see Treasury projects below.');
+        r = run({ type: 'build', kind: 'road', from, to, grade }, msg, '✓ Commissioned — see Treasury projects below.');
         break;
       case 'house':
       case 'pier':

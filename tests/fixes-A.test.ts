@@ -88,7 +88,7 @@ describe('roads are not commissioned twice', () => {
     for (let i = 0; i < 2; i++) {
       const b = dispatch(s, { type: 'build', kind: 'road', from: 0, to: 1 });
       expect(b.ok).toBe(false);
-      expect(b.message).toMatch(/Already being paved/);
+      expect(b.message).toMatch(/Already under way/);
       expect(b.message).not.toMatch(FORBIDDEN);
     }
     // The reverse direction is the same road.

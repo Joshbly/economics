@@ -20,9 +20,12 @@ export type OverlayId = 'none' | 'price' | 'unemployment' | 'wealth' | 'health' 
 
 /** Placement mode when the player is choosing a site on the map for a Build. */
 export interface Placing {
-  kind: 'house' | 'firm' | 'pier';
+  kind: 'house' | 'firm' | 'pier' | 'road';
   sector?: string;
   town?: number;
+  /** Road: 1 a dirt track, 2 paving; and the tile it starts from once the first point is chosen. */
+  grade?: 1 | 2;
+  a?: number;
 }
 
 export interface UiState {

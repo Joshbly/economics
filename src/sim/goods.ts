@@ -135,6 +135,10 @@ export const PRODUCER_OF: Sector[] = (() => {
 export const HOUSE_COST: Materials = M(1400, 300, 30, 10);
 export const HOUSE_SLOTS = 4;
 export const ROAD_TILE_COST: Materials = M(30, 2, 2, 1);
+/** A dirt track over open grass, per tile; rougher ground costs more to clear (TRACK_CLEAR_FACTOR). */
+export const TRACK_TILE_COST: Materials = M(8, 0.6, 0, 0.2);
+/** A timber bridge over one river tile (paving it adds ROAD_TILE_COST). */
+export const BRIDGE_TILE_COST: Materials = M(90, 24, 3, 2);
 export const PIER_COST: Materials = M(2500, 600, 80, 30);
 
 export function emptyGoods(): number[] {

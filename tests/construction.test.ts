@@ -223,6 +223,7 @@ describe('construction projects', () => {
     }
     reconcile(s);
     const tiles = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    for (const i of tiles) s.map.road[i] = 1; // paving an existing dirt track: ROAD_TILE_COST a tile
     const p = startProject(s, { kind: 'road', town: 0, owner: STATE, tiles }) as Project;
     expect(p.need.labor).toBe(300);
     const purse0 = s.treasury.purse;

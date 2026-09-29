@@ -467,6 +467,12 @@ export const AUTO_CREW_MAX = 60;
 export const BUILDER_TOOLLESS_HANDS = 2;
 /** Routes are recomputed after this many newly paved tiles (and on completion). */
 export const ROAD_INVALIDATE_TILES = 5;
+/**
+ * Clearing new ground for a track, × TRACK_TILE_COST, by terrain (DeepWater, Water, Sand,
+ * Grass, Forest, Hills, Mountain, Marsh): felling forest, cutting into hills and mountain
+ * sides, draining marsh.
+ */
+export const TRACK_CLEAR_FACTOR: readonly number[] = [0, 0, 1.2, 1, 2.2, 1.8, 4, 2.6];
 /** Finished/cancelled projects kept in s.projects for the UI (most recent). */
 export const PROJECT_KEEP_DONE = 24;
 

@@ -744,7 +744,9 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
     placingEl.hidden = !p;
     if (!p) return;
     const what = p.kind === 'house' ? 'a house block' : p.kind === 'pier' ? 'the pier' : `the new ${p.sector ?? 'workshop'}`;
-    replace(placingEl, icon('target', 16), h('span', null, `Choose a site for ${what}`), h('kbd', null, 'Esc'), button({ label: 'Cancel', kind: 'ghost', size: 'sm', onClick: () => setPlacing(null) }));
+    const road = p.grade === 1 ? 'track' : 'paved road';
+    const text = p.kind === 'road' ? (p.a === undefined || p.a < 0 ? `Click where the ${road} starts` : `Click where the ${road} ends`) : `Choose a site for ${what}`;
+    replace(placingEl, icon('target', 16), h('span', null, text), h('kbd', null, 'Esc'), button({ label: 'Cancel', kind: 'ghost', size: 'sm', onClick: () => setPlacing(null) }));
   }
 
   // ---- keyboard ---------------------------------------------------------------------------

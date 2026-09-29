@@ -267,7 +267,9 @@ export interface Project {
   builder: number; // builder firm id
   sector: Sector | ''; // for firm / reopen
   building: number; // target building id (created in 'construction' status for new builds), or -1 for roads
-  tiles: number[]; // road: tile indices to pave
+  tiles: number[]; // road: tile indices to build, in order along the way
+  /** Road: 1 = a dirt track (map.road 1); absent = paving (map.road 2). */
+  grade?: 1;
   need: Materials;
   done: Materials;
   billed: number; // ¤ billed so far
@@ -894,7 +896,10 @@ export type PlayerAction =
   | { type: 'updateLimit'; id: number; patch: Partial<Limit> }
   | { type: 'removeLimit'; id: number }
   | { type: 'setWindow'; reserveRate: number; lendRate: number }
-  | { type: 'build'; kind: 'road'; from: TownId; to: TownId }
+  /** Road between two towns: paving along the way wagons go (grade 2, the default), or a new dirt track (grade 1). */
+  | { type: 'build'; kind: 'road'; from: TownId; to: TownId; grade?: 1 | 2 }
+  /** Road between any two tiles `a` and `b` (tile indices): a dirt track (grade 1) or paving (grade 2, the default). */
+  | { type: 'build'; kind: 'track'; a: number; b: number; grade?: 1 | 2 }
   | { type: 'build'; kind: 'house' | 'pier'; town: TownId; x?: number; y?: number }
   | { type: 'build'; kind: 'firm'; sector: Sector; town: TownId; x?: number; y?: number }
   | { type: 'build'; kind: 'expand'; firm: number }

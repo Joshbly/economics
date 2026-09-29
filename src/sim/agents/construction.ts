@@ -52,17 +52,18 @@ import {
   TARGET_SMOOTH,
   TOOLS_BUFFER_DAYS,
   TOOLS_IDLE_WEAR_DAY,
+  TRACK_CLEAR_FACTOR,
   WAGE_RESERVE_DAYS,
 } from '../config';
 import { newProject as newProjectRecord } from '../factory';
-import { G, HOUSE_COST, HOUSE_SLOTS, PIER_COST, ROAD_TILE_COST, SECTORS } from '../goods';
+import { BRIDGE_TILE_COST, G, HOUSE_COST, HOUSE_SLOTS, PIER_COST, ROAD_TILE_COST, SECTORS, TRACK_TILE_COST } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, refName, repayPrincipal, writeOff } from '../ledger';
 import { addBid, bookFor, type Books } from '../market/markets';
 import { wageLevyRates } from '../policy/levies';
 import { lineCrewIn } from '../policy/lines';
 import { invalidateRoutes, rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
-import type { Building, Firm, Materials, Project, ProjectKind, Ref, Sector, SimState, TownId } from '../types';
+import type { Building, Firm, MapData, Materials, Project, ProjectKind, Ref, Sector, SimState, TownId } from '../types';
 import { STATE, Terrain } from '../types';
 import { clamp, fin, shareOut } from '../util';
 import { findSite, isValidSite, placeBuilding, removeBuilding } from '../world/layout';
@@ -80,6 +81,8 @@ export interface ProjectSpec {
   y?: number;
   building?: number; // expand / reopen target building
   tiles?: number[]; // road tiles
+  /** Road: 1 = a dirt track, 2 = paving (the default). */
+  grade?: 1 | 2;
   loan?: number;
   label?: string;
 }
@@ -116,6 +119,45 @@ export function projectNeed(kind: ProjectKind, sector: Sector | '' | undefined, 
     default:
       return { labor: 0, wood: 0, iron: 0, tools: 0 };
   }
+}
+
+/**
+ * Materials to bring one tile up to `grade` (1 a dirt track, 2 paving): new ground is cleared
+ * for a track first (TRACK_TILE_COST × TRACK_CLEAR_FACTOR of its terrain; a river tile takes a
+ * timber bridge, BRIDGE_TILE_COST), and paving adds ROAD_TILE_COST. Nothing for a tile already
+ * at that grade or better; open water cannot take a road.
+ */
+export function roadTileNeed(m: MapData, i: number, grade: 1 | 2): Materials {
+  const out = { labor: 0, wood: 0, iron: 0, tools: 0 };
+  const r = m.road[i] ?? 0;
+  if (r >= grade || !(i >= 0 && i < m.road.length)) return out;
+  const t = m.terrain[i];
+  if (t === Terrain.Water || t === Terrain.DeepWater) return out;
+  const add = (x: Materials, k: number) => {
+    out.labor += x.labor * k;
+    out.wood += x.wood * k;
+    out.iron += x.iron * k;
+    out.tools += x.tools * k;
+  };
+  if (r < 1) {
+    if (m.river[i]) add(BRIDGE_TILE_COST, 1);
+    else add(TRACK_TILE_COST, TRACK_CLEAR_FACTOR[t] ?? 1);
+  }
+  if (grade >= 2) add(ROAD_TILE_COST, 1);
+  return out;
+}
+
+/** Materials for a road along `tiles` at `grade` (the sum of roadTileNeed). */
+export function roadNeed(s: SimState, tiles: readonly number[], grade: 1 | 2): Materials {
+  const out = { labor: 0, wood: 0, iron: 0, tools: 0 };
+  for (const i of tiles) {
+    const x = roadTileNeed(s.map, i, grade);
+    out.labor += x.labor;
+    out.wood += x.wood;
+    out.iron += x.iron;
+    out.tools += x.tools;
+  }
+  return out;
 }
 
 function isBuilder(f: Firm | undefined): f is Firm {
@@ -436,16 +478,17 @@ function projectToolsSoon(active: Project[]): number {
   return r;
 }
 
-/** Pave the first `frac` of a road project's tiles; recompute routes every few tiles. */
+/** Build the first `frac` of a road project's tiles (to its grade); recompute routes every few tiles. */
 function pave(s: SimState, p: Project, frac: number): void {
   const map = s.map;
   const n = p.tiles.length;
+  const grade = p.grade === 1 ? 1 : 2;
   const upto = frac >= 1 - EPS ? n : Math.floor(clamp(frac, 0, 1) * n);
   let newly = 0;
   for (let i = 0; i < upto; i++) {
     const t = p.tiles[i];
-    if (t >= 0 && t < map.road.length && map.road[t] < 2) {
-      map.road[t] = 2;
+    if (t >= 0 && t < map.road.length && map.road[t] < grade && map.occ[t] < 0) {
+      map.road[t] = grade;
       newly++;
     }
   }
@@ -686,7 +729,7 @@ function complete(s: SimState, b: Firm | undefined, p: Project): void {
       pave(s, p, 1);
       invalidateRoutes(s);
       handOver(s, b, p, p.owner);
-      news(s, p.label ? `${p.label} is finished.` : `A paved road out of ${tn} is finished.`, 'good', p.town);
+      news(s, p.label ? `${p.label} is finished.` : p.grade === 1 ? `A new track out of ${tn} is finished.` : `A paved road out of ${tn} is finished.`, 'good', p.town);
       break;
     }
   }
@@ -924,7 +967,7 @@ function defaultLabel(s: SimState, spec: ProjectSpec): string {
     case 'pier':
       return `Pier at ${tn}`;
     case 'road':
-      return `Paved road out of ${tn}`;
+      return spec.grade === 1 ? `Track out of ${tn}` : `Paved road out of ${tn}`;
     default:
       return 'Building work';
   }
@@ -1008,16 +1051,20 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
     }
     case 'road': {
       const map = s.map;
-      tiles = (spec.tiles ?? []).filter((t) => Number.isInteger(t) && t >= 0 && t < map.road.length && map.road[t] < 2);
-      if (tiles.length === 0) return 'There is nothing left to pave.';
+      const g = spec.grade === 1 ? 1 : 2;
+      tiles = (spec.tiles ?? []).filter(
+        (t) => Number.isInteger(t) && t >= 0 && t < map.road.length && map.road[t] < g && map.occ[t] < 0 && map.terrain[t] !== Terrain.Water && map.terrain[t] !== Terrain.DeepWater,
+      );
+      if (tiles.length === 0) return g === 1 ? 'There is a road there already.' : 'There is nothing left to pave.';
       break;
     }
     default:
       return 'Unknown kind of construction.';
   }
   const label = spec.label || defaultLabel(s, spec);
-  const need = projectNeed(kind, sector, tiles.length);
+  const need = kind === 'road' ? roadNeed(s, tiles, spec.grade === 1 ? 1 : 2) : projectNeed(kind, sector, tiles.length);
   const p = newProjectRecord(s, kind, town, spec.owner, b.id, label);
+  if (kind === 'road' && spec.grade === 1) p.grade = 1;
   p.sector = sector;
   p.building = building;
   p.tiles = tiles;
@@ -1126,7 +1173,12 @@ export function cancelProject(s: SimState, id: number): boolean {
  */
 export function estimateCost(s: SimState, kind: ProjectKind, town: TownId, sector?: Sector, tiles?: number): number {
   if (!(town >= 0 && town < s.towns.length)) return 0;
-  const need = projectNeed(kind, sector ?? '', tiles ?? 0);
+  return needCost(s, town, projectNeed(kind, sector ?? '', tiles ?? 0));
+}
+
+/** What `need` would cost built by `town`'s builders at today's prices and wages. */
+export function needCost(s: SimState, town: TownId, need: Materials): number {
+  if (!(town >= 0 && town < s.towns.length)) return 0;
   const b = builderFor(s, town);
   let w = b && b.wage > 0 ? b.wage : defaultWage(s, town);
   if (hasLevyBase(s, 'wage')) {

@@ -561,10 +561,25 @@ that pay ¤5 per year each, forever). Seven primitives:
    price where it stands).
 5. **Window** — the rate the Treasury pays on the bank's reserves and the rate
    it charges when the bank borrows from it.
-6. **Build** — commission construction paid from the Purse: pave a road
-   between two towns, a house block (Treasury landlord), a workshop of any
-   sector (Treasury-owned; its profits flow to the Purse), a pier at the port
-   (more foreign ship capacity), or expand a Treasury workshop.
+6. **Build** — commission construction paid from the Purse: a road, a house
+   block (Treasury landlord), a workshop of any sector (Treasury-owned; its
+   profits flow to the Purse), a pier at the port (more foreign ship capacity),
+   or expand a Treasury workshop.
+   * **Roads anywhere** (`build` `road` between two towns, or `track` between any
+     two tiles `a`, `b`; `grade` 1 a dirt track, 2 paving, the default): between
+     towns, paving follows the way wagons go (paths.roadPlan) and a new dirt track
+     is planned centre to centre; between tiles, paths.trackPlan lays it the way a
+     road-builder would (planTrack: 4-neighbour, buildings avoided, rivers crossed
+     straight over, an existing road reused when roughly on the way — it plans at
+     half the cost of new ground). Only tiles below the grade are built (a project,
+     `Project.grade`, tiles in order along the way, built progressively). Each tile's
+     materials (construction.roadTileNeed): new ground is cleared for a track first —
+     TRACK_TILE_COST × TRACK_CLEAR_FACTOR of its terrain (forest felled, hills cut,
+     marsh drained, mountain sides worst), a river tile takes a timber bridge
+     (BRIDGE_TILE_COST) — and paving adds ROAD_TILE_COST. The builders of the town
+     nearest the first tile take the work. In the game the road is drawn on the map:
+     click where it starts, the planned way and its cost follow the pointer, click
+     where it ends.
    * **Freight line** (`openLine` / `updateLine` / `closeLine`; `s.policy.lines`,
      `policy/lines.ts`): a Treasury carrying service between towns `a` and `b`, both
      ways, one line per pair. Every input is real: *wagons* are tools the line holds
