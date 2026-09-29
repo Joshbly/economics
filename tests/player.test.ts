@@ -165,8 +165,12 @@ describe('daily hooks', () => {
     dispatch(s, { type: 'placeOrder', market: { kind: 'labor', town: 0 }, side: 'buy', price: 12, qty: 2 });
     policyBeginDay(s);
     expect(s.treasury.givesSuspended).toBe(true);
+    expect(sw.target).toBe(0); // payments on hold: the crew is not kept on unpaid (fixes-A)
+    s.treasury.autoMint = true;
+    policyBeginDay(s);
     expect(sw.target).toBe(5);
     expect(sw.wage).toBe(12);
+    s.treasury.autoMint = false;
     s.day += 2;
     policyBeginDay(s);
     expect(s.policy.levies.length).toBe(0);

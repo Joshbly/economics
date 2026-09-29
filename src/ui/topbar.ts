@@ -193,7 +193,7 @@ const INDICATORS: IndDef[] = [
       };
     },
     detail(s) {
-      return [tipKV('Taken in today', fmtMoneyShort(L(s, 'treasuryIncome'))), tipKV('Paid out today', fmtMoneyShort(L(s, 'treasurySpend'))), tipKV('Created so far', fmtMoneyShort(L(s, 'minted')))];
+      return [tipKV('Taken in today', fmtMoneyShort(L(s, 'treasuryIncome'))), tipKV('Paid out today', fmtMoneyShort(L(s, 'treasurySpend'))), tipKV('Created so far (net)', fmtMoneyShort(s.treasury.minted - s.treasury.burned))];
     },
   },
   {

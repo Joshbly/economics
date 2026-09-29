@@ -26,7 +26,7 @@ import * as CFG from '../config';
 import { isMonthStart } from '../calendar';
 import { N_GOODS } from '../goods';
 import { addAsk, addBid, bookFor, marketOf, type Books } from '../market/markets';
-import { portDuty, portTown } from '../policy/levies';
+import { levyActive, portDuty, portTown } from '../policy/levies';
 import { noteBinding, quota } from '../policy/limits';
 import { normal } from '../rng';
 import { rt } from '../runtime';
@@ -161,15 +161,62 @@ export function dealerCentre(s: SimState): number {
 // Market phase
 // ---------------------------------------------------------------------------
 
-/** Scratch for the export bids of the day (scaled to the desk's coin before posting). */
+/** Scratch for the export bids of the day: [good, qty, xPct, xUnit] (scaled to the desk's coin before posting). */
 const _exp: number[] = [];
+const NO_EXTRAS = { xPct: 0, xUnit: 0 };
+
+/**
+ * Signed sum of the active percentage port rules on one side (+ take, − give), NOT clamped
+ * (portDuty clamps the combined rate to the auction's wedge range, which is only right once the
+ * rate has been converted to the foreign order's terms below). Same matching as levies.portDuty.
+ */
+function portPctRaw(s: SimState, side: 'import' | 'export', good: GoodId, port: number): number {
+  let pct = 0;
+  for (const l of s.policy.levies) {
+    if (l.base !== side || l.unit !== 'pct' || !levyActive(s, l)) continue;
+    if (s.treasury.givesSuspended && l.dir < 0) continue;
+    if (l.good >= 0 && l.good !== good) continue;
+    if (l.town >= 0 && port >= 0 && l.town !== port) continue;
+    pct += l.dir * l.rate;
+  }
+  return Number.isFinite(pct) ? pct : 0;
+}
+
+/**
+ * Per-order extras for the foreign ships' asks (imports) so a rule "takes r of the price,
+ * charged to buyers" means exactly that: the buyer pays the ships' price × (1 + r) + unit.
+ * (Fix: the rate used to be put on the ask as a seller-side share, so buyers paid ×1/(1 − r):
+ * 50 % → ×2, 90 % → ×10.) Ask base = (limit + xUnit)/(1 − xPct) = limit·(1 + r) + unit with
+ * xPct = r/(1 + r), xUnit = unit/(1 + r). r is kept in [−0.95, 19] (the auction's 5 % floors).
+ */
+function importExtras(s: SimState, g: GoodId, port: number): { xPct: number; xUnit: number } {
+  const r = clamp(portPctRaw(s, 'import', g, port), -0.95, 19);
+  const u = portDuty(s, 'import', g).unit;
+  return { xPct: r / (1 + r), xUnit: u / (1 + r) };
+}
+
+/**
+ * Per-order extras for the foreign ships' bids (exports) so a rule "takes r of the price,
+ * charged to sellers" leaves the seller the ships' price × (1 − r) − unit. (Fix: the rate used
+ * to be put on the bid as a buyer-side share, so sellers kept 1/(1 + r): 500 % still kept 51 %.)
+ * Bid base = (limit − xUnit)/(1 + xPct) = limit·(1 − r) − unit with xPct = r/(1 − r),
+ * xUnit = unit/(1 − r). r is kept in [−19, 0.95] (a seller keeps at least 5 %).
+ */
+function exportExtras(s: SimState, g: GoodId, port: number): { xPct: number; xUnit: number } {
+  const r = clamp(portPctRaw(s, 'export', g, port), -19, 0.95);
+  const u = portDuty(s, 'export', g).unit;
+  return { xPct: r / (1 - r), xUnit: u / (1 - r) };
+}
 
 /**
  * Port (the harbor town's books), for each tradable good with foreign.world[g] > 0:
  *   foreign sell (imports):  ask at limit E·w·(1+IMPORT_MARKUP), qty = shipCap (× import quota),
- *                            import levies as per-order xPct/xUnit (payer: buyer side)
+ *                            import levies as per-order xPct/xUnit (payer: buyer side; the
+ *                            buyer pays the ships' price × (1 + r), see importExtras)
  *   foreign buy  (exports):  bid at limit E·w·(1−EXPORT_DISCOUNT), qty = shipCap (× export quota),
- *                            limited by foreign.coin; export levies as per-order extras
+ *                            limited by foreign.coin; export levies as per-order extras (the
+ *                            seller keeps the ships' price × (1 − r), see exportExtras; a payment
+ *                            is capped where the bid would reach the landed import price)
  * where E = s.goldMarket.ema (¤ per oz). Ref = FOREIGN.
  * Each side is posted in tranches (IMPORT_TRANCHES / EXPORT_TRANCHES) so foreign supply and
  * demand slope gently near capacity; export bids commit at most DESK_EXPORT_COIN_SHARE of coin.
@@ -204,11 +251,11 @@ export function foreignOrders(s: SimState, books: Books): void {
       }
       let importBase = Infinity; // lowest base price of the foreign asks
       if (qi > 1e-6) {
-        const d = portDuty(s, 'import', g);
-        const opts = d.pct || d.unit ? { xPct: d.pct, xUnit: d.unit } : undefined;
+        const d = importExtras(s, g, port);
+        const opts = d.xPct || d.xUnit ? d : undefined;
         const book = bookFor(books, port, g);
         const lim0 = wp * (1 + IMPORT_MARKUP);
-        importBase = (lim0 * IMPORT_TRANCHES[0][0] + d.unit) / Math.max(0.05, 1 - d.pct);
+        importBase = (lim0 * IMPORT_TRANCHES[0][0] + d.xUnit) / Math.max(0.05, 1 - d.xPct);
         for (const [m, share] of IMPORT_TRANCHES) addAsk(book, FOREIGN, lim0 * m, qi * share, opts);
       }
       // exports (collected; posted below)
@@ -217,28 +264,39 @@ export function foreignOrders(s: SimState, books: Books): void {
         const lim = quota(s, 'exportMax', g, port, -1);
         if (lim >= 0) qe = Math.min(qe, lim);
       }
+      let dx = qe > 1e-6 ? exportExtras(s, g, port) : NO_EXTRAS;
       // Never bid for goods the foreign ships themselves offer cheaper (after duties): the desk
       // would only trade with itself, and any duty/give on both legs would be a phantom flow.
       if (qe > 1e-6 && importBase < Infinity) {
-        const d = portDuty(s, 'export', g);
-        const exportBase = (wp * (1 - EXPORT_DISCOUNT) * EXPORT_TRANCHES[0][0] - d.unit) / Math.max(0.05, 1 + d.pct);
-        if (exportBase >= importBase * 0.999) qe = 0;
+        const top = wp * (1 - EXPORT_DISCOUNT) * EXPORT_TRANCHES[0][0];
+        const exportBase = (top - dx.xUnit) / Math.max(0.05, 1 + dx.xPct);
+        const cap = importBase * 0.998;
+        if (exportBase >= importBase * 0.999) {
+          // Fix: a payment on exports used to switch exports off entirely once it lifted the
+          // bid above the import price (a cliff at ~27 % of value). Now the payment is capped at
+          // break-even instead: the bid's extra share is cut so its price stays just below the
+          // landed import price. Only when the bid is already there without any payment (a
+          // payment on imports undercuts it) is there nothing to export.
+          if (top < cap && cap > 0) dx = { xPct: Math.max(-0.95, (top - dx.xUnit) / cap - 1), xUnit: dx.xUnit };
+          else qe = 0;
+        }
       }
       if (qe > 1e-6) {
         const lim0 = wp * (1 - EXPORT_DISCOUNT);
         for (const [m, share] of EXPORT_TRANCHES) expCost += lim0 * m * qe * share;
-        _exp.push(g, qe);
+        _exp.push(g, qe, dx.xPct, dx.xUnit);
       }
     }
     const budget = Math.max(0, fo.coin) * DESK_EXPORT_COIN_SHARE;
     const k = expCost > 0 ? Math.min(1, budget / expCost) : 0;
     if (k > 0) {
-      for (let i = 0; i < _exp.length; i += 2) {
+      for (let i = 0; i < _exp.length; i += 4) {
         const g = _exp[i];
         const qe = _exp[i + 1] * k;
         const lim0 = fo.world[g] * E * (1 - EXPORT_DISCOUNT);
-        const d = portDuty(s, 'export', g);
-        const opts = d.pct || d.unit ? { xPct: d.pct, xUnit: d.unit } : undefined;
+        const xPct = _exp[i + 2];
+        const xUnit = _exp[i + 3];
+        const opts = xPct || xUnit ? { xPct, xUnit } : undefined;
         const book = bookFor(books, port, g);
         for (const [m, share] of EXPORT_TRANCHES) addBid(book, FOREIGN, lim0 * m, qe * share, opts);
       }

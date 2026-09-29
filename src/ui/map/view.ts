@@ -82,6 +82,16 @@ export function daylight(t: number): { night: number; warm: number } {
   return { night, warm: Math.min(1, warm) };
 }
 
+/**
+ * A physical mouse wheel notch (as opposed to trackpad scrolling): browsers on macOS
+ * report notches as pixel deltas, but the legacy `wheelDeltaY` comes in multiples of 120
+ * with no horizontal component. Trackpads produce small, non-multiple values.
+ */
+function isMouseNotch(e: WheelEvent): boolean {
+  const wd = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+  return typeof wd === 'number' && wd !== 0 && Math.abs(wd) % 120 === 0 && e.deltaX === 0;
+}
+
 export function createMapViewImpl(container: HTMLElement): MapView & { debug: MapDebug } {
   const canvas = document.createElement('canvas');
   canvas.className = 'map-canvas grab';
@@ -690,8 +700,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         zoomAround(cam, x, y, cam.z * f);
         tz = cam.z;
         zAnchor = null;
-      } else if (e.deltaMode === 1) {
-        // a line-stepping mouse wheel: zoom in steps
+      } else if (e.deltaMode === 1 || isMouseNotch(e)) {
+        // a notched mouse wheel (not a trackpad): zoom in steps
         zoomStep(e.deltaY < 0 ? 1 : -1, x, y);
       } else {
         panBy(cam, -e.deltaX, -e.deltaY);

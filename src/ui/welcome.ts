@@ -39,8 +39,8 @@ const PRIMITIVES: [string, string, string][] = [
 const kbd = (k: string) => h('kbd', null, k);
 const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-/** [keys, what they do] */
-const KEYS: [(string | HTMLElement)[], string][] = [
+/** [keys, what they do] — built when the dialog opens (module load must stay DOM-free). */
+const keys = (): [(string | HTMLElement)[], string][] => [
   [[kbd('Space')], 'Start or pause the clock (a new realm waits, paused)'],
   [[kbd('1'), '–', kbd('5')], 'Speed: ¼ to 40 days a second; 0 pauses'],
   [['Drag · scroll'], 'Pan the map (two fingers on a trackpad)'],
@@ -83,7 +83,7 @@ export function showWelcome(onClose?: () => void): void {
     h(
       'div',
       { class: 'welcome-keys' },
-      KEYS.map(([k, what]) => h('div', { class: 'welcome-key' }, h('span', { class: 'welcome-k' }, ...k), h('span', { class: 'welcome-kd' }, what))),
+      keys().map(([k, what]) => h('div', { class: 'welcome-key' }, h('span', { class: 'welcome-k' }, ...k), h('span', { class: 'welcome-kd' }, what))),
     ),
     h('p', { class: 'welcome-note' }, 'The ', h('b', null, 'Almanac'), ' tab (or ', kbd('?'), ') explains how the realm works — markets, work, people, money and the Bank, shipping, and how to read the ledgers. This note can be reopened from the menu ', h('span', { class: 'welcome-menu' }, '☰'), ' at the top right.'),
   );

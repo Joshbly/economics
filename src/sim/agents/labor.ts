@@ -321,9 +321,11 @@ export function laborMarket(s: SimState): void {
       const keep = Math.min(wantUpper(f), cap);
       excess = n - keep;
       if (excess <= 0) continue;
-      // Over capacity is resolved at once; ordinary downsizing is gradual.
+      // Over capacity is resolved at once; ordinary downsizing is gradual. The Treasury crew
+      // releases its excess at once: its target is what labour orders (and the Purse) will pay
+      // for, and workers kept past an order's end would be paid outside any order's cap.
       const overCap = Math.max(0, n - cap);
-      excess = Math.max(overCap, Math.min(excess, Math.max(1, Math.floor(FIRE_RATE * n))));
+      if (f.sector !== 'stateworks') excess = Math.max(overCap, Math.min(excess, Math.max(1, Math.floor(FIRE_RATE * n))));
     }
     if (excess <= 0) continue;
     // Last in, first out.

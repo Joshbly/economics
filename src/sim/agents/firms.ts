@@ -1083,6 +1083,13 @@ export function firmsPayWages(s: SimState): void {
         k = due > 0 ? cash / due : 0;
         if (f.id < sc.n) sc.unpaid[f.id] += due - cash;
       }
+    } else if (!s.treasury.autoMint) {
+      // Treasury crew with auto-mint off: a Purse short of the wage bill pays everyone the
+      // same share (as a firm short of cash does), rather than paying the first in full and
+      // the rest nothing. policyBeginDay then trims the crew to what the Purse can pay.
+      const due = f.workers.length * gross;
+      const purse = Math.max(0, s.treasury.purse);
+      if (due > purse + 1e-9) k = due > 0 ? purse / due : 0;
     }
     const w = gross * k;
     let paidFirm = 0;

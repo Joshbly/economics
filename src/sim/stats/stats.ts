@@ -144,10 +144,6 @@ interface StatsCache {
   /** Per firm id: 1 trading last statsStep, 0 not, −1 unknown (bankruptcy detection). */
   prevActive: Int8Array;
   prevDay: number;
-  /** acc / treasury.flows as they stood at the end of the last statsStep (carry of between-day flows). */
-  snapDay: number;
-  snapAcc: Record<string, number> | null;
-  snapFlows: Record<string, number> | null;
   // per-town scratch
   pop: Float64Array;
   employed: Float64Array;
@@ -177,9 +173,6 @@ function statsCache(s: SimState): StatsCache {
     c = {
       prevActive: new Int8Array(0),
       prevDay: -2,
-      snapDay: -2,
-      snapAcc: null,
-      snapFlows: null,
       pop: z(),
       employed: z(),
       homeless: z(),
@@ -739,6 +732,7 @@ export function initStats(s: SimState): void {
   st.monthly = {};
   st.acc = {};
   st.macc = {};
+  delete (st as StatsWithCarry).carry; // (no between-day carry into a new world)
   st.latest = {};
   st.dailyStart = s.day;
   st.monthlyStart = Math.floor(s.day / DAYS_PER_MONTH);
@@ -979,7 +973,11 @@ function computeDaily(s: SimState, c: StatsCache, v: Record<string, number>): Re
   v.levyTake = num(acc.levy_take);
   v.levyGive = num(acc.levy_give);
   v.levyNet = v.levyTake - v.levyGive;
-  v.transferGive = num(acc.transfer_give);
+  // Fix: the player's one-off transfers to the Bank move on the 'recap' flow, which
+  // policy/player.executeTransfer does not add to acc.transfer_give (it books only people and
+  // firms there); 'recap' has no other use, so count it here. (If player.ts ever books the
+  // Bank in transfer_give too, drop this term — tests/fixes-B.test.ts would catch the double count.)
+  v.transferGive = num(acc.transfer_give) + num(acc.flow_recap);
   v.transferTake = num(acc.transfer_take);
   let income = 0;
   let spend = 0;
@@ -1210,6 +1208,27 @@ export function distributionStats(s: SimState): { gini: number; giniIncome: numb
 // ---------------------------------------------------------------------------
 // Daily entry points
 // ---------------------------------------------------------------------------
+
+/**
+ * Between-day carry baseline: stats.acc / treasury.flows as they stood at the end of the
+ * last statsStep (day `day`). Fix: this used to live only in the runtime cache, so right
+ * after loading a save (fresh cache) a Mint or Transfer made before the first step was
+ * dropped from the day's figures. It is now kept in the state itself (s.stats.carry,
+ * optional plain JSON, saved with the game), so the carry survives a save/load.
+ */
+interface CarryBase {
+  day: number;
+  acc: Record<string, number>;
+  flows: Record<string, number>;
+}
+type StatsWithCarry = Stats & { carry?: CarryBase };
+
+function carryBase(st: Stats): CarryBase | null {
+  const c = (st as StatsWithCarry).carry;
+  if (!c || typeof c !== 'object' || typeof c.day !== 'number') return null;
+  if (!c.acc || typeof c.acc !== 'object' || !c.flows || typeof c.flows !== 'object') return null;
+  return c;
+}
 /**
  * Reset stats.acc and daily scratch fields (person.spent/earned are reset by households):
  * treasury.flows; firm revenue/spent/wageBill/otherCosts/producedToday/soldToday/hired/
@@ -1221,30 +1240,27 @@ export function distributionStats(s: SimState): { gini: number; giniIncome: numb
  */
 export function beginDayStats(s: SimState): void {
   const st = s.stats;
-  const c = statsCache(s);
   const t = s.treasury;
-  const carry = c.snapDay === s.day - 1 && c.snapAcc !== null && c.snapFlows !== null;
+  const base = carryBase(st);
   const acc: Record<string, number> = {};
   const flows: Record<string, number> = {};
-  if (carry) {
+  if (base && base.day === s.day - 1) {
     const oldAcc = st.acc || {};
-    const sa = c.snapAcc!;
+    const sa = base.acc;
     for (const k in oldAcc) {
-      const d = num(oldAcc[k]) - (sa[k] || 0);
+      const d = num(oldAcc[k]) - num(sa[k]);
       if (Math.abs(d) > 1e-12) acc[k] = d;
     }
     const oldFlows = t.flows || {};
-    const sf = c.snapFlows!;
+    const sf = base.flows;
     for (const k in oldFlows) {
-      const d = num(oldFlows[k]) - (sf[k] || 0);
+      const d = num(oldFlows[k]) - num(sf[k]);
       if (Math.abs(d) > 1e-12) flows[k] = d;
     }
   }
   st.acc = acc;
   t.flows = flows;
-  c.snapAcc = null;
-  c.snapFlows = null;
-  c.snapDay = -2;
+  delete (st as StatsWithCarry).carry;
 
   for (const f of s.firms) {
     if (!f) continue;
@@ -1285,10 +1301,8 @@ export function statsStep(s: SimState): void {
   writeLatest(s, vals, plan);
   accumulateMonth(st, vals, plan);
   if (isMonthEnd(s.day)) closeMonth(s, vals);
-  // Snapshot for the between-day carry (see beginDayStats).
-  c.snapDay = s.day;
-  c.snapAcc = { ...st.acc };
-  c.snapFlows = { ...(s.treasury.flows || {}) };
+  // Snapshot for the between-day carry (see beginDayStats), kept in the state.
+  (st as StatsWithCarry).carry = { day: s.day, acc: { ...st.acc }, flows: { ...(s.treasury.flows || {}) } };
 }
 
 /** Read a series ('daily' or 'monthly'); returns [] if missing. */

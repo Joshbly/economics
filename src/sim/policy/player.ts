@@ -9,6 +9,8 @@
 // 10 % of the value of every bread sale in Millbrook, charged to buyers").
 // ============================================================================
 import {
+  IOU_COUPON,
+  IOU_PAR,
   PLAYER_MAX_MONEY,
   PLAYER_MAX_PCT,
   PLAYER_MAX_PRICE,
@@ -46,7 +48,7 @@ import type {
   TransferGroup,
 } from '../types';
 import { addAsk, addBid, type Books } from '../market/markets';
-import { inGroup } from './levies';
+import { bankClaimRoom, inGroup } from './levies';
 import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject } from '../agents/construction';
 import { shipTreasuryGoods } from '../agents/traders';
@@ -195,6 +197,19 @@ const GROUP_TEXT: Record<Group, string> = {
   firms: 'firms',
 };
 
+/** Plural nouns that follow a count ("each of 611 people"); GROUP_TEXT reads wrong there ("611 everyone"). */
+const GROUP_PLURAL: Record<Group, string> = {
+  all: 'people',
+  persons: 'people',
+  employed: 'people in work',
+  unemployed: 'people without work',
+  homeless: 'people without a home',
+  owners: 'property owners',
+  nonowners: 'people who own no property',
+  hungry: 'hungry people',
+  firms: 'firms',
+};
+
 const GROUP_EACH: Record<Group, string> = {
   all: 'every person',
   persons: 'every person',
@@ -255,14 +270,15 @@ function levyObject(s: SimState, l: Levy): string {
       return pct ? `of every wage paid${inSec}` : `per worker per day${inSec}`;
     case 'profit':
       return `of monthly profits${inSec}`;
+    // money / goods: a trade filter limits the rule to those firms (levies.stockLevies).
     case 'money':
-      return pct ? 'a year on money held' : 'a day from every holder of money';
+      return pct ? `a year on money held${inSec}` : `a day from every holder of money${inSec}`;
     case 'goods':
       return l.unit === 'perUnit'
-        ? `each day per ${u} of ${gt} kept in store`
+        ? `each day per ${u} of ${gt} kept in store${inSec}`
         : pct
-          ? `a year of the value of ${gt} kept in store`
-          : `a day for every kind of goods kept in store`;
+          ? `a year of the value of ${gt} kept in store${inSec}`
+          : `a day for every kind of goods kept in store${inSec}`;
     case 'rent':
       return pct ? 'of all rent paid' : 'per rented home per day';
     case 'interest':
@@ -334,22 +350,24 @@ export function levyShortLabel(s: SimState, l: Levy): string {
             : '/unit';
   const amt = l.unit === 'pct' ? pctText(l.rate) + (STOCK_BASES[l.base] ? '/yr' : '') : moneyText(l.rate) + per;
   const g = l.good >= 0 ? goodLower(l.good) : 'all goods';
+  const secP = sectorPlural(l.sector);
+  const atSec = secP ? ` at ${secP}` : '';
   let what: string;
   switch (l.base) {
     case 'sale':
       what = `${g} sales (${payerText(l)})`;
       break;
     case 'wage':
-      what = `wages (${payerText(l)})`;
+      what = `wages${atSec} (${payerText(l)})`;
       break;
     case 'profit':
-      what = 'profits';
+      what = `profits${atSec}`;
       break;
     case 'money':
-      what = 'money held';
+      what = `money held${atSec}`;
       break;
     case 'goods':
-      what = `${g} in store`;
+      what = `${g} in store${atSec}`;
       break;
     case 'head':
       what = `per head · ${GROUP_TEXT[l.group] ?? 'everyone'}`;
@@ -386,6 +404,9 @@ export function levyShortLabel(s: SimState, l: Levy): string {
 export function describeLimit(s: SimState, l: Limit): string {
   const where = l.town >= 0 ? ` in ${townName(s, l.town)}` : '';
   const g = l.good >= 0 ? goodLower(l.good) : 'any good';
+  // Quantity limits with no good count each good separately: "No goods may…", "N units of each good…".
+  const qNone = l.good >= 0 ? g : 'goods';
+  const qSome = l.good >= 0 ? g : 'each good';
   let t: string;
   switch (l.kind) {
     case 'priceMax':
@@ -410,10 +431,10 @@ export function describeLimit(s: SimState, l: Limit): string {
       t = `The Bank may not charge more than ${pctText(l.value)} a year on its loans`;
       break;
     case 'importMax':
-      t = l.value <= 0 ? `No ${g} may come in through the port` : `At most ${qtyText(l.value)} units of ${g} may come in through the port each day`;
+      t = l.value <= 0 ? `No ${qNone} may come in through the port` : `At most ${qtyText(l.value)} units of ${qSome} may come in through the port each day`;
       break;
     case 'exportMax':
-      t = l.value <= 0 ? `No ${g} may leave through the port` : `At most ${qtyText(l.value)} units of ${g} may leave through the port each day`;
+      t = l.value <= 0 ? `No ${qNone} may leave through the port` : `At most ${qtyText(l.value)} units of ${qSome} may leave through the port each day`;
       break;
     case 'shipMax': {
       const route =
@@ -424,7 +445,9 @@ export function describeLimit(s: SimState, l: Limit): string {
             : l.toTown >= 0
               ? ` into ${townName(s, l.toTown)}`
               : ' between towns';
-      t = l.value <= 0 ? `No ${g} may be carried${route}` : `At most ${qtyText(l.value)} units of ${g} may be carried${route} each day`;
+      // The quota applies to each (good, origin, destination) separately (limits.quota).
+      const each = l.town >= 0 && l.toTown >= 0 ? '' : ' on each route';
+      t = l.value <= 0 ? `No ${qNone} may be carried${route}` : `At most ${qtyText(l.value)} units of ${qSome} may be carried${route}${each} each day`;
       break;
     }
     case 'reserveMin':
@@ -722,6 +745,10 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       if (p.price !== undefined) {
         if (!isNum(p.price) || p.price < 0 || p.price > PLAYER_MAX_PRICE) return fail('The price must be a number between 0 and ' + moneyText(PLAYER_MAX_PRICE) + '.');
         if (o.side === 'buy' && p.price <= 0) return fail('A buying price must be above zero.');
+        if (o.side === 'sell' && o.market.kind === 'iou') {
+          const e = iouFloorError(s, p.price);
+          if (e) return fail(e);
+        }
         next.price = p.price;
       }
       if (p.qty !== undefined) {
@@ -893,6 +920,29 @@ function lowerFirst(t: string): string {
   return t.length ? t[0].toLowerCase() + t.slice(1) : t;
 }
 
+// Sell-floor guards (local to the order checks). A sell order clears at whatever the bids
+// reach down to its floor, so a ¤0 floor with a large quantity sells at PRICE_MIN.
+/** A new-IOU floor must be at least this share of today's IOU price. */
+const IOU_SELL_FLOOR_MIN_SHARE = 0.1;
+/** Warn when a sell floor is below this share of today's price. */
+const SELL_FLOOR_WARN_SHARE = 0.5;
+
+/** Today's reference price of a Treasury order's market (0 if none known). */
+function orderRefPrice(s: SimState, m: OrderMarket): number {
+  const mk = m.kind === 'good' ? s.markets[m.town * N_GOODS + m.good] : m.kind === 'iou' ? s.iouMarket : m.kind === 'gold' ? s.goldMarket : undefined;
+  const p = mk ? (mk.ema > 0 ? mk.ema : mk.price) : 0;
+  if (p > 0 && Number.isFinite(p)) return p;
+  return m.kind === 'iou' ? IOU_PAR : 0;
+}
+
+/** Refusal text if a new-IOU floor is too low to be a sale, else null. */
+function iouFloorError(s: SimState, price: number): string | null {
+  const ref = orderRefPrice(s, { kind: 'iou' });
+  const min = IOU_SELL_FLOOR_MIN_SHARE * ref;
+  if (price >= min - 1e-9) return null;
+  return `New IOUs need a lowest price of at least ${moneyText(min)} (a tenth of today's IOU price of about ${moneyText(ref)}). Each pays ${moneyText(IOU_COUPON)} a year forever, so selling below that would give them away for next to nothing.`;
+}
+
 function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }>): ActionResult {
   if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
   const err = checkMarket(s, a.market);
@@ -903,6 +953,10 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (!isNum(a.price) || a.price < 0 || a.price > PLAYER_MAX_PRICE) return fail(`The price must be a number between 0 and ${moneyText(PLAYER_MAX_PRICE)}.`);
   if ((a.side === 'buy' || m.kind === 'labor') && a.price <= 0) return fail(m.kind === 'labor' ? 'The daily wage must be above zero.' : 'A buying price must be above zero.');
   if (!isNum(a.qty) || a.qty <= 0) return fail('The quantity must be a positive number.');
+  if (m.kind === 'iou' && a.side === 'sell') {
+    const e = iouFloorError(s, a.price);
+    if (e) return fail(e);
+  }
   const maxQ = m.kind === 'labor' ? PLAYER_MAX_WORKERS : PLAYER_MAX_QTY;
   if (a.qty > maxQ) return fail(`The quantity can be at most ${qtyText(maxQ)} a day.`);
   const qty = m.kind === 'labor' ? Math.max(1, Math.round(a.qty)) : a.qty;
@@ -946,6 +1000,11 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (a.side === 'buy' && !s.treasury.autoMint && !(s.treasury.purse > 0))
     note = m.kind === 'labor' ? ' The Purse is empty, so these workers cannot be paid until money comes in.' : ' The Purse is empty, so nothing will be bought until money comes in.';
   if (m.kind === 'labor' && !findStateworks(s, m.town)) note = ' (There is no Treasury workforce in that town.)';
+  if (a.side === 'sell' && m.kind !== 'labor') {
+    const ref = orderRefPrice(s, m);
+    if (ref > 0 && a.price < SELL_FLOOR_WARN_SHARE * ref)
+      note += ` Note: the lowest price is far below today's price of about ${moneyText(ref)}; when buyers are few, a large offer will sell for next to nothing.`;
+  }
   const text = describeOrder(s, o);
   policyNews(s, text, m.kind === 'good' || m.kind === 'labor' ? m.town : -1);
   return { ok: true, message: text + note, id: o.id };
@@ -956,8 +1015,13 @@ function build(s: SimState, a: Extract<PlayerAction, { type: 'build' }>): Action
     case 'road': {
       if (!validTown(s, a.from) || !validTown(s, a.to)) return fail('Unknown town.');
       if (a.from === a.to) return fail('Choose two different towns.');
-      const tiles = roadPlan(s, a.from, a.to);
-      if (!tiles || tiles.length === 0) return fail(`The road between ${townName(s, a.from)} and ${townName(s, a.to)} is already paved (or there is no route).`);
+      const plan = roadPlan(s, a.from, a.to);
+      if (!plan || plan.length === 0) return fail(`The road between ${townName(s, a.from)} and ${townName(s, a.to)} is already paved (or there is no route).`);
+      // Skip tiles an unfinished road project already covers, or the same road is built (and billed) twice.
+      const busy = new Set<number>();
+      for (const p of s.projects) if (p && p.kind === 'road' && p.status !== 'done' && p.status !== 'cancelled') for (const i of p.tiles) busy.add(i);
+      const tiles = plan.filter((i) => !busy.has(i));
+      if (tiles.length === 0) return fail(`Already being paved: the builders are at work on the road between ${townName(s, a.from)} and ${townName(s, a.to)}.`);
       const label = `Paved road ${townName(s, a.from)}–${townName(s, a.to)}`;
       const r = startProject(s, { kind: 'road', town: a.from, owner: STATE, tiles: tiles.slice(), label });
       return projectResult(s, r, label, a.from, `${tiles.length} tiles of paving`);
@@ -1031,19 +1095,21 @@ function transfer(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): 
   if (a.dir !== 1 && a.dir !== -1) return fail('Direction must be 1 (pay) or −1 (take).');
   const t = s.treasury;
   if (a.dir === 1 && !t.autoMint && !(t.purse > 0)) return fail('The Purse is empty. Create money first, or turn on auto-mint.');
+  if (a.group === 'bank' && a.dir === -1 && !(bankClaimRoom(s) > 0)) return fail('The Bank has no capital of its own to spare, so there is nothing to take.');
   const n = a.group === 'bank' ? 1 : countRecipients(s, a.group, a.town);
-  if (n === 0) return fail(`Nobody matches: there are no ${GROUP_TEXT[a.group as Group] ?? 'recipients'}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);
+  if (n === 0) return fail(`Nobody matches: there are no ${GROUP_PLURAL[a.group as Group] ?? 'recipients'}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);
   const total = executeTransfer(s, a.group, a.town, a.amount, a.dir);
   const where = a.town >= 0 ? ` in ${townName(s, a.town)}` : '';
   let text: string;
   if (a.group === 'bank') {
-    text = a.dir === 1 ? `The Treasury paid ${moneyText(total)} into the Bank's own capital.` : `The Treasury took ${moneyText(total)} out of the Bank's own capital.`;
+    const short = total < a.amount - 1e-6 ? ' — all the capital the Bank could spare' : '';
+    text = a.dir === 1 ? `The Treasury paid ${moneyText(total)} into the Bank's own capital.` : `The Treasury took ${moneyText(total)} out of the Bank's own capital${short}.`;
   } else if (a.dir === 1) {
     const each = n > 0 ? total / n : 0;
     const scaled = each < a.amount - 1e-6 ? ' — all the Purse could spare' : '';
-    text = `The Treasury handed ${moneyText(each)} to each of ${withCommas(n)} ${GROUP_TEXT[a.group] ?? 'recipients'}${where} (${moneyText(total)} in all${scaled}).`;
+    text = `The Treasury handed ${moneyText(each)} to each of ${withCommas(n)} ${GROUP_PLURAL[a.group] ?? 'recipients'}${where} (${moneyText(total)} in all${scaled}).`;
   } else {
-    text = `The Treasury collected up to ${moneyText(a.amount)} from each of ${withCommas(n)} ${GROUP_TEXT[a.group] ?? 'people'}${where} (${moneyText(total)} in all).`;
+    text = `The Treasury collected up to ${moneyText(a.amount)} from each of ${withCommas(n)} ${GROUP_PLURAL[a.group] ?? 'people'}${where} (${moneyText(total)} in all).`;
   }
   policyNews(s, text, a.town);
   return { ok: true, message: text };
@@ -1085,7 +1151,11 @@ function countRecipients(s: SimState, group: TransferGroup, town: TownId): numbe
 export function executeTransfer(s: SimState, group: TransferGroup, town: TownId, amount: number, dir: 1 | -1): number {
   if (!(amount > 0) || !Number.isFinite(amount)) return 0;
   if (group === 'bank') {
-    return dir === 1 ? pay(s, STATE, BANK, amount, 'recap') : pay(s, BANK, STATE, amount, 'transfer');
+    if (dir === 1) return pay(s, STATE, BANK, amount, 'recap');
+    // A seizure takes at most the Bank's own capital (and reserves): the ledger lets the Bank
+    // pay any sum, which would sink its capital below zero and bail in every depositor.
+    const take = Math.min(amount, bankClaimRoom(s));
+    return take > 0 ? pay(s, BANK, STATE, take, 'transfer') : 0;
   }
   let each = amount;
   if (dir === 1 && !s.treasury.autoMint) {
@@ -1163,7 +1233,10 @@ export function policyBeginDay(s: SimState): void {
   if (t.givesSuspended && !was) policyNews(s, 'The Purse is empty: every payment the Treasury has promised is on hold until money comes in.');
   else if (!t.givesSuspended && was) policyNews(s, "The Purse holds money again; the Treasury's promised payments resume.");
 
-  // Treasury workforce per town
+  // Treasury workforce per town. With auto-mint off the crews are capped at what the Purse
+  // can pay today (none while payments are on hold): otherwise the Treasury keeps hiring
+  // people it cannot pay, who then count as employed while earning nothing.
+  let budget = t.autoMint ? Infinity : t.givesSuspended ? 0 : Math.max(0, t.purse);
   for (const f of s.firms) {
     if (!f || !f.alive || f.sector !== 'stateworks') continue;
     let target = 0;
@@ -1171,11 +1244,19 @@ export function policyBeginDay(s: SimState): void {
     for (const o of P.orders) {
       if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== f.town || o.side !== 'buy') continue;
       if (orderExhausted(o)) continue;
-      target += o.qty;
+      // Never more workers than the order's remaining worker-days.
+      target += o.total >= 0 ? Math.min(o.qty, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : o.qty;
       if (o.price > wage) wage = o.price;
     }
-    f.target = Math.max(0, Math.round(target));
+    target = Math.max(0, Math.round(target));
     if (target > 0 && wage > 0) f.wage = wage;
+    if (target > 0 && budget < Infinity) {
+      const w = f.wage > 0 ? f.wage : wage;
+      const afford = w > 0 ? Math.floor(budget / w + 1e-9) : 0;
+      if (afford < target) target = afford;
+      budget -= target * w;
+    }
+    f.target = target;
   }
 }
 
@@ -1266,7 +1347,8 @@ export function playerAfterClear(s: SimState, books: Books): void {
       let left = f.workers.length;
       for (const o of orders) {
         if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== f.town) continue;
-        const n = Math.min(o.qty, left);
+        const room = o.total >= 0 ? Math.max(0, o.total - o.filled) : o.qty;
+        const n = Math.min(o.qty, left, room);
         left -= n;
         o.filledToday = n;
         o.filled += n;

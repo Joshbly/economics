@@ -38,7 +38,7 @@ import {
   WEDGE_SPCT_MIN,
 } from '../config';
 import { N_GOODS } from '../goods';
-import { FIRM_BASE, STATE } from '../types';
+import { BANK, FIRM_BASE, STATE } from '../types';
 import { pay } from '../ledger';
 import type { BuildingKind, Group, Levy, LevyBase, LevyPayer, Person, Ref, Sector, SimState, TownId, Wedge } from '../types';
 
@@ -269,6 +269,19 @@ export function levyAmount(s: SimState, base: LevyBase, payer: LevyPayer, ctx: L
 }
 
 /**
+ * Most the Bank can hand the Treasury on a claim (levy, seizure): its own capital, and
+ * no more than the reserves it holds. The ledger treats the Bank as never short of cash
+ * (it can always create deposits), so without this cap a large claim would push its
+ * capital below zero, fail it and bail in every depositor — and the excess would reach
+ * the Purse via window borrowing, i.e. unrecorded money creation.
+ */
+export function bankClaimRoom(s: SimState): number {
+  const b = s.bank;
+  const room = Math.min(b.equity, b.reserves);
+  return room > 0 && Number.isFinite(room) ? room : 0;
+}
+
+/**
  * Charge all matching levies on a flow: takes → pay(payerRef → STATE, 'levy'),
  * gives → pay(STATE → payerRef, 'give'). Records per-rule today/month/total
  * and stats.acc.levy_take / levy_give. Returns net ¤ taken (negative if net given).
@@ -283,9 +296,10 @@ export function chargeLevy(s: SimState, base: LevyBase, payerRef: Ref, payer: Le
   for (const l of levies) {
     if (l.base !== base || !levyActive(s, l)) continue;
     if (!payerMatches(l, payer) || !filtersMatch(s, l, ctx)) continue;
-    const a = ruleAmount(l, value, qty);
+    let a = ruleAmount(l, value, qty);
     if (!(a > 0)) continue;
     if (l.dir === 1) {
+      if (payerRef === BANK) a = Math.min(a, bankClaimRoom(s)); // never beyond the Bank's capital
       const paid = pay(s, payerRef, STATE, a, 'levy');
       noteRule(s, l, paid);
       net += paid;
@@ -354,7 +368,8 @@ const sGoodsPersons: Levy[] = [];
 function chargeStock(s: SimState, l: Levy, ref: Ref, amount: number, person: Person | null, firmIdx: number): void {
   if (!(amount > 0) || ref === STATE) return;
   let signed: number;
-  if (l.dir === 1) signed = pay(s, ref, STATE, amount, 'levy');
+  // A claim on the Bank (e.g. a levy on its own building) is capped at its capital.
+  if (l.dir === 1) signed = pay(s, ref, STATE, ref === BANK ? Math.min(amount, bankClaimRoom(s)) : amount, 'levy');
   else signed = -pay(s, STATE, ref, amount, 'give');
   if (!signed) return;
   noteRule(s, l, signed);

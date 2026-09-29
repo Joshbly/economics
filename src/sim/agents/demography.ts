@@ -10,14 +10,16 @@
 // coin: capital flight) — and arrive when jobs outnumber job seekers and there is
 // housing, bringing foreign coin with them.
 // Estates pass whole to one heir (cash via the ledger, IOUs, gold, pantry, firms,
-// houses, loans, projects), after any estate levy.
+// houses, loans, projects), after any estate levy. The levy is assessed on the whole
+// estate but paid from its coin first, then its IOUs and gold (at market prices);
+// buildings and firms are never taken — whatever is still owed then lapses.
 // ============================================================================
 import * as CFG from '../config';
 import * as CAL from '../calendar';
 import { newPerson } from '../factory';
 import * as GOODS_M from '../goods';
 import * as LEDGER from '../ledger';
-import { chargeLevy } from '../policy/levies';
+import { chargeLevy, matchLevies, noteRule } from '../policy/levies';
 import * as RNG from '../rng';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
@@ -371,10 +373,64 @@ function retire(p: Person): void {
   p.budget = 0;
 }
 
+/** Unsigned amount one estate rule claims on an estate of `value` (same formula as levies.ruleAmount, qty 1). */
+function estateRuleOwed(l: TYPES.Levy, value: number): number {
+  const thr = l.threshold > 0 ? l.threshold : 0;
+  let a = 0;
+  if (l.unit === 'pct') a = l.rate * Math.max(0, value - thr);
+  else if (thr > 0 && !(value > thr)) a = 0;
+  else a = l.rate; // flat / per unit (one estate)
+  return Number.isFinite(a) && a > 0 ? a : 0;
+}
+
+/**
+ * Charge 'estate' levies (payer 'receiver') on the estate value before it passes on.
+ * Fix: the claim is assessed on everything (cash, IOUs, gold, buildings, firms) but
+ * chargeLevy can only take coin, so a 40 % rule on a firm owner collected ~4 % and all
+ * the coin. Now each take rule's shortfall is collected in kind, still before the heir
+ * inherits: IOUs pass to the Treasury (and are retired: iouOutstanding −= q), then gold,
+ * both at market prices (the prices estateValue uses). If still short, nothing more is
+ * taken — buildings and firms stay with the heir. No money moves in kind, so the
+ * ledger is untouched; the rule's record counts the value collected in kind as well.
+ */
+function chargeEstate(s: SimState, p: Person): void {
+  const me = personRef(p.id);
+  const ctx = { town: p.town, person: p };
+  const value = estateValue(s, p);
+  const takes = matchLevies(s, 'estate', 'receiver', ctx).filter((l) => l.dir === 1);
+  const before = takes.map((l) => l.today);
+  chargeLevy(s, 'estate', me, 'receiver', ctx, value, 1);
+  const pIou = Math.max(0, fin(s.iouMarket?.ema, 0));
+  const pGold = Math.max(0, fin(s.goldMarket?.ema, 0));
+  const t = s.treasury;
+  for (let i = 0; i < takes.length; i++) {
+    const l = takes[i];
+    let short = estateRuleOwed(l, value) - (l.today - before[i]);
+    if (!(short > 1e-9)) continue;
+    let got = 0;
+    if (p.iou > 1e-12 && pIou > 0) {
+      const q = Math.min(p.iou, short / pIou);
+      p.iou -= q;
+      t.iouOutstanding = Math.max(0, t.iouOutstanding - q); // retired
+      got += q * pIou;
+      short -= q * pIou;
+      bump(s, 'estate_iou', q);
+    }
+    if (short > 1e-9 && p.gold > 1e-12 && pGold > 0) {
+      const q = Math.min(p.gold, short / pGold);
+      p.gold -= q;
+      t.gold += q;
+      got += q * pGold;
+      bump(s, 'estate_gold', q);
+    }
+    if (got > 0) noteRule(s, l, got);
+  }
+}
+
 /**
  * A person dies: leave job and home; estate = cash, IOUs, gold, owned firms and
  * houses. Charge 'estate' levies (payer 'receiver' on the estate value, taken from
- * the estate's cash before it passes on), then pass everything to an heir (a
+ * the estate's cash, then IOUs and gold — see chargeEstate), then pass everything to an heir (a
  * random living person, preferably in the same town) — cash via ledger.pay
  * (flow 'estate'); ownership refs updated (firm.owner, building.owner,
  * person.owns/houses). With no heir, everything goes to the Treasury.
@@ -387,7 +443,7 @@ export function killPerson(s: SimState, p: Person, cause: 'age' | 'hunger' | 'ot
   const ownedFirm = s.firms.find((f) => f && f.alive && f.owner === me);
   leaveJob(s, p);
   leaveHome(s, p);
-  if (hasLevyBase(s, 'estate')) chargeLevy(s, 'estate', me, 'receiver', { town, person: p }, estateValue(s, p), 1);
+  if (hasLevyBase(s, 'estate')) chargeEstate(s, p);
   if (p.cash > 0) pay(s, me, heir ? personRef(heir.id) : STATE, p.cash, 'estate');
   passAssets(s, p, heir);
   retire(p);

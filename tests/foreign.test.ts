@@ -72,7 +72,7 @@ describe('foreign ships at the port', () => {
     let books = openBooks(s);
     foreignOrders(s, books);
     const a = bookFor(books, 1, G.iron).asks.find((o) => o.ref === FOREIGN)!;
-    expect(a.xPct).toBeCloseTo(0.25, 10);
+    expect(a.xPct).toBeCloseTo(0.25 / 1.25, 10); // a 25 % rule charged to buyers: they pay the ships' price × 1.25
 
     // A domestic buyer pays the duty-inclusive price; the Treasury collects the duty.
     const buyer = newPerson(s, 1, 'Smith');
@@ -83,9 +83,9 @@ describe('foreign ships at the port', () => {
     const purse0 = s.treasury.purse;
     clearAll(s, books);
     expect(buyer.pantry[G.iron]).toBeCloseTo(5, 8);
-    const base = (13 * (1 + IMPORT_MARKUP)) / (1 - 0.25);
+    const base = 13 * (1 + IMPORT_MARKUP) * 1.25;
     expect(s.markets[1 * N_GOODS + G.iron].price).toBeCloseTo(base, 6);
-    expect(s.treasury.purse - purse0).toBeCloseTo(0.25 * base * 5, 6);
+    expect(s.treasury.purse - purse0).toBeCloseTo(0.25 * 13 * (1 + IMPORT_MARKUP) * 5, 6);
     expect(s.foreign.coin - coin0).toBeCloseTo(13 * (1 + IMPORT_MARKUP) * 5, 6);
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
 
