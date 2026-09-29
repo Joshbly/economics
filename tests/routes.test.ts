@@ -104,7 +104,7 @@ describe('supply routes — placing', () => {
 
     const r = dispatch(s, { ...buy, route: { to: 1, sell: 'cost' } });
     expect(r.ok, r.message).toBe(true);
-    expect(r.message).toMatch(/^The Treasury will buy up to 20 loaves of bread a day in Millbrook, paying at most ¤4\.50 each, carry it to Kingsbridge and offer it there at landed cost\./);
+    expect(r.message).toMatch(/^The Treasury will buy up to 20 loaves of bread a day in Millbrook, paying at most ¤4\.50 each, carry it to Kingsbridge in full wagons and offer it there at landed cost\./);
     const o = route(s, r.id!);
     expect(o.route).toMatchObject({ to: 1, sell: 'cost', sellMargin: 0, inTransit: 0, waiting: 0, landed: 0, shippedTotal: 0, soldTotal: 0, freightPaid: 0, revenue: 0 });
     expect(o.label).toMatch(/→ Kingsbridge$/);
@@ -128,7 +128,7 @@ describe('supply routes — buy, carry, sell', () => {
     const { s, trader, bakery } = world();
     s.treasury.autoMint = true;
     bakery.inv[G.bread] = 60;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost', sellMargin: 0.1 } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost', dispatch: 'daily', sellMargin: 0.1 } }).id!;
     const o = route(s, id);
     const cash0 = trader.cash;
     const purse0 = s.treasury.purse;
@@ -203,9 +203,10 @@ describe('supply routes — buy, carry, sell', () => {
   it('keeps what a route holds at its origin from the Treasury’s other sell orders there', () => {
     const { s } = world();
     s.treasury.autoMint = true;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 100, route: { to: 1, sell: 'cost' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 100, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
     const o = route(s, id);
     o.filled = 30; // bought 30, none loaded yet (e.g. the Purse could not pay the freight)
+    o.enabled = false; // not buying today (its bid would otherwise cancel against the sell order: no self-trade)
     s.treasury.goods[0][G.bread] = 50;
     dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'sell', price: 1, qty: 100 });
     expect(heldAtOrigin(s, o)).toBeCloseTo(30);
@@ -220,8 +221,8 @@ describe('supply routes — buy, carry, sell', () => {
   it('offers at a fixed floor or for whatever it fetches', () => {
     const { s } = world();
     s.treasury.autoMint = true;
-    const a = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 5, route: { to: 1, sell: 'fixed', sellPrice: 3.3 } }).id!;
-    const b = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 5, route: { to: 1, sell: 'market' } }).id!;
+    const a = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 5, route: { to: 1, sell: 'fixed', dispatch: 'daily', sellPrice: 3.3 } }).id!;
+    const b = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 5, route: { to: 1, sell: 'market', dispatch: 'daily' } }).id!;
     s.treasury.goods[1][G.bread] = 20;
     route(s, a).route!.waiting = 8;
     route(s, b).route!.waiting = 12;
@@ -268,7 +269,7 @@ describe('supply routes — buy, carry, sell', () => {
     s.treasury.autoMint = false;
     bakery.inv[G.bread] = 100;
     mint(s, 300 + 1); // the bread (100 at ¤3) and a coin: not the freight
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 3, qty: 100, route: { to: 1, sell: 'cost' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 3, qty: 100, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
     const o = route(s, id);
     marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 100), true);
     expect(o.filled).toBeCloseTo(100);
@@ -291,7 +292,7 @@ describe('supply routes — buy, carry, sell', () => {
     const { s, bakery } = world();
     s.treasury.autoMint = true;
     bakery.inv[G.bread] = 120;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
     const o = route(s, id);
     marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60));
     marketDay(s);
@@ -393,5 +394,27 @@ describe('supply routes — saving and loading', () => {
     raw2.policy.orders[0].route.to = 99;
     expect(deserialize(JSON.stringify(raw2)).policy.orders[0].route).toBeNull();
     expect(serialize(old).length).toBeGreaterThan(0);
+  });
+});
+
+describe('supply routes — full wagons', () => {
+  it('holds purchases for a fuller wagon, within what the good keeps, and rushes on request', async () => {
+    const { routeHoldDays, routeLoadToday } = await import('../src/sim/policy/routes');
+    const { ROUTE_FULL_SHARE, WAGON_CAPACITY } = await import('../src/sim/config');
+    expect(routeHoldDays(G.bread)).toBe(2); // 5 % a day: ~10 % lost after 2 days
+    expect(routeHoldDays(G.tools)).toBe(7); // durable: at most a week
+    const full = ROUTE_FULL_SHARE * WAGON_CAPACITY;
+    // still buying, a part load that has not waited long: keep collecting
+    expect(routeLoadToday(30, 'full', true, 0, G.tools, 0)).toBe(0);
+    // a nearly full wagon leaves
+    expect(routeLoadToday(full, 'full', true, 0, G.tools, 0)).toBeCloseTo(full, 9);
+    // two and a half wagons: two full ones leave, the half waits
+    expect(routeLoadToday(2.5 * WAGON_CAPACITY, 'full', true, 0, G.tools, 0)).toBeCloseTo(2 * WAGON_CAPACITY, 9);
+    // waited as long as bread keeps: everything leaves
+    expect(routeLoadToday(30, 'full', true, 2, G.bread, 0)).toBe(30);
+    // a freight line with room takes it at once; rush sends daily; the end of buying sends all
+    expect(routeLoadToday(30, 'full', true, 0, G.tools, 50)).toBe(30);
+    expect(routeLoadToday(30, 'daily', true, 0, G.tools, 0)).toBe(30);
+    expect(routeLoadToday(30, 'full', false, 0, G.tools, 0)).toBe(30);
   });
 });

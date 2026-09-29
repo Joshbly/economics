@@ -11,7 +11,8 @@
 // placeOrder with `route`. Also exports the quote maths and a plain sentence
 // for route orders (used by the In force list and the flows view).
 // ============================================================================
-import { PLAYER_MAX_PRICE, PLAYER_MAX_QTY, ROUTE_HOLD_DAYS, ROUTE_LOAD_SHARE, ROUTE_MARGIN_MAX, ROUTE_MARGIN_MIN, TREASURY_FREIGHT_PREMIUM, WAGON_CAPACITY } from '../../../sim/config';
+import { PLAYER_MAX_PRICE, PLAYER_MAX_QTY, ROUTE_FULL_SHARE, ROUTE_MARGIN_MAX, ROUTE_MARGIN_MIN, ROUTE_MAX_HOLD_DAYS, TREASURY_FREIGHT_PREMIUM, WAGON_CAPACITY } from '../../../sim/config';
+import { routeHoldDays } from '../../../sim/policy/routes';
 import { freightPerUnit, traderOf } from '../../../sim/agents/traders';
 import { GOODS, G, N_GOODS } from '../../../sim/goods';
 import { routeBetweenTowns } from '../../../sim/world/paths';
@@ -52,14 +53,17 @@ export interface Haul {
 }
 
 /**
- * How a route buying `q` a day loads its wagons (mirrors player.shipRoutes): the goods wait
- * at the origin until they fill ROUTE_LOAD_SHARE of a wagon or amount to ROUTE_HOLD_DAYS of
- * buying, whichever is less; then everything waiting leaves together.
+ * How a route buying `q` a day loads its wagons (mirrors player.shipRoutes / routes.routeLoadToday):
+ * 'full' — purchases wait until they fill ROUTE_FULL_SHARE of a wagon, or until they have waited as
+ * long as the good keeps (routeHoldDays: bread 2 days); 'daily' — they leave every day.
  */
-export function routeLoad(q: number): { load: number; every: number } {
+export function routeLoad(q: number, good = -1, dispatch: 'full' | 'daily' = 'full'): { load: number; every: number } {
   if (!(q > 0)) return { load: WAGON_CAPACITY, every: 1 };
-  const thr = Math.min(ROUTE_LOAD_SHARE * WAGON_CAPACITY, ROUTE_HOLD_DAYS * q);
-  const every = q >= thr - 1e-9 ? 1 : Math.ceil(thr / q - 1e-9);
+  if (dispatch === 'daily') return { load: q, every: 1 };
+  const fill = ROUTE_FULL_SHARE * WAGON_CAPACITY;
+  if (q >= fill - 1e-9) return { load: q, every: 1 };
+  const hold = good >= 0 ? routeHoldDays(good) : ROUTE_MAX_HOLD_DAYS;
+  const every = Math.min(Math.ceil(fill / q - 1e-9), hold + 1);
   return { load: every * q, every };
 }
 
@@ -68,14 +72,14 @@ export function routeLoad(q: number): { load: number; every: number } {
  * house's full-wagon trip cost (traders.freightPerUnit) plus TREASURY_FREIGHT_PREMIUM,
  * paid per wagon — so loads below a wagonful cost more per unit.
  */
-export function haul(s: SimState, a: number, b: number, qty: number): Haul {
+export function haul(s: SimState, a: number, b: number, qty: number, good = -1, dispatch: 'full' | 'daily' = 'full'): Haul {
   const out: Haul = { ok: false, reason: '', perUnitFull: NaN, perUnit: NaN, load: 0, every: 1, wagons: 0, days: NaN };
   if (a === b) return { ...out, reason: 'Choose a different town to carry the goods to.' };
   const fpu = safe(() => freightPerUnit(s, a, b), -1);
   if (!(fpu >= 0)) return { ...out, reason: `No wagon road links ${townName(s, a)} and ${townName(s, b)}.` };
   if (!safe(() => traderOf(s, a), undefined)) return { ...out, reason: `There is no trading house in ${townName(s, a)} to carry the goods.` };
   const full = fpu * (1 + TREASURY_FREIGHT_PREMIUM);
-  const { load, every } = routeLoad(qty);
+  const { load, every } = routeLoad(qty, good, dispatch);
   const wagons = Math.max(1, Math.ceil(load / WAGON_CAPACITY - 1e-9));
   const days = safe(() => routeBetweenTowns(s, a, b).days, NaN);
   return { ok: true, reason: '', perUnitFull: full, perUnit: (full * WAGON_CAPACITY * wagons) / load, load, every, wagons, days };
@@ -94,8 +98,8 @@ export interface RouteQuote {
 }
 
 /** Unit economics of a route at today's prices, before anyone reacts. */
-export function routeQuote(s: SimState, a: number, b: number, g: number, limit: number, qty: number, mode: SellMode, sellPrice: number, margin: number): RouteQuote {
-  const hl = haul(s, a, b, qty);
+export function routeQuote(s: SimState, a: number, b: number, g: number, limit: number, qty: number, mode: SellMode, sellPrice: number, margin: number, dispatch: 'full' | 'daily' = 'full'): RouteQuote {
+  const hl = haul(s, a, b, qty, g, dispatch);
   const refA = priceIn(s, a, g);
   const refB = priceIn(s, b, g);
   const buy = limit > 0 ? (refA > 0 ? Math.min(limit, refA) : limit) : refA;
@@ -235,7 +239,17 @@ export function routeComposer(): RouteComposer {
     edited();
   }, `Buy a full wagonload (${WAGON_CAPACITY}) a day: the freight per unit is lowest when the wagons leave full`);
   const fillRow = h('div', { class: 'lv-chips' }, fillChip);
-  const step2 = step('2', 'Carry', h('div', { class: 'lv-step-line' }, h('span', { class: 'lv-w' }, 'by wagon to'), toSel.el), carryHint, fillRow);
+  let dispatch: 'full' | 'daily' = 'full';
+  const dispatchSeg = segmented<'full' | 'daily'>({
+    options: [
+      { value: 'full', label: 'Full wagons', title: 'Purchases wait for a nearly full wagon — or until they have waited as long as they keep — so freight per unit stays low' },
+      { value: 'daily', label: 'Every day', title: 'Rush: whatever was bought leaves each day — quicker, dearer per unit when loads are small' },
+    ],
+    value: dispatch,
+    size: 'sm',
+    onChange: (v) => ((dispatch = v), edited()),
+  });
+  const step2 = step('2', 'Carry', h('div', { class: 'lv-step-line' }, h('span', { class: 'lv-w' }, 'by wagon to'), toSel.el), h('div', { class: 'lv-step-line' }, dispatchSeg.el), carryHint, fillRow);
 
   // ---- ③ offer -----------------------------------------------------------------
   const modeSeg = segmented<SellMode>({
@@ -335,7 +349,7 @@ export function routeComposer(): RouteComposer {
         if (b === a) continue;
         const Bp = priceIn(s, b, good);
         if (!(Bp > 0)) continue;
-        const hl = haul(s, a, b, q);
+        const hl = haul(s, a, b, q, good);
         if (!hl.ok) continue;
         const gap = Bp - A - hl.perUnit;
         if (gap > best) {
@@ -460,7 +474,7 @@ export function routeComposer(): RouteComposer {
     // A following limit is quoted at today's value (a patient one starts at the going price); 'any price' at the going price.
     const p = fixedBuy ? price.value : bmode === 'any' || patientBuy ? goingA : goingA * (1 + bandOf(bmode));
     const q = qty.value;
-    const Q = routeQuote(s, from, to, good, p, q, mode, sellPrice.value, margin.value);
+    const Q = routeQuote(s, from, to, good, p, q, mode, sellPrice.value, margin.value, dispatch);
     const hl = Q.haul;
     // ① buy hint
     const rel = Q.refA > 0 && p > 0 ? p / Q.refA - 1 : NaN;
@@ -490,7 +504,7 @@ export function routeComposer(): RouteComposer {
     }
     show(fillRow, hl.ok && q > 0 && hl.perUnit > hl.perUnitFull * 1.02);
     carryHint.title = hl.ok
-      ? `Paid from the Purse to ${townName(s, from)}’s trading house for every wagon: its carters’ wages, fuel and wagon wear for the round trip, plus ${fmtPct(TREASURY_FREIGHT_PREMIUM)}. A part-filled wagon costs as much as a full one, so purchases wait in ${townName(s, from)} until they fill half a wagon or ${ROUTE_HOLD_DAYS} days of buying.`
+      ? `Paid from the Purse to ${townName(s, from)}’s trading house for every wagon: its carters’ wages, fuel and wagon wear for the round trip, plus ${fmtPct(TREASURY_FREIGHT_PREMIUM)}. A part-filled wagon costs as much as a full one: with Full wagons, purchases wait in ${townName(s, from)} until a wagon is ${fmtPct(ROUTE_FULL_SHARE)} full or they have waited ${plural(routeHoldDays(good), 'day')} (as long as ${goodName(good).toLowerCase()} keeps); a Treasury freight line on the road takes them at once. Every day sends them daily.`
       : '';
     // ③ offer hint
     if (mode === 'market') setText(wMarket, `Everything that arrives is offered in ${townName(s, to)}’s auction at any price. When buyers are few, a large delivery sells for little.`);
@@ -545,7 +559,7 @@ export function routeComposer(): RouteComposer {
     if (!(q > 0)) return msg.err(qty.error ?? 'Set how many to buy a day.');
     if (from === to) return msg.err('Choose a different town to carry the goods to.');
     if (total.error) return msg.err(total.error);
-    const route: { to: number; sell: SellMode; sellPrice?: number; sellMargin?: number } = { to, sell: mode };
+    const route: { to: number; sell: SellMode; sellPrice?: number; sellMargin?: number; dispatch?: 'full' | 'daily' } = { to, sell: mode, dispatch };
     if (mode === 'fixed') {
       if (!(sellPrice.value > 0)) return msg.err(sellPrice.error ?? 'Set the lowest price to ask (above zero).');
       route.sellPrice = sellPrice.value;

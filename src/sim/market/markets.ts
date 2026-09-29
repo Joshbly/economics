@@ -206,6 +206,44 @@ const VOID_BOOK: PooledBook = makeBook(-1, -1);
 const _xo: Extras = { pct: 0, unit: 0 };
 
 /** The book of a market: goods by town, IOU_GOOD → books.iou, GOLD_GOOD → books.gold. Invalid → a detached book that never clears. */
+/**
+ * Self-trade prevention: in each book, the Treasury's own bids and asks that would cross
+ * (a bid at or above an ask) cancel each other before the auction — the Treasury does not
+ * buy from itself. Highest bids meet lowest asks first; both lose the matched quantity, and
+ * only what is left goes to market. Returns the quantity cancelled (all books).
+ */
+export function netStateOrders(books: Books): number {
+  let total = 0;
+  const all: Book[] = [...books.goods, books.iou, books.gold];
+  for (const book of all) {
+    const so = (book as PooledBook | undefined)?.stateOrders;
+    if (!so || so.length < 2) continue;
+    const bids: Order[] = [];
+    const asks: Order[] = [];
+    for (const o of so) if (o.qty > 1e-12) (o.side === 0 ? bids : asks).push(o);
+    if (!bids.length || !asks.length) continue;
+    bids.sort((a, b) => b.limit - a.limit);
+    asks.sort((a, b) => a.limit - b.limit);
+    let i = 0;
+    let j = 0;
+    while (i < bids.length && j < asks.length && bids[i].limit >= asks[j].limit) {
+      const n = Math.min(bids[i].qty, asks[j].qty);
+      bids[i].qty -= n;
+      asks[j].qty -= n;
+      total += n;
+      if (bids[i].qty <= 1e-12) {
+        bids[i].qty = 0;
+        i++;
+      }
+      if (asks[j].qty <= 1e-12) {
+        asks[j].qty = 0;
+        j++;
+      }
+    }
+  }
+  return total;
+}
+
 export function bookFor(books: Books, town: TownId, good: number): Book {
   if (good === IOU_GOOD) return books.iou;
   if (good === GOLD_GOOD) return books.gold;

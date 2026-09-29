@@ -18,10 +18,11 @@
 import { GOODS, N_GOODS } from '../../../sim/goods';
 import { routeBetweenTowns } from '../../../sim/world/paths';
 import { describeOrder } from '../../../sim/policy/player';
-import { heldAtOrigin, routeFloor } from '../../../sim/policy/routes';
+import { heldAtOrigin, routeFloor, routeHoldDays } from '../../../sim/policy/routes';
+import { ROUTE_FULL_SHARE, WAGON_CAPACITY } from '../../../sim/config';
 import { STATE, type PlayerOrder, type Shipment, type SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
-import { fmtNum, fmtPrice, plural } from '../../format';
+import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { centerMap, ui } from '../../uiState';
 import { attachTip, icon, swatch, tipNote, tipTitle, toggle } from '../../widgets';
 import { bar, fin, flowTone, fmtM, fmtMS, fmtQ, goodName, keyedList, run, safe, signedMoney, townName, TONES, unitsOf } from './common';
@@ -141,8 +142,18 @@ export function pipeline(opts: { compact?: boolean } = {}): Pipeline {
       const g = o.market.kind === 'good' ? o.market.good : 0;
       setText(bought.v, fmtQ(fin(o.filledToday)));
       const held = safe(() => heldAtOrigin(s, o), 0);
-      setText(bought.sub, held > 0.005 ? `${fmtQ(held)} held` : buyingOver(s, o) ? 'buying over' : 'today');
-      bought.el.title = `Bought today in ${townName(s, o.market.kind === 'good' ? o.market.town : -1)} (at most ${fmtQ(o.qty)} a day)${held > 0.005 ? `; ${fmtQ(held)} held there, waiting for a wagon` : ''}`;
+      const daily = r?.dispatch === 'daily';
+      const fillPct = Math.round((100 * held) / WAGON_CAPACITY);
+      const waited = r && r.heldSince !== undefined && r.heldSince >= 0 ? s.day - r.heldSince : 0;
+      const hold = safe(() => routeHoldDays(g), 1);
+      setText(bought.sub, held > 0.005 ? (daily ? `${fmtQ(held)} held` : `loading ${fillPct}%`) : buyingOver(s, o) ? 'buying over' : 'today');
+      bought.el.title =
+        `Bought today in ${townName(s, o.market.kind === 'good' ? o.market.town : -1)} (at most ${fmtQ(o.qty)} a day)` +
+        (held > 0.005
+          ? daily
+            ? `; ${fmtQ(held)} held there, leaving with the next wagon`
+            : `; ${fmtQ(held)} held there, filling a wagon (${fillPct}% of ${WAGON_CAPACITY}): it leaves when ${fmtPct(ROUTE_FULL_SHARE)} full or after ${plural(hold, 'day')} of waiting (${plural(waited, 'day')} so far)`
+          : '');
       setText(road.v, fmtQ(fin(r?.inTransit)));
       let next = Infinity;
       let nWag = 0;
@@ -305,6 +316,9 @@ function routeRow(o: PlayerOrder, state: () => SimState | null): RouteRow {
     offerChip('at cost', 'Offer the goods at what they cost to buy and carry', { sell: 'cost', sellMargin: 0 }),
     offerChip('cost + 10%', 'Offer them at landed cost plus 10%', { sell: 'cost', sellMargin: 0.1 }),
     offerChip('any price', 'Offer them for whatever the destination auction pays', { sell: 'market' }),
+    h('span', { class: 'lv-rt-offer-k' }, 'Wagons:'),
+    h('button', { class: 'chip lv-chip', type: 'button', title: 'Wait for a nearly full wagon (or as long as the goods keep): low freight per unit', onClick: () => run({ type: 'updateOrder', id, patch: { route: { dispatch: 'full' } } }, null) }, 'full'),
+    h('button', { class: 'chip lv-chip', type: 'button', title: 'Rush: send whatever was bought every day — and what is held now, tonight', onClick: () => run({ type: 'updateOrder', id, patch: { route: { dispatch: 'daily' } } }, null) }, 'every day'),
   );
   const el = h(
     'div',

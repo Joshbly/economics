@@ -397,7 +397,9 @@ function paintOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
   setText(v.side, labor ? 'Hire' : o.market.kind === 'iou' ? (o.side === 'buy' ? 'Retire' : 'Issue') : o.side === 'buy' ? 'Buy' : 'Sell');
   setTone(v.side, TONES, o.side === 'buy' ? 'gold' : null);
   setText(v.title, orderTitle(s, o));
-  setText(v.desc, tersely(safe(() => describeOrder(s, o), o.label)));
+  const netted = fin(o.nettedToday);
+  const words = tersely(safe(() => describeOrder(s, o), o.label));
+  setText(v.desc, netted > 1e-6 ? `${words} Today ${fmtQ(netted)} cancelled against your own ${o.side === 'buy' ? 'offer' : 'purchase'} in this market (the Treasury never trades with itself).` : words);
   setText(v.today.v, `${fmtQ(fin(o.filledToday))} of ${fmtQ(o.qty)}${o.market.kind === 'gold' ? ' oz' : ''}`);
   setText(v.all.v, fmtQ(fin(o.filled)) + (o.total >= 0 ? ` / ${fmtQ(o.total)}` : ''));
   // value: positive = spent from the Purse

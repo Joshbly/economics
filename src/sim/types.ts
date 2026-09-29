@@ -653,6 +653,8 @@ export interface PlayerOrder {
   pace?: OrderPace;
   /** 'patient' orders: today's step away from the going price (fraction within ±band; + = pays more / accepts less). */
   offset?: number;
+  /** Units of today's order cancelled against the Treasury's own opposite order in the same market (it never trades with itself). */
+  nettedToday?: number;
   /**
    * Labour orders only. 'projects': each morning the number of people employed is re-set to
    * what the Treasury's building projects in the town can use (construction.treasuryCrewWanted),
@@ -688,6 +690,17 @@ export interface OrderRoute {
   soldTotal: number; // lifetime units sold at the destination
   freightPaid: number; // lifetime ¤ of freight
   revenue: number; // lifetime ¤ received from sales at the destination
+  /** Units of today's offer cancelled against a Treasury purchase in the same market. */
+  nettedToday?: number;
+  /**
+   * How purchases leave for the destination: 'full' (the default) — a wagon leaves once it is
+   * ROUTE_FULL_SHARE full, once the goods have waited as long as they keep (routes.routeHoldDays),
+   * once a Treasury freight line on the road has room, or when the buying ends; 'daily' — what was
+   * bought leaves every day (quicker, dearer per unit when loads are small).
+   */
+  dispatch?: 'full' | 'daily';
+  /** Day the purchases now waiting to be loaded began collecting (−1 / absent: none waiting). */
+  heldSince?: number;
 }
 
 /** How a Treasury freight line charges for what it carries: a fixed ¤ per unit, its own running cost per unit, or nothing. */
@@ -767,7 +780,7 @@ export type PlayerAction =
       once?: boolean;
       label?: string;
       /** Goods BUY orders only: carry everything bought to another town and offer it there. */
-      route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
+      route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number; dispatch?: 'full' | 'daily' };
       /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Labour: 'fixed' or 'follow' (the going wage + band). */
       priceMode?: OrderPriceMode;
       band?: number;
@@ -783,7 +796,7 @@ export type PlayerAction =
         /** Labour orders: 'projects' = staff the town's Treasury projects automatically; 'fixed' = a set number. */
         staff?: 'projects' | 'fixed';
         /** Supply routes only: change how goods are offered at the destination. */
-        route?: { sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
+        route?: { sell?: OrderRoute['sell']; sellPrice?: number; sellMargin?: number; dispatch?: 'full' | 'daily' };
       };
     }
   | { type: 'cancelOrder'; id: number }

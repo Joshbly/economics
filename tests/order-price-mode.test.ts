@@ -113,3 +113,23 @@ describe('orders that follow the market', () => {
     expect(m.ema).toBeGreaterThan(m.ownEma!); // … and the smoothed price, but not the market's own
   });
 });
+
+describe('the Treasury never trades with itself', () => {
+  it('crossing buy and sell orders in one market cancel; only the difference goes to market', () => {
+    const { g, s, town } = setup();
+    g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.bread }, side: 'buy', price: 99, qty: 60, once: true });
+    g.step(1);
+    const held = s.treasury.goods[town][G.bread];
+    expect(held).toBeGreaterThan(30);
+    const b = g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.bread }, side: 'buy', price: 50, qty: 20 });
+    const a = g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.bread }, side: 'sell', price: 0.5, qty: 30 });
+    g.step(1);
+    const ob = s.policy.orders.find((x) => x.id === b.id)!;
+    const oa = s.policy.orders.find((x) => x.id === a.id)!;
+    expect(ob.nettedToday).toBeCloseTo(20, 9);
+    expect(oa.nettedToday).toBeCloseTo(20, 9);
+    expect(ob.filledToday).toBe(0); // it did not buy its own bread
+    expect(oa.filledToday).toBeLessThanOrEqual(10 + 1e-9); // only the net 10 went to market
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+});

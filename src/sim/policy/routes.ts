@@ -26,7 +26,35 @@
 import { GOODS, N_GOODS } from '../goods';
 import { STATE } from '../types';
 import type { OrderRoute, PlayerOrder, Shipment, SimState } from '../types';
-import { ROUTE_MARKET_FLOOR_SHARE } from '../config';
+import { ROUTE_FULL_SHARE, ROUTE_MARKET_FLOOR_SHARE, ROUTE_MAX_HOLD_DAYS, ROUTE_SPOIL_BUDGET, WAGON_CAPACITY } from '../config';
+
+/**
+ * Days a route's purchases may wait at the origin for a fuller wagon: until waiting longer would
+ * cost the good more than ROUTE_SPOIL_BUDGET to spoilage (bread 2, ale 3), at most ROUTE_MAX_HOLD_DAYS.
+ */
+export function routeHoldDays(good: number): number {
+  const sp = GOODS[good]?.spoil ?? 0;
+  if (!(sp > 0)) return ROUTE_MAX_HOLD_DAYS;
+  const d = Math.floor(Math.log(1 - ROUTE_SPOIL_BUDGET) / Math.log(1 - sp) + 1e-9);
+  return Math.max(1, Math.min(ROUTE_MAX_HOLD_DAYS, d));
+}
+
+/**
+ * How much of what a route holds at its origin leaves today ('full' routes: whole wagons at least
+ * ROUTE_FULL_SHARE full, or everything once it has waited routeHoldDays or a freight line has room;
+ * 'daily' routes, and routes whose buying is over: everything). 0 = keep collecting.
+ */
+export function routeLoadToday(held: number, dispatch: 'full' | 'daily', buying: boolean, age: number, good: number, lineRoom: number): number {
+  if (!(held > 1e-6)) return 0;
+  if (dispatch === 'daily' || !buying) return held;
+  if (lineRoom > 0.5 || age >= routeHoldDays(good)) return held;
+  const perWagon = ROUTE_FULL_SHARE * WAGON_CAPACITY;
+  if (held < perWagon - 1e-6) return 0;
+  // whole wagons only: the last one at least ROUTE_FULL_SHARE full
+  const wagons = Math.floor(held / WAGON_CAPACITY);
+  const rest = held - wagons * WAGON_CAPACITY;
+  return rest >= perWagon - 1e-6 ? held : Math.max(perWagon, wagons * WAGON_CAPACITY);
+}
 
 /** A fresh route record (all counters zero). */
 export function newRoute(to: number, sell: OrderRoute['sell'], sellPrice: number, sellMargin: number): OrderRoute {

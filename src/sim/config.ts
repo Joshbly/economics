@@ -918,11 +918,13 @@ export const ROUTE_MARKET_FLOOR_SHARE = 0.05;
 /** Range of the margin over landed cost a route (or a move with a sale) may ask: −90 % … +1000 %. */
 export const ROUTE_MARGIN_MIN = -0.9;
 export const ROUTE_MARGIN_MAX = 10;
-/** While a supply route is still buying, its purchases leave once they fill this share of a wagon
- *  (WAGON_CAPACITY) or amount to ROUTE_HOLD_DAYS of the order's daily quantity, whichever is less:
- *  the Purse pays a whole wagon's trip however little it carries. What is left leaves when the buying ends. */
-export const ROUTE_LOAD_SHARE = 0.5;
-export const ROUTE_HOLD_DAYS = 3;
+/** A supply route that sends full wagons (OrderRoute.dispatch 'full'): a wagon leaves once it is this
+ *  full — the Purse pays a whole wagon's trip however little it carries — … */
+export const ROUTE_FULL_SHARE = 0.9;
+/** … or once the goods waiting for it would lose this share to spoilage by waiting longer (bread: 2
+ *  days), and never after more than ROUTE_MAX_HOLD_DAYS (goods that keep). */
+export const ROUTE_SPOIL_BUDGET = 0.1;
+export const ROUTE_MAX_HOLD_DAYS = 7;
 /** Bands offered for orders that follow the market (fractions of the going price). */
 export const ORDER_BANDS = [0.05, 0.1, 0.2, 0.3];
 export const ORDER_BAND_MAX = 1;
