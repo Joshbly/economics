@@ -653,14 +653,21 @@ export interface PlayerOrder {
   band: number; // fraction, for 'follow' (0.1 = within 10 % of the going price)
   /**
    * 'follow' orders (not labour): 'patient' bids as low as it can (sells: asks as much as it
-   * can) — it starts at the going price and moves by steps within the band: towards the band's
-   * edge after a day it went (partly) unfilled, back after a day it filled in full, so it settles
-   * near the best price that still gets its quantity; 'eager' always bids the band's edge.
+   * can) — each day it opens at its step (`offset`) and, when a session leaves it short, bids
+   * higher in the next (the close at the band's edge if need be); the next day opens a step below
+   * the lowest step that filled, so it keeps probing for the lowest price that gets its quantity;
+   * 'eager' always bids the band's edge.
    * Absent = 'eager' (orders from before this choice). New orders default to 'patient'.
    */
   pace?: OrderPace;
-  /** 'patient' orders: today's step away from the going price (fraction within ±band; + = pays more / accepts less). */
+  /**
+   * 'patient' orders: the step away from the going price (fraction within ±band; + = pays more /
+   * accepts less) — the day opens at it and a session left short raises it for the rest of the day;
+   * after the close it holds where tomorrow opens.
+   */
   offset?: number;
+  /** 'patient' orders: the highest step the day reached (for display). */
+  reached?: number;
   /** Units of today's order cancelled against the Treasury's own opposite order in the same market (it never trades with itself). */
   nettedToday?: number;
   /**

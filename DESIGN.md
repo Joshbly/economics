@@ -439,10 +439,17 @@ that pay ¤5 per year each, forever). Seven primitives:
      orders — markets.clearOne clears such books twice — so an order does not chase
      its own price impact): `pace: 'eager'` bids ownEma × (1 + `band`) for a buy,
      × (1 − `band`) for a sell (never below the sell floor); `pace: 'patient'` (the
-     default for new orders) bids ownEma × (1 ± `offset`), `offset` starting at 0 and
-     moving within ±band — a step (band × ORDER_PATIENT_STEP_SHARE) towards the edge
-     after a day it filled less than it asked, ORDER_PATIENT_BACK of a step back after
-     a day it filled in full. Labour orders: fixed, or `follow` = the town's going wage
+     default for new orders) opens each day at ownEma × (1 ± `offset`), `offset` starting
+     at 0 and kept within ±band; a market session that leaves it short (it filled less
+     than that session's quantity) raises the offset for the rest of the day by
+     max(step, room to the band's edge ÷ sessions left) — so the close bids the edge if
+     the opening and midday both fell short (player.stepPatient) — and the next day opens
+     a step (band × ORDER_PATIENT_STEP_SHARE, at least ORDER_PATIENT_STEP_MIN) below the
+     lowest offset at which a session filled in full, or a step above today's opening if
+     none did. A patient buy is budgeted at the band's edge. (Every buyer in a session pays
+     that session's price, so a lower limit saves money only when the Treasury's own order
+     sets the price; what a patient order mainly avoids is bidding the edge on days it
+     does not need to.) Labour orders: fixed, or `follow` = the town's going wage
      + band — the UI offers bands ORDER_BANDS (5/10/20/30%);
      `any` has no effective limit (buy: going price × ORDER_ANY_MULT; sell: the floor),
      with the daily budget reserved at going price × ORDER_ANY_BUDGET_MULT. Typing a

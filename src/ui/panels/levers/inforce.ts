@@ -325,9 +325,13 @@ function limitText(o: PlayerOrder): string {
   if (mode === 'follow') {
     const b = Math.round(fin(o.band) * 100);
     if (o.pace !== 'patient') return `market ${o.side === 'buy' ? '+' : '−'}${b}%`;
-    const now = fin(o.offset) * 100;
-    const today = Math.abs(now) < 0.05 ? 'at market' : `${(o.side === 'buy' ? now : -now) > 0 ? '+' : '−'}${Math.abs(now).toFixed(1)}%`;
-    return `market ${o.side === 'buy' ? '≤ +' : '≥ −'}${b}% · ${today}`;
+    // where it opens next (after the close: tomorrow's opening) and how high it went today
+    const pct = (x: number) => {
+      const v = (o.side === 'buy' ? x : -x) * 100;
+      return Math.abs(v) < 0.05 ? 'at market' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}%`;
+    };
+    const went = o.reached !== undefined && Math.abs(o.reached - fin(o.offset)) > 1e-4 ? ` (today ${pct(o.reached)})` : '';
+    return `market ${o.side === 'buy' ? '≤ +' : '≥ −'}${b}% · opens ${pct(fin(o.offset))}${went}`;
   }
   return (o.side === 'buy' ? '≤ ' : '≥ ') + fmtPrice(o.price);
 }

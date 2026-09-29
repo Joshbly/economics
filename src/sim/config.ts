@@ -938,12 +938,12 @@ export const CARRY_SPOIL_BUDGET = 0.1;
 export const CARRY_MAX_HOLD_DAYS = 7;
 /** Bands offered for orders that follow the market (fractions of the going price). */
 export const ORDER_BANDS = [0.05, 0.1, 0.2, 0.3];
-export const ORDER_BAND_MAX = 1;
-/** 'Patient' orders that follow the market: a day's step = this share of the band (at least ORDER_PATIENT_STEP_MIN)… */
+export const ORDER_BAND_MAX = 1; // at most 100 % above/below the going price
+/** 'Patient' orders that follow the market: a step = this share of the band (at least ORDER_PATIENT_STEP_MIN).
+ *  Within the day a session left short raises the limit by at least a step (the close bids the band's
+ *  edge); each day opens a step below the lowest step at which a session filled in full. */
 export const ORDER_PATIENT_STEP_SHARE = 0.25;
 export const ORDER_PATIENT_STEP_MIN = 0.005;
-/** …towards the band's edge after a day short of its quantity; back by this share of a step after a day it filled. */
-export const ORDER_PATIENT_BACK = 0.25; // at most 100 % above/below the going price
 /** 'Any price' buys bid up to this multiple of the going price (effectively unlimited)... */
 export const ORDER_ANY_MULT = 25;
 /** ...and the Purse is budgeted as if they fill at this multiple (settlement scales fills that cannot be paid). */

@@ -35,7 +35,6 @@ import {
   ORDER_ANY_BUDGET_MULT,
   ORDER_ANY_MULT,
   ORDER_BAND_MAX,
-  ORDER_PATIENT_BACK,
   ORDER_PATIENT_STEP_MIN,
   ORDER_PATIENT_STEP_SHARE,
   BANK_MIN_CAPITAL,
@@ -1271,8 +1270,8 @@ function priceTerms(s: SimState, o: LimitSpec, unit: string): string {
     const b = pctText(o.band);
     const today = moneyText(effectiveOrderLimit(s, o));
     return o.side === 'buy'
-      ? `bidding as low as it can — from the going price, stepping up to at most ${b} above it on days it goes short and back down on days it fills (${today}${unit} today)`
-      : `asking as much as it can — from the going price, stepping down to at most ${b} below it on days it does not sell out and back up on days it does (${today}${unit} today)`;
+      ? `bidding as low as it can — it opens near the going price (${today}${unit} today), bids higher at midday and the close only when a session leaves it short, never more than ${b} above the going price, and each day opens a step below what it needed the day before`
+      : `asking as much as it can — it opens near the going price (${today}${unit} today), asks less at midday and the close only when a session leaves it unsold, never less than ${b} below the going price, and each day opens a step above what it needed the day before`;
   }
   if (mode === 'follow') {
     const b = pctText(o.band);
@@ -2015,6 +2014,14 @@ interface Submitted {
   askedDay?: number;
   nettedDay?: number;
   filledDay?: number;
+  /** Patient orders: the step the day opened at, and the lowest step at which a session filled in full. */
+  open?: number;
+  firstFull?: number;
+}
+
+/** A patient order that follows the market (goods, IOUs, gold): it steps within the day and learns where to open. */
+function isPatient(po: PlayerOrder): boolean {
+  return po.pace === 'patient' && po.priceMode === 'follow' && po.market.kind !== 'labor';
 }
 
 /**
@@ -2056,7 +2063,8 @@ export function playerOrders(s: SimState, books: Books): void {
     const buy = po.side === 'buy';
     // What a unit is budgeted at: its limit, except 'any price' buys, budgeted near the going
     // price (their limit is only a formality; settlement scales any fill the Purse cannot pay).
-    const perUnit = buy && mode === 'any' ? orderRefPrice(s, m) * ORDER_ANY_BUDGET_MULT : po.price;
+    // A patient buy may step up to the band's edge by the close: it is budgeted there.
+    const perUnit = buy && mode === 'any' ? orderRefPrice(s, m) * ORDER_ANY_BUDGET_MULT : buy && isPatient(po) ? orderRefPrice(s, m) * (1 + Math.min(ORDER_BAND_MAX, Math.max(0, fin(po.band)))) : po.price;
     if (buy) {
       if (!(po.price > 0) || !(perUnit > 0)) continue;
       q = Math.min(q, budget / perUnit);
@@ -2089,7 +2097,7 @@ export function playerOrders(s: SimState, books: Books): void {
     if (buy) budget -= q * perUnit;
     const opt = { exempt: true, tag: po.id, session: po.session };
     const ord = buy ? addBid(book, STATE, po.price, q, opt) : addAsk(book, STATE, po.price, q, opt);
-    sub.push({ po, ord });
+    sub.push({ po, ord, open: isPatient(po) ? (po.offset ?? 0) : undefined });
   }
   // Freight lines: the tools and oil they lack, in their depot towns (policy/lines.ts).
   if (s.policy.lines?.length) lineOrders(s, books, budget);
@@ -2153,6 +2161,36 @@ function resizeTreasurySales(s: SimState, books: Books, sub: Submitted[]): void 
 }
 
 /**
+ * A patient order after session k: a session that filled what it brought (after any cancelling
+ * against the Treasury's own orders) records the step it filled at; one that left it short raises
+ * the limit for the rest of the day — by at least a step, and far enough that the close bids the
+ * band's edge (max(step, room left ÷ sessions left)). It never goes beyond the band.
+ */
+function stepPatient(s: SimState, x: Submitted, k: number): void {
+  const po = x.po;
+  const o = x.ord;
+  const asked = o.qty; // this session's quantity after cancelling
+  if (!(asked > 1e-9)) return;
+  const short = (o.filled > 0 ? o.filled : 0) < asked * (1 - 1e-3);
+  const off = po.offset ?? 0;
+  if (!short) {
+    if (x.firstFull === undefined) x.firstFull = off;
+    return;
+  }
+  const left = MARKET_SESSIONS - 1 - k;
+  if (left <= 0 || po.session !== undefined) return; // the close (or a one-session order): tomorrow learns
+  const b = Math.min(ORDER_BAND_MAX, Math.max(0, fin(po.band)));
+  const next = Math.min(b, off + Math.max(patientStep(b), (b - off) / left));
+  if (!(next > off + 1e-12)) return;
+  po.offset = next;
+  const lim = effectiveOrderLimit(s, po);
+  if (lim > 0) {
+    po.price = lim;
+    o.limit = lim;
+  }
+}
+
+/**
  * After market session k (markets.clearAll hook): credit the session's fills to the Treasury's
  * orders, then let the carry rules load what the stores now hold (their wagons leave after the
  * session, by each rule's wagons setting: policy/carry.ts).
@@ -2167,6 +2205,7 @@ export function playerAfterSession(s: SimState, k: number): void {
       const released = o.released ?? 0;
       x.askedDay = (x.askedDay ?? 0) + released;
       creditFill(x, o.filled > 0 ? o.filled : 0, o.paid, Math.max(0, released - o.qty));
+      if (x.open !== undefined) stepPatient(s, x, k);
     }
   }
   runCarries(s, k);
@@ -2194,15 +2233,17 @@ export function playerAfterClear(s: SimState, books: Books): void {
   if (sub) {
     for (const x of sub) {
       const po = x.po;
-      // A patient order that follows the market: short today → a step towards the band's edge
-      // tomorrow; filled in full → part of a step back (it settles near the best price that fills).
+      // A patient order: tomorrow opens a step below the lowest step at which a session filled in
+      // full today (it keeps probing for a lower price); a day with no full session opens a step
+      // higher. Within the day it steps up only when short (stepPatient).
       const want = (x.askedDay ?? 0) - (x.nettedDay ?? 0);
-      if (po.pace === 'patient' && po.priceMode === 'follow' && want > 1e-9) {
+      if (x.open !== undefined && isPatient(po) && want > 1e-9) {
+        if (!sessions && x.firstFull === undefined && (x.filledDay ?? 0) >= want * (1 - 1e-3)) x.firstFull = x.open;
         const b = Math.min(ORDER_BAND_MAX, Math.max(0, fin(po.band)));
         const step = patientStep(b);
-        const off = po.offset ?? 0;
-        po.offset = (x.filledDay ?? 0) < want * (1 - 1e-3) ? Math.min(b, off + step) : Math.max(-b, off - step * ORDER_PATIENT_BACK);
-      }
+        po.reached = po.offset ?? x.open;
+        po.offset = x.firstFull !== undefined ? Math.max(-b, x.firstFull - step) : Math.min(b, x.open + step);
+      } else if (x.open !== undefined) po.offset = x.open;
     }
     sub.length = 0;
   }

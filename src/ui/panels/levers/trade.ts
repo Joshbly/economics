@@ -177,7 +177,7 @@ export function tradeLever(): Lever {
   const modeRow = dynRow('Price', modeSeg.el, modeHint);
   const paceSeg = segmented<'patient' | 'eager'>({
     options: [
-      { value: 'patient', label: 'As low as it can', title: 'Start at the market’s going price; step towards the band’s edge only on days the order falls short, and back on days it fills' },
+      { value: 'patient', label: 'As low as it can', title: 'Open near the market’s going price; bid higher at midday and the close only if a session leaves the order short (never past the band); each day opens a step below what it needed the day before' },
       { value: 'eager', label: 'Always at the edge', title: 'Always bid the full band away from the going price: fills first, pays more when the order is large' },
     ],
     value: pace,
@@ -476,8 +476,8 @@ export function tradeLever(): Lever {
               : `No floor: takes whatever the market pays (going price ≈ ${fmtPrice(going)}${u.price}).`
             : patient
               ? side === 'buy'
-                ? `Bids from the market’s going price (${fmtPrice(going)}${u.price}, without your orders) and steps up — to at most ${fmtPrice(going * (1 + band))} — only on days it falls short, back down on days it fills. You pay the day’s auction price, like every buyer.`
-                : `Asks from the market’s going price (${fmtPrice(going)}${u.price}, without your orders) and steps down — to at least ${fmtPrice(going * (1 - band))} — only on days it does not sell out, back up on days it does. You receive the day’s auction price, like every seller.`
+                ? `Opens near the market’s going price (${fmtPrice(going)}${u.price}, without your orders). If the opening leaves it short it bids higher at midday, and at the close up to ${fmtPrice(going * (1 + band))} — never more. Each day it opens a step below what it needed the day before. Every buyer in a session pays that session’s price: a lower limit saves money only when your order is the one setting it.`
+                : `Opens near the market’s going price (${fmtPrice(going)}${u.price}, without your orders). If the opening leaves it unsold it asks less at midday, and at the close down to ${fmtPrice(going * (1 - band))} — never less. Each day it opens a step above what it needed the day before. Every seller in a session receives that session’s price.`
               : `Each morning the limit re-sets to the market’s going price (without your orders) ${sign}${Math.round(band * 100)}% — today ${fmtPrice(going * (side === 'buy' ? 1 + band : 1 - band))}${u.price}. You pay the day’s auction price; a large order pushes it towards the limit.`,
     );
 
