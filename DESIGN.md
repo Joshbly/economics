@@ -296,7 +296,17 @@ dividends to their owner, invest, and can go bankrupt.
   Town trades keep their sites near the centre. **Every new building's access
   track is part of its works** (construction: accessTrack, door → nearest road;
   its materials in the project's need, laid when the building is finished; the
-  financing covers it). Why screened ventures do not happen is counted
+  financing covers it). **Private roads** (entry.roadVentures, monthly): a trading house
+  that ships ROAD_MIN_LANE units a day or more along a lane (TraderState.lane, EMA LANE_EMA)
+  weighs paving the way its wagons go and a new dirt track centre to centre that cuts the trip by
+  ROAD_SHORTCUT_GAIN: the freight it would save a year on its own traffic
+  (roadEffect.freightAfter: fuel per tile, time with the days) against the road's cost; the best,
+  if it beats the screening rate + ROAD_HURDLE, is commissioned (its own project, financed like
+  any venture), one at a time. Rivals use the road for nothing and its builder counts only its
+  own savings, so roads are under-built for the realm as a whole — yet busy lanes pay back within
+  about a year, and within a year or two of play most lanes between towns are paved privately:
+  Treasury paving there only brings forward what would happen anyway (crowding out); what is left
+  to it are the quieter lanes, shortcuts, and roads anywhere else. Why screened ventures do not happen is counted
   (`entry_miss_nosite / site / noowner / finance`): mostly nobody holds the equity.
 
 ### 3.3 Builders (construction)

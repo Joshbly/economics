@@ -232,7 +232,9 @@ Someone opening a farm, a mine, a camp or a fishery looks all around the town fo
         title: 'Traders and wagons',
         body: `Every town has a trading house with wagons and carters. When a good is cheap in one town and dear in another by more than it costs to haul it, traders buy, load and ship it. Hauling costs the carters' wages, the oil the wagons burn, and wear on the wagons. Paved roads make wagons faster and hauling cheaper.
 
-The shipping rate on the top bar is what it costs to move one unit ten tiles.`,
+The shipping rate on the top bar is what it costs to move one unit ten tiles.
+
+A trading house that carries a lot along one road may pave it, or cut a shorter track, at its own expense, when the freight it saves on its own wagons repays the cost. Its rivals then use the road for nothing — so houses build fewer roads than would pay the realm as a whole, but the busiest ones usually get paved within a year or two.`,
       },
       {
         title: 'Your stores, and carrying goods',

@@ -61,6 +61,9 @@ import {
   NEW_FIRM_WC_DAYS,
   STARTUP_LOAN_TERM,
   BASE_RENT_SHARE,
+  ROAD_HURDLE,
+  ROAD_MIN_LANE,
+  ROAD_SHORTCUT_GAIN,
 } from '../config';
 import { dayOfMonth } from '../calendar';
 import { G, GOODS, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
@@ -74,7 +77,11 @@ import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownI
 import { STATE } from '../types';
 import { fin } from '../util';
 import { quoted, quoteRate, requestLoan } from './bank';
-import { accessCost, builderFor, estimateCost, startProject, cancelProject, type ProjectSpec } from './construction';
+import { accessCost, builderFor, estimateCost, needCost, roadNeed, startProject, cancelProject, type ProjectSpec } from './construction';
+import { freightPerUnit } from './traders';
+import { daysAlong, freightAfter } from '../world/roadEffect';
+import { roadPlan, routeBetweenTowns, trackPlan } from '../world/paths';
+import { townCentreTile } from '../world/layout';
 import { ventureSite, type VentureSite } from './sites';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
 import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
@@ -125,6 +132,12 @@ function projectTotal(s: SimState, kind: Project['kind'], town: TownId, sector?:
   return Math.max(0, fin(c));
 }
 
+/** What a planned project needs in money: a road its tiles' works; a building its works, tools and start-up capital, and its track. */
+function worksCost(s: SimState, p: Project): number {
+  if (p.kind === 'road') return fin(needCost(s, p.town, p.need));
+  return projectTotal(s, p.kind, p.town, p.sector) + accessCost(s, p);
+}
+
 // ---------------------------------------------------------------------------
 // Daily: financing follow-up
 // ---------------------------------------------------------------------------
@@ -147,7 +160,7 @@ export function settleFinancing(s: SimState): void {
         continue;
       }
       // Advance everything the owner can spare, at least the loan itself, up to the project's needs.
-      const total = Math.max(projectTotal(s, p.kind, p.town, p.sector) + accessCost(s, p), fin(p.loanWanted));
+      const total = Math.max(worksCost(s, p), fin(p.loanWanted));
       const avail = p.owner === STATE ? cashOf(s, STATE) : Math.max(investableCash(s, p.owner), Math.min(fin(p.loanWanted), cashOf(s, p.owner)));
       const amt = Math.min(total, avail);
       const paid = amt > 0 ? pay(s, p.owner, firmRef(b.id), amt, 'asset') : 0;
@@ -159,7 +172,7 @@ export function settleFinancing(s: SimState): void {
     if ((age >= 1 && !pending.has(p.id)) || age > FINANCING_WAIT_DAYS) {
       // Refused: an owner who can pay for the whole works goes ahead on their own means.
       const b = s.firms[p.builder];
-      const need = projectTotal(s, p.kind, p.town, p.sector) + accessCost(s, p);
+      const need = worksCost(s, p);
       if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner) >= need) {
         p.prepaid = fin(p.prepaid) + pay(s, p.owner, firmRef(b.id), need, 'asset');
         p.loanWanted = 0;
@@ -512,6 +525,74 @@ function bump(s: SimState, key: string, v = 1): void {
 }
 
 /**
+ * Monthly: trading houses build the roads that pay them. For each lane a house ships along
+ * (TraderState.lane ≥ ROAD_MIN_LANE units a day) it weighs paving the way its wagons go, and a new
+ * dirt track centre to centre that cuts the trip by ROAD_SHORTCUT_GAIN or more: the freight it would
+ * save a year on its own traffic (roadEffect.freightAfter) against what the road costs to build.
+ * Rival houses ride the road for nothing, and the builder counts only its own savings — so roads
+ * are built less often than they would pay the realm as a whole; the rest is left to the Treasury
+ * (and to the towns). One road per house at a time: its best lane, if the return beats the
+ * screening rate + ROAD_HURDLE, with the entry probability; financed like any venture.
+ */
+export function roadVentures(s: SimState): void {
+  const r0 = screenRate(s);
+  const busy = new Set<number>();
+  const busyTiles = new Set<number>();
+  for (const p of s.projects) {
+    if (p.kind !== 'road' || p.status === 'done' || p.status === 'cancelled') continue;
+    busy.add(p.owner);
+    for (const i of p.tiles) busyTiles.add(i);
+  }
+  type Pick = { tiles: number[]; grade: 1 | 2; roc: number; cost: number; to: number };
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.status !== 'active' || f.sector !== 'trader' || !f.trade || f.owner === STATE) continue;
+    const ref = firmRef(f.id);
+    if (busy.has(ref) || s.day - f.founded < ENTRY_MIN_AGE) continue;
+    const lane = f.trade.lane;
+    if (!lane) continue;
+    const a = f.town;
+    const pick: { best: Pick | null } = { best: null };
+    for (let b = 0; b < s.towns.length; b++) {
+      const v = fin(lane[b]);
+      if (b === a || !(v >= ROAD_MIN_LANE)) continue;
+      const fNow = freightPerUnit(s, a, b);
+      if (!(fNow > 0)) continue;
+      const route = routeBetweenTowns(s, a, b);
+      if (!(route.days > 0) || route.tiles.length < 2) continue;
+      const consider = (tiles: readonly number[], path: readonly number[], grade: 1 | 2) => {
+        const todo = tiles.filter((i) => !busyTiles.has(i));
+        if (!todo.length) return;
+        const days = daysAlong(s, path, new Set(todo), grade);
+        if (!(days < route.days - 1e-6)) return;
+        const fA = freightAfter(s, a, b, days, path.length);
+        if (!(fA >= 0) || !(fA < fNow)) return;
+        const cost = needCost(s, a, roadNeed(s, todo, grade));
+        if (!(cost > 0)) return;
+        const roc = (v * (fNow - fA) * DAYS_PER_YEAR) / cost;
+        if (!pick.best || roc > pick.best.roc) pick.best = { tiles: todo, grade, roc, cost, to: b };
+      };
+      consider(roadPlan(s, a, b), route.tiles, 2);
+      const tp = trackPlan(s, townCentreTile(s, a), townCentreTile(s, b), 1);
+      if (tp.tiles.length >= 3 && daysAlong(s, tp.path, new Set(tp.tiles), 1) < route.days * (1 - ROAD_SHORTCUT_GAIN)) consider(tp.tiles, tp.path, 1);
+    }
+    const best = pick.best;
+    if (!best) continue;
+    const req = r0 + ROAD_HURDLE;
+    const rel = (best.roc - req) / Math.max(0.01, req);
+    if (!(rel > 0) || !chance(s, Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * rel))) continue;
+    const A = s.towns[a].name;
+    const B = s.towns[best.to].name;
+    const label = `${best.grade === 1 ? 'Track' : 'Paved road'} ${A}–${B}, for ${f.name}`;
+    if (launch(s, { kind: 'road', town: a, owner: ref, tiles: best.tiles, grade: best.grade, label }, best.cost, best.roc, ROAD_HURDLE)) {
+      bump(s, 'road_ventures');
+      busy.add(ref);
+      for (const i of best.tiles) busyTiles.add(i);
+      news(s, `${f.name} of ${A} is having a ${best.grade === 1 ? 'new track cut' : 'road paved'} to ${B}: it expects the freight it saves on its own wagons to repay the cost.`, 'info', a);
+    }
+  }
+}
+
+/**
  * Runs on day-of-month 15 only. For each town × producer sector:
  * signal = mean over existing firms of annualised profit / (building cost + tools value)
  * (or, with no firms, an estimate from expected price vs unit cost at typical size,
@@ -568,4 +649,5 @@ export function entryStep(s: SimState): void {
       }
     }
   }
+  roadVentures(s);
 }

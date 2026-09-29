@@ -989,3 +989,13 @@ export const AIM_MAX_CAP = 0.9; // highest ceiling a player may set
 export const VENTURE_REACH = 30;
 /** Years a dirt track is written off over when a venture weighs building one (its yearly cost = rate + 1/life). */
 export const TRACK_LIFE_YEARS = 25;
+
+// ---- private roads (agents/entry.ts roadVentures) ----
+/** Speed of a trading house's per-lane shipment EMA (TraderState.lane). */
+export const LANE_EMA = 1 / 60;
+/** A lane must carry this many units a day before its house thinks of building a road on it. */
+export const ROAD_MIN_LANE = 3;
+/** Return a road must promise beyond the screening rate (freight saved a year / what it costs). */
+export const ROAD_HURDLE = 0.08;
+/** A new track must cut the trip by at least this share to be worth laying beside the old road. */
+export const ROAD_SHORTCUT_GAIN = 0.1;

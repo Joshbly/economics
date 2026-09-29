@@ -122,3 +122,39 @@ describe('ventures choose their sites on their merits', () => {
     for (const p of s.people) if (p.alive && p.home >= 0) expect(p.town).toBe(s.buildings[p.home].town);
   });
 });
+
+describe('trading houses build the roads that pay them', () => {
+  it('a house with heavy traffic on an unpaved lane has it paved, and pays for it', async () => {
+    const { roadVentures } = await import('../src/sim/agents/entry');
+    const { roadPlan } = await import('../src/sim/world/paths');
+    const { freightPerUnit } = await import('../src/sim/agents/traders');
+    const s = world(1);
+    const f = s.firms.find((x) => x && x.alive && x.trade && x.owner !== -1)!;
+    const a = f.town;
+    const b = s.towns.map((t) => t.id).find((t) => t !== a && roadPlan(s, a, t).length > 5 && freightPerUnit(s, a, t) > 0)!;
+    expect(b).toBeDefined();
+    f.trade!.lane = s.towns.map((_, k) => (k === b ? 400 : 0));
+    f.founded = s.day - 1000;
+    f.cash += 50000;
+    let p;
+    for (let k = 0; k < 20 && !p; k++) {
+      roadVentures(s);
+      p = s.projects.find((x) => x.kind === 'road' && x.owner === 1_000_000 + f.id);
+    }
+    expect(p).toBeDefined();
+    expect(p!.label).toMatch(new RegExp(s.towns[b].name));
+    expect(p!.tiles.length).toBeGreaterThan(0);
+    // one road at a time
+    const n = s.projects.filter((x) => x.kind === 'road' && x.owner === 1_000_000 + f.id).length;
+    roadVentures(s);
+    expect(s.projects.filter((x) => x.kind === 'road' && x.owner === 1_000_000 + f.id).length).toBe(n);
+  });
+
+  it('no traffic, no road', async () => {
+    const { roadVentures } = await import('../src/sim/agents/entry');
+    const s = world(1);
+    for (const f of s.firms) if (f && f.trade) f.trade.lane = s.towns.map(() => 0);
+    for (let k = 0; k < 10; k++) roadVentures(s);
+    expect(s.projects.some((x) => x.kind === 'road' && x.owner !== -1)).toBe(false);
+  });
+});

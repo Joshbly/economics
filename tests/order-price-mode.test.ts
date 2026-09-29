@@ -100,7 +100,8 @@ describe('orders that follow the market', () => {
     }
     expect(ups + downs).toBeGreaterThan(0);
     expect(downs).toBeGreaterThan(0); // it keeps probing for a lower opening
-    expect(bought).toBeGreaterThan(0.8 * 3 * 40); // and still gets its quantity
+    // and still gets most of its quantity (≈ 80 %; a little less once trading houses pave roads, which use tools too)
+    expect(bought).toBeGreaterThan(0.7 * 3 * 40);
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
   });
 

@@ -240,6 +240,8 @@ export interface TraderState {
   freightEma: number; // ¤ per unit per tile (EMA), for the shipping index
   shippedToday: number; // units
   wantEma: number; // EMA of wagons the trader wanted on the road (busy + wanted today) — drives drivers & wagon investment // added by finance-trade
+  /** Units a day it ships to each town (EMA, LANE_EMA; length = towns): what a road on that lane would save it. Absent in old saves. */
+  lane?: number[];
 }
 
 export interface BuilderState {

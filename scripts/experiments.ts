@@ -89,6 +89,8 @@ interface Ctx {
   /** The good most imported through the port during the observation period. */
   importGood: number;
   importNote: string;
+  /** The town the farm town's road is paved to in experiment 6: the capital, unless a trading house is already paving that way (then the town with the most road left to pave). */
+  paveTo: number;
 }
 
 function townOfKind(s: SimState, kind: TownKind, fallback: number): number {
@@ -168,7 +170,21 @@ function observe(s: SimState): Ctx {
     natPrice,
     importGood,
     importNote,
+    paveTo: paveTarget(s),
   };
+}
+
+/** Experiment 6's lane: from the farm town to the capital, or — where a trading house is already paving that way — to the town with the most road left to pave. */
+function paveTarget(s: SimState): number {
+  const farm = townOfKind(s, 'farm', 1);
+  const cap = townOfKind(s, 'capital', 0);
+  const busy = new Set<number>();
+  for (const p of s.projects) if (p.kind === 'road' && p.status !== 'done' && p.status !== 'cancelled') for (const i of p.tiles) busy.add(i);
+  const free = (t: number) => (t === farm ? -1 : safe(() => roadPlan(s, farm, t).filter((i) => !busy.has(i)).length));
+  if (free(cap) >= 5) return cap;
+  let best = cap;
+  for (let t = 0; t < s.towns.length; t++) if (free(t) > free(best)) best = t;
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +217,8 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   toolsPrice: { label: 'tools price (capital)', fn: (s, c) => mkt(s, c.capital, G.tools)?.ema ?? 0 },
   grainGap: { label: 'grain price gap farm↔capital', fn: (s, c) => Math.abs((mkt(s, c.capital, G.grain)?.ema ?? 0) - (mkt(s, c.farm, G.grain)?.ema ?? 0)) },
   roadLeft: { label: 'unpaved tiles farm→capital', fn: (s, c) => safe(() => roadPlan(s, c.farm, c.capital).length) },
+  grainGapPave: { label: 'grain price gap on the paved lane', fn: (s, c) => Math.abs((mkt(s, c.paveTo, G.grain)?.ema ?? 0) - (mkt(s, c.farm, G.grain)?.ema ?? 0)) },
+  roadLeftPave: { label: 'unpaved tiles on the paved lane', fn: (s, c) => safe(() => roadPlan(s, c.farm, c.paveTo).length) },
   freight: { label: 'shipping rate', fn: (s) => L(s, 'freight') },
   importPrice: { label: 'port price paid for the imported good', fn: (s, c) => mkt(s, c.harbor, c.importGood)?.gross ?? 0 },
   importQty: { label: 'imports of that good/day', fn: (s, c) => L(s, 'imp_' + c.importGood) },
@@ -336,6 +354,8 @@ interface Experiment {
    * between arms that are close by design, where one path of a chaotic economy is a coin flip.
    */
   replicas?: number;
+  /** 'warmup': start from the realm as the warm-up leaves it, before the --pre days (its own baseline). */
+  from?: 'warmup';
   note?: (res: Results, c: Ctx) => string;
 }
 
@@ -457,6 +477,7 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '17',
     name: 'Capital requirement 3 % (the bank’s capital thinned)',
+    replicas: 3, // a small move against one chaotic path: judge the mean of three (common random numbers)
     // A capital Limit replaces the standing 8 % rule. The founding bank holds some 15 % of its
     // loans and lends as much as its borrowers can carry, so the rule only matters once its capital
     // is scarce: both arms take 60 % of the bank's equity into the Purse on day 0 (to about 7 % of
@@ -507,13 +528,20 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '6',
     name: 'Paved road farm town ↔ capital',
+    // Trading houses pave the roads that pay them — within a year or two of play every busy lane
+    // is paved or being paved, and Treasury paving there only does sooner what they would do. So
+    // this starts from the warm-up's end, before their first big roads, on the farm town's lane to
+    // the capital (or, if a house is already paving it, the farm town's lane with most left to
+    // pave — see paveTarget), and is judged while the baseline still waits for private paving.
+    from: 'warmup',
     days: (o) => Math.max(o.days, 540),
-    arms: [{ name: 'paved road', setup: (g, c) => act(g, { type: 'build', kind: 'road', from: c.farm, to: c.capital }, 'road') }],
-    checks: [{ label: 'grain price gap narrows', metric: 'grainGap', kind: 'down', tol: 0.05 }],
-    show: ['roadLeft', 'freight'],
-    note: (r) => {
-      const left = r.arms['paved road']?.roadLeft;
-      return left && left.length ? `unpaved tiles left at the end: ${left[left.length - 1].toFixed(0)} (of ${r.arms.baseline?.roadLeft?.[0]?.toFixed(0) ?? '?'})` : '';
+    window: () => [90, 180],
+    arms: [{ name: 'paved road', setup: (g, c) => act(g, { type: 'build', kind: 'road', from: c.farm, to: c.paveTo }, 'road') }],
+    checks: [{ label: 'grain price gap narrows', metric: 'grainGapPave', kind: 'down', tol: 0.05 }],
+    show: ['roadLeftPave', 'freight'],
+    note: (r, c) => {
+      const left = r.arms['paved road']?.roadLeftPave;
+      return left && left.length ? `lane farm → town ${c.paveTo}; unpaved tiles left at the end: ${left[left.length - 1].toFixed(0)} (of ${r.arms.baseline?.roadLeftPave?.[0]?.toFixed(0) ?? '?'})` : '';
     },
   },
   {
@@ -558,7 +586,9 @@ const EXPERIMENTS: Experiment[] = [
     id: '9',
     name: 'Import levy → dearer imports at the port',
     arms: [{ name: 'import levy 50 %', setup: (g, c) => act(g, { type: 'addLevy', levy: levy({ base: 'import', unit: 'pct', rate: 0.5, payer: 'buyer', good: c.importGood }) }, 'import levy') }],
-    checks: [{ label: 'port price of the imported good up', metric: 'importPrice', kind: 'up', tol: 0.03 }],
+    // (with roads the realm's own makers compete at the port, so less of the levy lands on its price:
+    // 1.7–3.4 % across seeds; the direction is the check)
+    checks: [{ label: 'port price of the imported good up', metric: 'importPrice', kind: 'up', tol: 0.01 }],
     show: ['importQty'],
     note: (_r, c) => c.importNote,
   },
@@ -623,6 +653,7 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '12',
     name: 'Pay 40% of the price of tools bought by coal mines',
+    replicas: 3, // a small move against one chaotic path: judge the mean of three (common random numbers)
     // A targeted sale rule: only the coal mines' own purchases of tools carry it. Cheaper tools
     // lower the mines' costs, so they plan more output (more hands, and the tools to equip them).
     arms: [
@@ -781,6 +812,8 @@ function judge(exp: Experiment, check: Check, res: Results): Verdict {
   const refName = check.vs ?? 'baseline';
   const A = res.arms[armName]?.[check.metric];
   const B = res.arms[refName]?.[check.metric];
+  // an arm that did not run fails its checks (never a pass against nothing)
+  if (!A || !A.length || !B || !B.length) return { exp, check, ref: 0, val: 0, delta: 0, pass: false, refName, armName };
   const win = check.window ? check.window(res.days) : res.window;
   const val = windowMean(A, win);
   const ref = windowMean(B, win);
@@ -870,6 +903,8 @@ function main(): void {
   const game = Game.create({ seed: o.seed });
   act(game, { type: 'setEvents', value: false }, 'events off');
   act(game, { type: 'setAutoMint', value: true }, 'auto-mint');
+  const jsonWarm = game.save();
+  const ctxWarm = observe(game.s);
   game.step(o.pre);
   const json = game.save();
   const ctx = observe(game.s);
@@ -894,12 +929,24 @@ function main(): void {
     const window = exp.window ? exp.window(days) : ([Math.max(0, days - 90), days] as [number, number]);
     const metrics = [...new Set([...exp.checks.map((c) => c.metric), ...(exp.show ?? [])])];
     const res: Results = { days, window, arms: { baseline: {} } };
-    for (const k of metrics) res.arms.baseline[k] = baseline[k].slice(0, days);
+    const warm = exp.from === 'warmup';
+    const base = warm ? runArm(jsonWarm, ctxWarm, null, days, metrics, 'baseline (from the warm-up)', true) : baseline;
+    const J = warm ? jsonWarm : json;
+    const C = warm ? ctxWarm : ctx;
+    for (const k of metrics) res.arms.baseline[k] = base[k].slice(0, days);
+    // replicas judged against the baseline: the baseline gets the same reseeded runs (run 1 is the shared one)
+    const R0 = Math.max(1, exp.replicas ?? 1);
+    if (R0 > 1 && exp.checks.some((c) => (c.vs ?? 'baseline') === 'baseline')) {
+      const runs = [res.arms.baseline, ...Array.from({ length: R0 - 1 }, (_, k) => runArm(J, C, null, days, metrics, `baseline (run ${k + 2}/${R0})`, true, k + 1))];
+      const mean: Record<string, number[]> = {};
+      for (const m of metrics) mean[m] = runs[0][m].map((_, d) => runs.reduce((a, r) => a + (r[m][d] ?? 0), 0) / R0);
+      res.arms.baseline = mean;
+    }
     console.error(`[${exp.id}] ${exp.name}`);
     for (const arm of exp.arms) {
       try {
         const R = Math.max(1, exp.replicas ?? 1);
-        const runs = Array.from({ length: R }, (_, k) => runArm(json, ctx, arm, days, metrics, R > 1 ? `${arm.name} (run ${k + 1}/${R})` : arm.name, true, k));
+        const runs = Array.from({ length: R }, (_, k) => runArm(J, C, arm, days, metrics, R > 1 ? `${arm.name} (run ${k + 1}/${R})` : arm.name, true, k));
         const mean: Record<string, number[]> = {};
         for (const m of metrics) mean[m] = runs[0][m].map((_, d) => runs.reduce((a, r) => a + (r[m][d] ?? 0), 0) / R);
         res.arms[arm.name] = mean;
@@ -915,7 +962,7 @@ function main(): void {
         notes.push(`[${exp.id}] ${METRICS[m].label}: ${parts.join(' · ')}`);
       }
     }
-    const n = exp.note?.(res, ctx);
+    const n = exp.note?.(res, C);
     if (n) notes.push(`[${exp.id}] ${n}`);
   }
 

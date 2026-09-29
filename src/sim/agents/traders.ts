@@ -66,6 +66,7 @@ import { fairPrice } from './firms';
 import { FLOW_IN, FLOW_USED, noteFlow } from '../stats/flows';
 
 const {
+  LANE_EMA,
   SESSION_TIMES,
   WAGON_CAPACITY,
   OIL_PER_TILE,
@@ -349,6 +350,10 @@ export function tradersBeginDay(s: SimState): void {
       continue;
     }
     tr.shippedToday = 0;
+    // ---- units shipped to each town: a slow average (what a road would save it) ----
+    const nT = s.towns.length;
+    if (!Array.isArray(tr.lane) || tr.lane.length !== nT) tr.lane = new Array(nT).fill(0);
+    for (let d = 0; d < nT; d++) tr.lane[d] = fin(tr.lane[d]) * (1 - LANE_EMA);
     // ---- wagons come home ----
     let b = 0;
     for (let i = 0; i < tr.busy.length; i++) if (tr.busy[i] > s.day) tr.busy[b++] = tr.busy[i];
@@ -1208,6 +1213,7 @@ export function tradersDispatch(s: SimState, books: Books): void {
       if (f.inv[g] <= 1e-9) tr.age[home][g] = 0;
       newShipment(s, FIRM_BASE + f.id, home, t.dest, g, q, basis, s.day + 0.5, s.day + 0.5 + r.days, (w * q) / load);
       tr.shippedToday += q;
+      if (tr.lane && t.dest < tr.lane.length) tr.lane[t.dest] += LANE_EMA * q;
       c.shipped[quotaKey(g, home, t.dest)] = (c.shipped[quotaKey(g, home, t.dest)] || 0) + q;
       bump(s, 'shipped_units', q);
     }
@@ -1274,6 +1280,7 @@ function dispatchOnLine(s: SimState, f: Firm & { trade: TraderState }, t: Planne
     const sh = newShipment(s, ref, home, t.dest, g, q, basisHome + fare + lev / q, s.day + 0.5, s.day + 0.5 + r.days, q / WAGON_CAPACITY);
     sh.line = L.id;
     tr.shippedToday += q;
+    if (tr.lane && t.dest < tr.lane.length) tr.lane[t.dest] += LANE_EMA * q;
     c.shipped[quotaKey(g, home, t.dest)] = (c.shipped[quotaKey(g, home, t.dest)] || 0) + q;
     bump(s, 'shipped_units', q);
   }

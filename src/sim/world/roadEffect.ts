@@ -73,3 +73,36 @@ export function paveEffect(s: SimState, plan: readonly number[]): PaveEffect[] {
   out.sort((x, y) => y.daysNow - y.daysPaved - (x.daysNow - x.daysPaved));
   return out;
 }
+
+/**
+ * Freight per unit a → b (a full wagon, the house of `a`) if the trip took `daysAfter` days over
+ * `tilesAfter` tiles instead of today's route: fuel is per tile, the drivers' time, wear and the
+ * wagon's capital scale with the days away. -1 if unknown.
+ */
+export function freightAfter(s: SimState, a: TownId, b: TownId, daysAfter: number, tilesAfter: number): number {
+  const r = routeBetweenTowns(s, a, b);
+  const fN = freightPerUnit(s, a, b);
+  if (!(fN >= 0) || !(r.days > 0)) return -1;
+  const fuelPerTile = (expectedGross(s, a, G.oil) * OIL_PER_TILE) / WAGON_CAPACITY;
+  const time = Math.max(0, fN - fuelPerTile * r.length);
+  return Math.max(0, fuelPerTile * tilesAfter + (time * daysAfter) / r.days);
+}
+
+/** Travel days along `path` if the tiles in `laid` were a road of `grade` (1 dirt, 2 paved). */
+export function daysAlong(s: SimState, path: readonly number[], laid: ReadonlySet<number>, grade: 1 | 2): number {
+  const w = s.map.w;
+  const speed = grade >= 2 ? SPEED_PAVED : SPEED_DIRT;
+  const cost = (i: number) => {
+    if (laid.has(i)) return Math.min(1 / speed, tileMoveCost(s.map, i) > 0 ? tileMoveCost(s.map, i) : Infinity);
+    const c = tileMoveCost(s.map, i);
+    return c > 0 ? c : 1 / SPEED_DIRT; // endpoints inside buildings / on the market square
+  };
+  let days = 0;
+  for (let k = 1; k < path.length; k++) {
+    const p = path[k - 1];
+    const q = path[k];
+    const diag = p % w !== q % w && Math.abs(p - q) !== 1;
+    days += (diag ? SQRT2 : 1) * 0.5 * (cost(p) + cost(q));
+  }
+  return days;
+}
