@@ -453,6 +453,11 @@ export interface MarketState {
   surplusHist?: number[];
   /** …and what the Treasury's own asks sold here each of those days. */
   stateHist?: number[];
+  /** The town's own flows of the good over the same days (stats/flows.ts): made, used up, brought in, sent out. */
+  madeHist?: number[];
+  usedHist?: number[];
+  inHist?: number[];
+  outHist?: number[];
   traded: boolean; // true if volume > 0 today
   bestBid: number;
   bestAsk: number;
@@ -707,6 +712,11 @@ export interface CarryRule {
   enabled: boolean;
   from: TownId;
   /**
+   * Several stores to pull from (≥ 2 towns, `from` = the first): each load draws on them equally
+   * (as far as each holds the good). Absent: `from` alone.
+   */
+  sources?: TownId[];
+  /**
    * The town it carries to, or −1: wherever the good runs short — each load goes to the town, among
    * those where the Treasury has a sell order for the good, that needs it most (carry.shortTargets:
    * its 14-day shortage plus what the Treasury sells there a day, over the days a load takes, less
@@ -716,6 +726,12 @@ export interface CarryRule {
   good: GoodId;
   /** Units a day at most; −1 = everything the Treasury holds of the good in `from`, as it comes in. */
   qty: number;
+  /**
+   * true: carry only what the destination needs (carry.destNeed — its shortage over the last days
+   * plus what the Treasury sells there a day, over the days a load takes plus one, less what the
+   * Treasury holds there or has on the road to it). Rules to "where it runs short" always do.
+   */
+  need?: boolean;
   /**
    * 'full': a wagon leaves once it is CARRY_FULL_SHARE full — or once the goods have waited as long
    * as they keep (carry.carryHoldDays), a Treasury freight line on the road has room, or the rule's
@@ -860,12 +876,16 @@ export type PlayerAction =
       to: TownId;
       good: GoodId;
       qty: number;
+      /** Pull from several stores equally (≥ 2 towns; `from` must be one of them). */
+      sources?: TownId[];
+      /** Carry only what the destination needs (see CarryRule.need). */
+      need?: boolean;
       once?: boolean;
       days?: number;
       wagons?: CarryRule['wagons'];
       label?: string;
     }
-  | { type: 'updateCarry'; id: number; patch: { qty?: number; enabled?: boolean; wagons?: CarryRule['wagons']; until?: number } }
+  | { type: 'updateCarry'; id: number; patch: { qty?: number; need?: boolean; enabled?: boolean; wagons?: CarryRule['wagons']; until?: number } }
   | { type: 'removeCarry'; id: number }
   | { type: 'addLevy'; levy: LevyInput }
   | { type: 'updateLevy'; id: number; patch: Partial<Levy> }

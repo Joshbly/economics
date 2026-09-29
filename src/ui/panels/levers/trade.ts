@@ -105,6 +105,16 @@ export function tradeLever(): Lever {
       }
       price.focus();
     },
+    // Carry → "Buy in A…": the Goods form on that market, buying.
+    buyThere: (t, g) => {
+      kind = 'good';
+      town = t;
+      good = g;
+      side = 'buy';
+      priceFor = '';
+      marketChanged();
+      price.focus();
+    },
   });
   const townSel = selectInput<number>({ options: [{ value: 0, label: '—' }], value: 0, onChange: (v) => ((town = v), marketChanged()) });
   const goodSel = selectInput<number>({ options: goodOptions(), value: good, onChange: (v) => ((good = v), marketChanged()) });

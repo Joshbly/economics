@@ -173,6 +173,7 @@ import {
   toolFactor,
   unitVariableCost,
 } from './production';
+import { flowIndex, flowTally, FLOW_MADE, FLOW_USED } from '../stats/flows';
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1008,6 +1009,7 @@ export function firmsProduce(s: SimState): void {
   const acc = s.stats.acc;
   let realva = 0;
   let wearTotal = 0;
+  const flows = flowTally(s);
   for (const f of s.firms) {
     if (!f || !operating(s, f)) continue;
     const d = SECTORS[f.sector];
@@ -1049,13 +1051,16 @@ export function firmsProduce(s: SimState): void {
         matVal += use * gross[j];
         vaIn += use * fin(bp[j]);
         acc[K_USE[j]] = (acc[K_USE[j]] || 0) + use;
+        if (use > 0) flows[flowIndex(f.town, j, FLOW_USED)] += use;
       }
       f.inv[g] += q;
       f.producedToday += q;
       acc[K_PROD[g]] = (acc[K_PROD[g]] || 0) + q;
+      flows[flowIndex(f.town, g, FLOW_MADE)] += q;
       realva += q * fin(bp[g]) - vaIn;
     }
     wearTotal += wear;
+    if (wear > 0) flows[flowIndex(f.town, G.tools, FLOW_USED)] += wear;
     if (f.id < sc.n) {
       sc.matUsed[f.id] += matVal;
       sc.toolWear[f.id] += wear * gross[G.tools];

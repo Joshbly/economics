@@ -387,3 +387,102 @@ describe('carry — wherever it runs short', () => {
     expect(g2.policy.carries[0].to).toBe(-1);
   });
 });
+
+describe('carry — several stores, and what the destination needs', () => {
+  function secondHouse(s: SimState, town: number): void {
+    const owner = newPerson(s, town, 'Owner2');
+    const f = newFirm(s, 'trader', town, -1, owner.id, 'Trading House 2');
+    f.wage = 10;
+    f.cash = 5000;
+    f.tools = 4 * TOOLS_PER_WAGON;
+    f.inv[G.oil] = 60;
+    f.capacity = 24;
+    for (let i = 0; i < 4; i++) {
+      const p = newPerson(s, town, 'Carter2' + i);
+      p.job = f.id;
+      f.workers.push(p.id);
+    }
+    reconcileBank(s);
+  }
+
+  it('draws on each store equally (and on the others when one runs dry)', () => {
+    const { s } = world();
+    s.treasury.autoMint = true;
+    setRoute(s, 2, 1, 40, 1); // Hollow ↔ Kingsbridge for this test
+    secondHouse(s, 2);
+    expect(dispatch(s, { type: 'carry', from: 0, to: 1, good: G.tools, qty: 40, sources: [0, 1] }).ok).toBe(false); // the destination is a store
+    expect(dispatch(s, { type: 'carry', from: 0, to: 1, good: G.tools, qty: 40, sources: [2, 9] }).ok).toBe(false); // unknown town
+    const r = dispatch(s, { type: 'carry', from: 0, to: 1, good: G.tools, qty: 40, sources: [0, 2], wagons: 'now' });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.message).toMatch(/in Millbrook and Hollow — drawing on each equally — to its store in Kingsbridge/);
+    const c = rule(s, r.id!);
+    expect(c.sources).toEqual([0, 2]);
+    expect(c.label).toBe('Carry tools · Millbrook and Hollow → Kingsbridge · 40/day · right away');
+    s.treasury.goods[0][G.tools] = 60;
+    s.treasury.goods[2][G.tools] = 60;
+    marketDay(s);
+    const sh = s.shipments.filter((x) => x.order === c.id);
+    expect(sh.length).toBe(2);
+    expect(sh.find((x) => x.from === 0)!.qty).toBeCloseTo(20, 6);
+    expect(sh.find((x) => x.from === 2)!.qty).toBeCloseTo(20, 6);
+    // one store nearly empty: the other gives the rest
+    s.treasury.goods[0][G.tools] = 5;
+    marketDay(s);
+    const today = s.shipments.filter((x) => x.order === c.id && x.depart >= s.day - 1);
+    expect(today.reduce((a, x) => a + x.qty, 0)).toBeCloseTo(40, 6);
+    expect(today.find((x) => x.from === 0)!.qty).toBeCloseTo(5, 6);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+    const back = deserialize(serialize(s));
+    expect(back.policy.carries[0].sources).toEqual([0, 2]);
+  });
+
+  it('what it needs: only the destination’s shortage and what the Treasury sells there, over the days a load takes', () => {
+    const { s } = world();
+    s.treasury.autoMint = true;
+    const r = dispatch(s, { type: 'carry', from: 0, to: 1, good: G.tools, qty: -1, need: true, wagons: 'now' });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.message).toMatch(/carry as much of the tools it holds as Kingsbridge needs/);
+    const c = rule(s, r.id!);
+    expect(c.need).toBe(true);
+    s.treasury.goods[0][G.tools] = 200;
+    const m = s.markets[1 * N_GOODS + G.tools];
+    m.shortHist = new Array(14).fill(10);
+    m.surplusHist = new Array(14).fill(0);
+    m.stateHist = new Array(14).fill(5);
+    marketDay(s);
+    const sh = s.shipments.filter((x) => x.order === c.id);
+    expect(sh.length).toBe(1);
+    expect(sh[0].qty).toBeCloseTo((10 + 5) * (2 + 1), 6); // 15 a day × (2 days on the road + 1)
+    // switching to a set amount drops "what it needs"
+    expect(dispatch(s, { type: 'updateCarry', id: c.id, patch: { qty: 30 } }).ok).toBe(true);
+    expect(c.need).toBeUndefined();
+    expect(dispatch(s, { type: 'updateCarry', id: c.id, patch: { need: true } }).ok).toBe(true);
+    expect(c.need).toBe(true);
+    expect(c.qty).toBe(-1);
+  });
+});
+
+describe('made, used, brought in, sent out — town by town', () => {
+  it('every town’s markets keep the last days of what it makes, uses and moves', async () => {
+    const { recentFlows } = await import('../src/sim/stats/flows');
+    const g = Game.create({ seed: 1, warmup: false });
+    g.step(20);
+    const s = g.s;
+    let made = 0;
+    let used = 0;
+    for (const m of s.markets) {
+      expect(m.madeHist!.length).toBe(14);
+      const f = recentFlows(m);
+      made += f.made;
+      used += f.used;
+      expect(f.net).toBeCloseTo(f.made - f.used, 9);
+    }
+    expect(made).toBeGreaterThan(0);
+    expect(used).toBeGreaterThan(0);
+    // what towns make of a good, together, is what the realm made (firms' production)
+    const bread = s.towns.reduce((a, t) => a + ((h) => h[h.length - 1])(s.markets[t.id * N_GOODS + G.bread].madeHist!), 0);
+    expect(bread).toBeCloseTo(s.stats.latest['prod_' + G.bread] ?? 0, 3);
+    // wagons: what leaves towns is what the day's new shipments carried
+    expect(recentFlows(undefined).days).toBe(0);
+  });
+});

@@ -36,6 +36,11 @@
 // (never more than its sell orders there offer a day), over the days a load takes to
 // arrive plus one, less what the Treasury holds there or has on the road to it.
 // When no served town needs any, the goods wait where they are.
+//
+// A rule may also pull from several stores (`sources`): each load for a destination
+// draws on them equally, as far as each holds the good (util.shareOut: what one
+// cannot give, the others do). And a rule to one town may carry only "what it needs"
+// (`need`, destNeed: the same measure as for "where it runs short").
 // ============================================================================
 import { GOODS, N_GOODS } from '../goods';
 import { dateLabel } from '../calendar';
@@ -44,6 +49,7 @@ import { STATE } from '../types';
 import type { CarryRule, SimState } from '../types';
 import { CARRY_FULL_SHARE, CARRY_MAX_HOLD_DAYS, CARRY_SPOIL_BUDGET, MARKET_SESSIONS, SESSION_TIMES, WAGON_CAPACITY } from '../config';
 import { sendTreasuryCargo } from '../agents/traders';
+import { shareOut } from '../util';
 import { lineOffer, usableRoute } from './lines';
 import { recentBalance } from '../market/markets';
 import { news } from '../stats/events';
@@ -91,9 +97,19 @@ export function carryOnRoad(s: SimState, id: number): number {
   return n;
 }
 
-/** What a rule could load right now: the store's holdings of its good, within its daily allowance. */
+/** The stores a rule pulls from: its `sources` (valid towns, not its destination), else `from`. */
+export function carrySources(s: SimState, c: Pick<CarryRule, 'from' | 'to' | 'sources'>): number[] {
+  const nT = s.towns.length;
+  const list = c.sources && c.sources.length >= 2 ? c.sources : [c.from];
+  const out: number[] = [];
+  for (const t of list) if (t >= 0 && t < nT && t !== c.to && !out.includes(t)) out.push(t);
+  return out;
+}
+
+/** What a rule could load right now: its stores' holdings of the good, within its daily allowance. */
 export function carryAvailable(s: SimState, c: CarryRule): number {
-  const held = Math.max(0, s.treasury.goods[c.from]?.[c.good] ?? 0);
+  let held = 0;
+  for (const t of carrySources(s, c)) held += Math.max(0, s.treasury.goods[t]?.[c.good] ?? 0);
   return c.qty >= 0 ? Math.min(held, Math.max(0, c.allow)) : held;
 }
 
@@ -118,11 +134,17 @@ export function carryDest(s: SimState, c: Pick<CarryRule, 'to'>): string {
   return c.to >= 0 ? townName(s, c.to) : 'where it runs short';
 }
 
-/** A short label: "Carry bread · Millbrook → Saltmere · all" / "· 40/day". */
-export function carryLabel(s: SimState, c: Pick<CarryRule, 'from' | 'to' | 'good' | 'qty' | 'wagons'>): string {
+/** Where a rule pulls from, in words: "Millbrook", "Millbrook and Saltmere". */
+export function carryFrom(s: SimState, c: Pick<CarryRule, 'from' | 'to' | 'sources'>): string {
+  const names = carrySources(s, c).map((t) => townName(s, t));
+  return names.length <= 1 ? (names[0] ?? townName(s, c.from)) : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** A short label: "Carry bread · Millbrook → Saltmere · all" / "· 40/day" / "· what it needs". */
+export function carryLabel(s: SimState, c: Pick<CarryRule, 'from' | 'to' | 'good' | 'qty' | 'wagons' | 'sources' | 'need'>): string {
   const g = GOODS[c.good]?.name.toLowerCase() ?? 'goods';
-  const q = c.qty >= 0 ? `${amountText(c.good, c.qty).split(' ')[0]}/day` : 'all';
-  return `Carry ${g} · ${townName(s, c.from)} → ${carryDest(s, c)} · ${q}${c.wagons === 'now' ? ' · right away' : ''}`;
+  const q = c.need && c.to >= 0 ? 'what it needs' : c.qty >= 0 ? `${amountText(c.good, c.qty).split(' ')[0]}/day` : 'all';
+  return `Carry ${g} · ${carryFrom(s, c)} → ${carryDest(s, c)} · ${q}${c.wagons === 'now' ? ' · right away' : ''}`;
 }
 
 /** A town a "where it runs short" rule serves, and what it needs now. */
@@ -140,31 +162,52 @@ export interface ShortTarget {
   days: number;
 }
 
-/**
- * The towns a "where it runs short" rule serves — every town other than its own with a wagon road
- * to it and a running Treasury sell order for the good — neediest first (see the header).
- */
-export function shortTargets(s: SimState, c: Pick<CarryRule, 'from' | 'good'>): ShortTarget[] {
+/** What the Treasury's running sell orders for a good offer a day, town by town. */
+function sellOffers(s: SimState, good: number): Map<number, number> {
   const offered = new Map<number, number>();
   for (const o of s.policy.orders) {
-    if (!o.enabled || o.side !== 'sell' || o.market.kind !== 'good' || o.market.good !== c.good) continue;
+    if (!o.enabled || o.side !== 'sell' || o.market.kind !== 'good' || o.market.good !== good) continue;
     if (o.until >= 0 && o.until < s.day) continue;
     if (o.total >= 0 && o.filled >= o.total - 1e-9) continue;
     const t = o.market.town;
-    if (t === c.from || !(t >= 0 && t < s.towns.length)) continue;
-    offered.set(t, (offered.get(t) ?? 0) + Math.max(0, o.qty));
+    if (t >= 0 && t < s.towns.length) offered.set(t, (offered.get(t) ?? 0) + Math.max(0, o.qty));
   }
+  return offered;
+}
+
+/**
+ * What `town` needs of a good now, for a rule pulling from `sources`: its average daily shortage over
+ * the last days plus what the Treasury sold there a day (no more than `offered`, what its sell orders
+ * there offer a day, when there are any), over the days the quickest load takes plus one, less what
+ * the Treasury holds there or has on the road to it. null when no wagon road reaches it.
+ */
+export function destNeed(s: SimState, sources: number[], town: number, good: number, offered = Infinity): ShortTarget | null {
+  let days = Infinity;
+  for (const f of sources) {
+    if (f === town) continue;
+    const r = usableRoute(s, f, town);
+    if (r) days = Math.min(days, Math.max(1, Math.ceil(r.days)));
+  }
+  if (!Number.isFinite(days)) return null;
+  const b = recentBalance(s.markets[town * N_GOODS + good]);
+  let onRoad = 0;
+  for (const sh of s.shipments) if (sh && sh.owner === STATE && sh.to === town && sh.good === good) onRoad += Math.max(0, sh.qty);
+  const held = Math.max(0, s.treasury.goods[town]?.[good] ?? 0);
+  const rate = Math.min(b.shortage + b.treasury, offered);
+  return { town, need: rate * (days + 1) - held - onRoad, shortage: b.shortage, sold: b.treasury, offered, held, onRoad, days };
+}
+
+/**
+ * The towns a "where it runs short" rule serves — every town other than its stores with a wagon road
+ * from one of them and a running Treasury sell order for the good — neediest first (see the header).
+ */
+export function shortTargets(s: SimState, c: Pick<CarryRule, 'from' | 'good' | 'sources'>): ShortTarget[] {
+  const src = carrySources(s, { from: c.from, to: -1, sources: c.sources });
   const out: ShortTarget[] = [];
-  for (const [town, offer] of offered) {
-    const r = usableRoute(s, c.from, town);
-    if (!r) continue;
-    const b = recentBalance(s.markets[town * N_GOODS + c.good]);
-    let onRoad = 0;
-    for (const sh of s.shipments) if (sh && sh.owner === STATE && sh.to === town && sh.good === c.good) onRoad += Math.max(0, sh.qty);
-    const held = Math.max(0, s.treasury.goods[town]?.[c.good] ?? 0);
-    const days = Math.max(1, Math.ceil(r.days));
-    const rate = Math.min(b.shortage + b.treasury, offer);
-    out.push({ town, need: rate * (days + 1) - held - onRoad, shortage: b.shortage, sold: b.treasury, offered: offer, held, onRoad, days });
+  for (const [town, offer] of sellOffers(s, c.good)) {
+    if (src.includes(town)) continue;
+    const x = destNeed(s, src, town, c.good, offer);
+    if (x) out.push(x);
   }
   return out.sort((x, y) => y.need - x.need || x.town - y.town);
 }
@@ -172,12 +215,20 @@ export function shortTargets(s: SimState, c: Pick<CarryRule, 'from' | 'good'>): 
 /** A carry rule in a plain sentence. */
 export function describeCarry(s: SimState, c: CarryRule): string {
   const g = GOODS[c.good]?.name.toLowerCase() ?? 'goods';
-  const what = c.qty >= 0 ? `up to ${amountText(c.good, c.qty)} a day of the ${g} it holds` : `all the ${g} it holds`;
+  const src = carrySources(s, c);
+  const many = src.length > 1;
+  const what =
+    c.need && c.to >= 0
+      ? `as much of the ${g} it holds as ${townName(s, c.to)} needs`
+      : c.qty >= 0
+        ? `up to ${amountText(c.good, c.qty)} a day of the ${g} it holds`
+        : `all the ${g} it holds`;
+  const where = many ? `in ${carryFrom(s, c)} — drawing on each equally —` : `in ${carryFrom(s, c)}`;
   const how = c.wagons === 'now' ? 'as soon as a market session ends' : `in full wagons (or after ${carryHoldDays(c.good) === 1 ? 'a day' : `${carryHoldDays(c.good)} days`} of waiting)`;
   const span = c.until >= 0 ? ` until ${dateLabel(c.until)}` : '';
   if (c.to < 0)
-    return `The Treasury will carry ${what} in ${townName(s, c.from)} to wherever it runs short — each load to the town, of those where it sells ${g}, that needs it most — ${how}${span}.`;
-  return `The Treasury will carry ${what} in ${townName(s, c.from)} to its store in ${townName(s, c.to)}, ${how}${span}.`;
+    return `The Treasury will carry ${what} ${where} to wherever it runs short — each load to the town, of those where it sells ${g}, that needs it most — ${how}${span}.`;
+  return `The Treasury will carry ${what} ${where} to its store in ${townName(s, c.to)}, ${how}${span}.`;
 }
 
 /**
@@ -190,7 +241,7 @@ export function carriesBeginDay(s: SimState): void {
   const keep: CarryRule[] = [];
   for (const c of cs) {
     if (c.until >= 0 && c.until < s.day) {
-      news(s, `The Treasury has stopped carrying ${GOODS[c.good]?.name.toLowerCase() ?? 'goods'} from ${townName(s, c.from)} to ${townName(s, c.to)} (${amountText(c.good, c.carried)} carried in all).`, 'policy', c.from);
+      news(s, `The Treasury has stopped carrying ${GOODS[c.good]?.name.toLowerCase() ?? 'goods'} from ${carryFrom(s, c)} to ${carryDest(s, c)} (${amountText(c.good, c.carried)} carried in all).`, 'policy', c.from);
       continue;
     }
     keep.push(c);
@@ -219,27 +270,53 @@ export function runCarries(s: SimState, session: number): void {
   const closing = session >= MARKET_SESSIONS - 1;
   for (const c of cs) {
     if (!carryActive(s, c)) continue;
-    if (!(c.from >= 0 && c.from < s.towns.length && c.to >= -1 && c.to < s.towns.length) || c.from === c.to) continue;
-    if (!(c.good >= 0 && c.good < N_GOODS)) continue;
-    const avail = carryAvailable(s, c);
+    if (!(c.to >= -1 && c.to < s.towns.length) || !(c.good >= 0 && c.good < N_GOODS)) continue;
+    const src = carrySources(s, c);
+    if (!src.length) continue;
+    // what each store can give, within the rule's daily allowance
+    const held = src.map((t) => Math.max(0, s.treasury.goods[t]?.[c.good] ?? 0));
+    let avail = held.reduce((a, b) => a + b, 0);
+    if (c.qty >= 0) avail = Math.min(avail, Math.max(0, c.allow));
     if (!(avail > 1e-6)) {
       c.heldSince = -1;
       continue;
     }
-    if (c.to < 0) {
-      carryWhereShort(s, c, avail, depart, closing);
+    // where the loads go, and how much each destination takes
+    const dests: { town: number; want: number }[] = [];
+    if (c.to < 0) for (const x of shortTargets(s, c)) dests.push({ town: x.town, want: x.need });
+    else if (c.need) {
+      const x = destNeed(s, src, c.to, c.good, sellOffers(s, c.good).get(c.to) ?? Infinity);
+      if (x) dests.push({ town: c.to, want: x.need });
+    } else dests.push({ town: c.to, want: Infinity });
+    const wanted = dests.filter((d) => d.want > 0.5);
+    if (!wanted.length) {
+      c.heldSince = -1; // nothing needed: the goods wait, not for a wagon
       continue;
     }
     if (!(c.heldSince >= 0)) c.heldSince = s.day;
     const collecting = !(closing && c.until === s.day);
-    const lineRoom = s.policy.lines?.length ? (lineOffer(s, c.from, c.to)?.room ?? 0) : 0;
-    const load = Math.min(avail, carryLoadNow(avail, c.wagons, collecting, s.day - c.heldSince, c.good, lineRoom));
-    if (!(load > 1e-6)) continue; // keep collecting for a fuller wagon
-    const res = sendTreasuryCargo(s, c.from, c.to, c.good, load, { order: c.id, depart });
-    if (res.ok && res.qty > 0) {
-      c.heldSince = avail - res.qty > 1e-6 ? s.day : -1; // what is left starts a new load
-      booked(c, res.qty, res.paid);
-    } else if (!res.ok) failed(s, c, c.to, res.message);
+    let left = avail;
+    let sent = false;
+    for (const d of wanted) {
+      if (!(left > 1e-6)) break;
+      // this destination's load, drawn on the stores equally (as far as each holds the good)
+      const shares = shareOut(Math.min(left, d.want), held);
+      for (let i = 0; i < src.length; i++) {
+        const q = shares[i];
+        if (!(q > 1e-6) || src[i] === d.town) continue;
+        const lineRoom = s.policy.lines?.length ? (lineOffer(s, src[i], d.town)?.room ?? 0) : 0;
+        const load = Math.min(q, carryLoadNow(q, c.wagons, collecting, s.day - c.heldSince, c.good, lineRoom));
+        if (!(load > 1e-6)) continue; // keep collecting for a fuller wagon
+        const res = sendTreasuryCargo(s, src[i], d.town, c.good, load, { order: c.id, depart });
+        if (res.ok && res.qty > 0) {
+          held[i] = Math.max(0, held[i] - res.qty);
+          left -= res.qty;
+          sent = true;
+          booked(c, res.qty, res.paid);
+        } else if (!res.ok) failed(s, c, src[i], d.town, res.message);
+      }
+    }
+    if (sent) c.heldSince = left > 1e-6 ? s.day : -1; // what is left starts a new load
   }
 }
 
@@ -253,45 +330,11 @@ function booked(c: CarryRule, qty: number, paid: number): void {
 }
 
 /** A load that could not leave: say why on the first day of a spell. */
-function failed(s: SimState, c: CarryRule, to: number, message: string): void {
+function failed(s: SimState, c: CarryRule, from: number, to: number, message: string): void {
   const fails = (rt(s).bag.carryFails ??= {}) as Record<number, number>;
   if (fails[c.id] !== s.day - 1 && fails[c.id] !== s.day) {
     const why = message.charAt(0).toLowerCase() + message.slice(1);
-    news(s, `The Treasury's ${GOODS[c.good]?.name.toLowerCase() ?? 'goods'} for ${townName(s, to)} wait in ${townName(s, c.from)}: ${why}`, 'policy', c.from);
+    news(s, `The Treasury's ${GOODS[c.good]?.name.toLowerCase() ?? 'goods'} for ${townName(s, to)} wait in ${townName(s, from)}: ${why}`, 'policy', from);
   }
   fails[c.id] = s.day;
-}
-
-/**
- * A "where it runs short" rule after a session: loads for the neediest served towns in turn (each
- * no more than it needs; 'full' rules keep collecting below a full wagon as usual). Nothing needed
- * anywhere: the goods wait in the store (and are not counted as waiting for a wagon).
- */
-function carryWhereShort(s: SimState, c: CarryRule, avail: number, depart: number, closing: boolean): void {
-  const targets = shortTargets(s, c).filter((x) => x.need > 0.5);
-  if (!targets.length) {
-    c.heldSince = -1;
-    return;
-  }
-  if (!(c.heldSince >= 0)) c.heldSince = s.day;
-  const collecting = !(closing && c.until === s.day);
-  let left = avail;
-  let sent = false;
-  for (const x of targets) {
-    if (!(left > 1e-6)) break;
-    const want = Math.min(left, x.need);
-    const lineRoom = s.policy.lines?.length ? (lineOffer(s, c.from, x.town)?.room ?? 0) : 0;
-    const load = Math.min(want, carryLoadNow(want, c.wagons, collecting, s.day - c.heldSince, c.good, lineRoom));
-    if (!(load > 1e-6)) continue;
-    const res = sendTreasuryCargo(s, c.from, x.town, c.good, load, { order: c.id, depart });
-    if (res.ok && res.qty > 0) {
-      left -= res.qty;
-      sent = true;
-      booked(c, res.qty, res.paid);
-    } else if (!res.ok) {
-      failed(s, c, x.town, res.message);
-      break;
-    }
-  }
-  if (sent) c.heldSince = left > 1e-6 ? s.day : -1;
 }

@@ -315,6 +315,12 @@ function fillOrders(s: SimState): void {
     if (!isObj(c) || !isNum(c.id) || !okTown(c.from) || !(okTown(c.to) || c.to === -1) || c.from === c.to || !okGood(c.good)) continue;
     for (const k of CARRY_NUMS) if (!isNum(c[k])) c[k] = k === 'qty' || k === 'until' || k === 'heldSince' ? -1 : 0;
     if (c.wagons !== 'full' && c.wagons !== 'now') c.wagons = 'full';
+    if (c.sources !== undefined) {
+      const src = Array.isArray(c.sources) ? [...new Set((c.sources as unknown[]).filter((t): t is number => okTown(t) && t !== c.to))] : [];
+      if (src.length >= 2 && src.includes(c.from as number)) c.sources = src;
+      else delete c.sources;
+    }
+    if (c.need !== undefined && c.need !== true) delete c.need;
     if (typeof c.enabled !== 'boolean') c.enabled = true;
     if (typeof c.label !== 'string') c.label = `Carry ${goodWords(c.good).name}`;
     carries.push(c);

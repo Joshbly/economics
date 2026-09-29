@@ -236,7 +236,9 @@ A carry can be sent **once, now** (an amount, or everything held there), or kept
 
 A carry neither buys nor sells. To keep a town supplied from another, place a buy order in the first, a carry to the second, and a sell order there; the Carry form's *Sell in …* opens that order for you.
 
-A standing carry can also go **where it runs short**. It serves the towns where you have a sell order for the good, and sends each load to the one that needs it most: its shortage over the last 14 days plus what you have been selling there, for the days a load takes to arrive, less what you already hold there or have on the road. When none needs any, the goods wait where they are. Bear in mind what it competes with: the trading houses carry goods to where they fetch more, and your wagons take some of their trade. Each piece stays an ordinary rule: your purchases raise the price where you buy, your offers lower it where you sell, and you can change or pause any one of them without touching the others.
+A standing carry can also go **where it runs short**. It serves the towns where you have a sell order for the good, and sends each load to the one that needs it most: its shortage over the last 14 days plus what you have been selling there, for the days a load takes to arrive, less what you already hold there or have on the road. When none needs any, the goods wait where they are.
+
+The Carry form shows the good **town by town**: what each town makes and uses a day, its market over the last 14 days, and what you hold there. Mark **from** on one store, or on several: a rule then draws on each of them **equally** (a store that holds less gives what it has, and the others make up the rest). Mark **to** on the town it should go to, or pick *Where it runs short*. Besides *Everything* and *Up to* an amount a day, a carry to one town can take **what it needs**: the same measure as above, for that town alone. Bear in mind what it competes with: the trading houses carry goods to where they fetch more, and your wagons take some of their trade. Each piece stays an ordinary rule: your purchases raise the price where you buy, your offers lower it where you sell, and you can change or pause any one of them without touching the others.
 
 **Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town (a dot marks goods a carry rule takes on elsewhere), every Treasury wagon on the road with its arrival, and what freight has cost this month.`,
       },
@@ -282,6 +284,16 @@ Foreigners who earn ¤ at the harbour want gold for it; foreigners who want the 
 - **Credit** — all loans the bank has outstanding.
 - **Real wage** — the average wage divided by Prices.
 - **Gini** — 0 when everyone owns the same, 1 when one person owns everything.`,
+      },
+      {
+        title: 'Made, used and traded',
+        body: `Three different numbers, often confused:
+
+- **Made** — what the workshops of a town produced: the farm's grain, the bakery's bread.
+- **Used** — what was used up there: eaten, burnt, drunk or worn out at home, worked into other goods (grain into bread), built into houses and works, or burnt by wagons setting out.
+- **Traded** — what changed hands in the town's market hall. A loaf baked and sold in the same town is both made and traded there; grain a farm sells to a trader who carts it away is traded where it is sold and used where it lands.
+
+**Net** is made less used: a town with a **+** makes more than it needs and sends the rest out (or stocks it); a **−** town needs more than it makes and brings the rest in, by wagon or from the ships at a port — **In** and **Out**. Markets → a good → *Made, used and moved* lists every town; the grid's *Made & used* view shows, for every good at once, what each town makes a day. All figures are averages over the last 14 days.`,
       },
       {
         title: 'Experiments worth running',

@@ -40,9 +40,13 @@ check('buy order placed in the farm town', buy && buy.side === 'buy' && buy.mark
 await page.locator(`${T} .seg-btn:text-is("Carry")`).click();
 await page.waitForTimeout(300);
 const cf = page.locator(`${T} .lv-carry form`);
-const csel = cf.locator('select');
-check('carry form starts from the market being traded', Number(await csel.nth(0).inputValue()) === farm, `from=${await csel.nth(0).inputValue()}`);
-await csel.nth(1).selectOption({ index: harbor });
+const nameOf = (t) => q.s(`s.towns[${t}].name`);
+const rowOf = async (t) => cf.locator('.bt-r', { hasText: await nameOf(t) }).first();
+const pick = async (t, which) => (await rowOf(t)).locator(`.bt-pickb:text-is("${which}")`).click();
+const isOn = async (t, which) => ((await (await rowOf(t)).locator(`.bt-pickb:text-is("${which}")`).getAttribute('class')) ?? '').includes('on');
+check('carry form shows the good town by town (made, used, net…)', (await cf.locator('.bt-h').first().textContent())?.startsWith('TownMadeUsedNetMarketHeld'), (await cf.locator('.bt-h').first().textContent()) ?? '');
+check('carry form starts from the market being traded', await isOn(farm, 'from'));
+await pick(harbor, 'to');
 await cf.locator('.seg-btn:text-is("Everything")').click();
 await cf.locator('.seg-btn:text-is("Full wagons")').click();
 await cf.locator('.seg-btn:text-is("Until removed")').click();
@@ -67,19 +71,33 @@ await page.waitForTimeout(300);
 const sell = await q.s('s.policy.orders[s.policy.orders.length - 1]');
 check('sell order placed at the harbour', sell && sell.side === 'sell' && sell.market.town === harbor && sell.priceMode === 'any', JSON.stringify(sell && { town: sell.market.town, side: sell.side, mode: sell.priceMode }));
 
-// the To menu offers "Where it runs short"; the preview names the towns it would serve
+// "Where it runs short": the preview names the towns it would serve
 await page.locator(`${T} .seg-btn:text-is("Carry")`).click();
 await page.waitForTimeout(250);
-const toOpts = await page.locator(`${T} .lv-carry form select`).nth(1).locator('option').allTextContents();
-check('To offers Where short', toOpts.includes('Where short'), toOpts.join('/'));
-await page.locator(`${T} .lv-carry form select`).nth(0).selectOption({ index: farm });
-await page.locator(`${T} .lv-carry form select`).nth(1).selectOption({ label: 'Where short' });
-await page.locator(`${T} .lv-carry .seg-btn:text-is("Until removed")`).click();
+if (!(await isOn(farm, 'from'))) await pick(farm, 'from');
+for (const t of [0, 1, 2, 3]) if (t !== farm && (await isOn(t, 'from'))) await pick(t, 'from');
+await cf.locator('.lv-chip', { hasText: 'Where it runs short' }).click();
+await cf.locator('.seg-btn:text-is("Until removed")').click();
 await page.waitForTimeout(250);
-const spv = (await page.locator(`${T} .lv-carry .lv-preview`).textContent()) ?? '';
-check('where-short preview names the towns it serves', /to wherever it runs short/.test(spv) && /Serves .*Kelpmouth/.test(spv), spv.slice(0, 240));
+const spv = (await cf.locator('.lv-preview').textContent()) ?? '';
+const harborName = await nameOf(harbor);
+check('where-short preview names the towns it serves', /to wherever it runs short/.test(spv) && new RegExp('Serves .*' + harborName).test(spv), spv.slice(0, 240));
 await q.shot('carry-short');
-await page.locator(`${T} .lv-carry form select`).nth(1).selectOption({ index: harbor });
+// two stores, equally, to one town, carrying what it needs
+const third = [0, 1, 2, 3].find((t) => t !== farm && t !== harbor);
+await pick(third, 'from');
+await pick(harbor, 'to');
+await cf.locator('.seg-btn:text-is("What it needs")').click();
+await page.waitForTimeout(250);
+const npv = (await cf.locator('.lv-preview').textContent()) ?? '';
+check('what-it-needs preview, drawing on each store equally', /Carries what \S+ needs/.test(npv) && /drawing on each store equally/.test(npv), npv.slice(0, 240));
+await q.shot('carry-planner');
+const nc0 = await q.s('s.policy.carries.length');
+await cf.locator('.lv-submit').click();
+await page.waitForTimeout(300);
+const c2 = await q.s('s.policy.carries[s.policy.carries.length - 1]');
+check('carry from two stores to what the destination needs', (await q.s('s.policy.carries.length')) === nc0 + 1 && c2.sources?.length === 2 && c2.need === true && c2.to === harbor, JSON.stringify(c2 && { sources: c2.sources, need: c2.need, to: c2.to }));
+await page.evaluate((id) => window.__realm.ui.game.dispatch({ type: 'removeCarry', id }), c2.id);
 await page.locator(`${T} .seg-btn:text-is("Goods")`).click();
 await page.waitForTimeout(200);
 

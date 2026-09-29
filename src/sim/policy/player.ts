@@ -1413,8 +1413,23 @@ function carry(s: SimState, a: Extract<PlayerAction, { type: 'carry' }>): Action
   // to −1: wherever it runs short (a standing rule; policy/carry.ts shortTargets)
   const short = a.to === -1;
   if (short && a.once) return fail('Carrying once needs a town to carry to.');
-  const err = short ? (!validTown(s, a.from) ? 'Unknown town.' : !validGood(a.good) ? 'Unknown good.' : null) : checkCarryPath(s, a.from, a.to, a.good);
+  // several stores to pull from, equally (standing rules)
+  let sources: number[] | undefined;
+  if (a.sources !== undefined && a.sources !== null) {
+    if (!Array.isArray(a.sources) || a.sources.some((t) => !validTown(s, t))) return fail('Unknown town among the stores to carry from.');
+    const uniq = [...new Set(a.sources)];
+    if (uniq.includes(a.to)) return fail('A store cannot carry to itself: take the destination out of the towns to carry from.');
+    if (uniq.length >= 2) {
+      if (a.once) return fail('Carrying once takes one town to carry from.');
+      if (!uniq.includes(a.from)) return fail('The first town to carry from must be among the stores.');
+      sources = [a.from, ...uniq.filter((t) => t !== a.from)];
+    }
+  }
+  if (a.need !== undefined && typeof a.need !== 'boolean') return fail('Say whether it carries only what the destination needs.');
+  if (a.need && a.once) return fail('Carrying once takes a set amount (or everything held).');
+  const err = short || sources ? (!validTown(s, a.from) ? 'Unknown town.' : !validGood(a.good) ? 'Unknown good.' : !short && !validTown(s, a.to) ? 'Unknown town.' : null) : checkCarryPath(s, a.from, a.to, a.good);
   if (err) return fail(err);
+  if (sources && !short && !sources.some((f) => freightPerUnit(s, f, a.to) >= 0)) return fail(`No wagon road links any of those towns with ${townName(s, a.to)}.`);
   if (!isNum(a.qty) || (a.qty !== -1 && a.qty <= 0)) return fail('The quantity must be a positive number (or all of it).');
   if (a.qty > PLAYER_MAX_QTY) return fail(`The quantity can be at most ${qtyText(PLAYER_MAX_QTY)}${a.once ? '' : ' a day'}.`);
   if (a.wagons !== undefined && a.wagons !== 'full' && a.wagons !== 'now') return fail('Wagons leave either when full or right away.');
@@ -1450,10 +1465,13 @@ function carry(s: SimState, a: Extract<PlayerAction, { type: 'carry' }>): Action
     freightToday: 0,
     freight: 0,
   };
+  if (sources) c.sources = sources;
+  if (a.need && !short) c.need = true;
   c.label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : carryLabel(s, c);
   (s.policy.carries ??= []).push(c);
   let note = '';
-  if (have <= 1e-9) note = ` The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)} yet; the rule carries it as it comes in (an order buying it there, or cargo landing).`;
+  const heldAll = (sources ?? [a.from]).reduce((x, t) => x + Math.max(0, s.treasury.goods[t]?.[a.good] ?? 0), 0);
+  if (heldAll <= 1e-9) note = ` The Treasury holds no ${goodLower(a.good)} in ${sources ? 'those towns' : townName(s, a.from)} yet; the rule carries it as it comes in (an order buying it there, or cargo landing).`;
   if (!traderOf(s, a.from) && (short || !lineBetween(s, a.from, a.to))) note += ` There is no trading house in ${townName(s, a.from)} yet to carry it.`;
   if (short) {
     const served = shortTargets(s, c).map((x) => townName(s, x.town));
@@ -1474,6 +1492,7 @@ function updateCarry(s: SimState, a: Extract<PlayerAction, { type: 'updateCarry'
     return fail(`The quantity must be a positive number up to ${qtyText(PLAYER_MAX_QTY)} a day (or all of it).`);
   if (p.wagons !== undefined && p.wagons !== 'full' && p.wagons !== 'now') return fail('Wagons leave either when full or right away.');
   if (p.until !== undefined && (!isInt(p.until) || (p.until !== -1 && p.until < s.day))) return fail('The end day must be today or later (or −1 for none).');
+  if (p.need !== undefined && typeof p.need !== 'boolean') return fail('Say whether it carries only what the destination needs.');
   const auto = c.label === carryLabel(s, c);
   if (p.qty !== undefined && p.qty !== c.qty) {
     c.qty = p.qty;
@@ -1481,6 +1500,13 @@ function updateCarry(s: SimState, a: Extract<PlayerAction, { type: 'updateCarry'
   }
   if (p.wagons !== undefined) c.wagons = p.wagons;
   if (p.until !== undefined) c.until = p.until;
+  if (p.need !== undefined) {
+    if (p.need && c.to >= 0) {
+      c.need = true;
+      c.qty = -1; // what it needs, from all it holds
+    } else delete c.need;
+  }
+  if (p.qty !== undefined && p.need === undefined) delete c.need; // a set amount again
   if (p.enabled !== undefined) c.enabled = !!p.enabled;
   if (auto) c.label = carryLabel(s, c);
   return { ok: true, message: c.enabled ? describeCarry(s, c) : 'Carry rule paused.', id: c.id };

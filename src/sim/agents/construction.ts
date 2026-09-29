@@ -64,11 +64,12 @@ import { invalidateRoutes, rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
 import type { Building, Firm, Materials, Project, ProjectKind, Ref, Sector, SimState, TownId } from '../types';
 import { STATE, Terrain } from '../types';
-import { clamp, fin } from '../util';
+import { clamp, fin, shareOut } from '../util';
 import { findSite, isValidSite, placeBuilding, removeBuilding } from '../world/layout';
 import { createFirm, defaultWage, fairPrice, firmDailyCost, noteFirmCosts, noteShortfall, strikeFactor, townGrossPrices, typicalDailyCost, workforceEff } from './firms';
 import { hasLevyBase } from './labor';
 import { materialsValue, toolFactor } from './production';
+import { FLOW_USED, noteFlow } from '../stats/flows';
 
 export interface ProjectSpec {
   kind: ProjectKind;
@@ -200,28 +201,7 @@ function usableLabor(p: Project, inv: number[]): number {
   return Math.min(rem, capL);
 }
 
-/**
- * Split `total` into equal shares for sites that can each take at most caps[i]; what a full site
- * cannot take goes to the others (water-filling). Σ result ≤ total.
- */
-export function shareOut(total: number, caps: number[]): number[] {
-  const out = caps.map(() => 0);
-  let left = Math.max(0, total);
-  let open = caps.map((_, i) => i).filter((i) => caps[i] > EPS);
-  while (left > EPS && open.length) {
-    const each = left / open.length;
-    const next: number[] = [];
-    for (const i of open) {
-      const take = Math.min(each, caps[i] - out[i]);
-      out[i] += take;
-      left -= take;
-      if (caps[i] - out[i] > EPS) next.push(i);
-    }
-    if (next.length === open.length) break; // every site took its full share
-    open = next;
-  }
-  return out;
-}
+export { shareOut } from '../util';
 
 /**
  * Today's Treasury labour for each Treasury project (project id → labour-days): each town's
@@ -526,7 +506,10 @@ function advance(s: SimState, b: Firm, p: Project, labor: number, swAvail: numbe
       done[m] += draw[m];
       const g = MAT_GOOD[m];
       b.inv[g] = Math.max(0, b.inv[g] - draw[m]);
-      if (draw[m] > 0) bump(s, 'buildmat_' + g, draw[m]);
+      if (draw[m] > 0) {
+        bump(s, 'buildmat_' + g, draw[m]);
+        noteFlow(s, b.town, g, FLOW_USED, draw[m]);
+      }
     }
     // ---- billing: the advance first, then the owner's cash ----
     if (bill > EPS) {
@@ -802,6 +785,7 @@ export function constructionProgress(s: SimState): void {
     const inUse = leff > EPS && dBuilder.toolsPerWorker > 0 ? Math.min(1, tools / (dBuilder.toolsPerWorker * leff)) : 0;
     const wear = Math.min(tools, TOOLS_IDLE_WEAR_DAY * tools + dBuilder.toolUse * leff * util * inUse);
     b.tools = tools - wear;
+    noteFlow(s, b.town, G.tools, FLOW_USED, wear);
     b.producedToday += used;
     noteFirmCosts(s, b.id, matVal, wear * pr[G.tools]);
     laborTotal += used;

@@ -98,16 +98,19 @@ export function activeRoutes(s: SimState, lanes: Map<string, number> = new Map()
   const out: RouteInfo[] = [];
   for (const c of cs) {
     if (!c) continue;
-    const { from, to } = c;
-    if (!(from >= 0 && from < nt && to >= 0 && to < nt) || from === to) continue;
+    const to = c.to;
     const buying = !!c.enabled && !(c.until >= 0 && c.until < s.day);
     const inTransit = carried?.get(c.id) ?? 0;
     if (!buying && !(inTransit > 1e-6)) continue;
-    const key = from + '>' + to;
-    const lane = lanes.get(key) ?? 0;
-    lanes.set(key, lane + 1);
-    const held = Math.max(0, num(s.treasury?.goods?.[from]?.[c.good]));
-    out.push({ order: c.id, from, to, good: c.good, perDay: c.qty >= 0 ? num(c.qty) : -1, buying, inTransit, waiting: held, lane });
+    // one line from each store it pulls from
+    for (const from of c.sources && c.sources.length >= 2 ? c.sources : [c.from]) {
+      if (!(from >= 0 && from < nt && to >= 0 && to < nt) || from === to) continue;
+      const key = from + '>' + to;
+      const lane = lanes.get(key) ?? 0;
+      lanes.set(key, lane + 1);
+      const held = Math.max(0, num(s.treasury?.goods?.[from]?.[c.good]));
+      out.push({ order: c.id, from, to, good: c.good, perDay: c.qty >= 0 ? num(c.qty) : -1, buying, inTransit, waiting: held, lane });
+    }
   }
   return out;
 }

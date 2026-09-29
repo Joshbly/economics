@@ -65,6 +65,7 @@ import {
 } from '../policy/levies';
 import { auctionBounds, noteBinding, type AuctionBounds } from '../policy/limits';
 import { buyerPct, buyerUnit, clearBook, curveInto, sellerPct, sellerUnit, type ClearResult } from './auction';
+import { FLOW_IN, FLOW_OUT, noteFlow } from '../stats/flows';
 
 export interface Books {
   goods: Book[]; // index = town * N_GOODS + good
@@ -659,6 +660,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
         addAcc(acc, 'gov_iou', paid);
       } else addAcc(acc, 'gold_state_bought', got);
     } else if (ref === FOREIGN_REF && isGoods) {
+      noteFlow(s, town, good, FLOW_OUT, got); // sold to foreign ships: leaves the town
       addAcc(acc, K_EXP[good], got);
       addAcc(acc, 'expval', p * got);
       s.foreign.exportsQty[good] = (s.foreign.exportsQty[good] || 0) + got;
@@ -725,6 +727,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       } else if (kind === K_GOLD) addAcc(acc, 'gold_state_sold', c);
       else addAcc(acc, 'gov_goods_sold', recv[k]);
     } else if (r === FOREIGN_REF && isGoods) {
+      noteFlow(s, town, good, FLOW_IN, c); // bought from foreign ships: lands in the town
       addAcc(acc, K_IMP[good], c);
       addAcc(acc, 'impval', p * c);
       s.foreign.importsQty[good] = (s.foreign.importsQty[good] || 0) + c;

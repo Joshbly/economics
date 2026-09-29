@@ -69,6 +69,7 @@ import { STATE } from '../types';
 import type { Firm, FreightLine, LineFare, LineStaffing, Order, SimState, TownId } from '../types';
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
+import { FLOW_USED, noteFlow } from '../stats/flows';
 
 // ---------------------------------------------------------------------------
 // Records
@@ -636,6 +637,7 @@ export function linesAfterClear(s: SimState): void {
       // fuel for every loaded leg
       const need = legs * legFuel(r);
       const burn = Math.min(need, Math.max(0, L.oil));
+      noteFlow(s, L.a, G.oil, FLOW_USED, Math.min(Math.max(0, L.oil), burn));
       L.oil = Math.max(0, L.oil - burn);
       const fc = burn * fin(L.oilBasis);
       L.fuelCost += fc;

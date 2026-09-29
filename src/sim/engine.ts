@@ -23,6 +23,7 @@ import { foreignOrders, foreignEndDay } from './agents/foreign';
 import { bankBeginDay, bankOrders, bankEndDay } from './agents/bank';
 import { beginDayStats, statsStep } from './stats/stats';
 import { beginDayEvents, eventsStep } from './stats/events';
+import { foldFlows } from './stats/flows';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -69,6 +70,7 @@ export function stepDay(s: SimState): void {
   demographyStep(s);
   foreignEndDay(s);
   spoilage(s);
+  foldFlows(s); // each town's made / used / in / out of the day (stats/flows.ts)
   statsStep(s);
   eventsStep(s);
 

@@ -184,7 +184,7 @@ function routeTip(s: SimState, id: number): Child[] {
   const c = s.policy?.carries?.find((x) => x && x.id === id);
   if (!c) return [];
   const g = c.good;
-  const from = s.towns[c.from]?.name ?? '?';
+  const from = (c.sources && c.sources.length >= 2 ? c.sources : [c.from]).map((t) => s.towns[t]?.name ?? '?').join(' + ');
   const to = s.towns[c.to]?.name ?? '?';
   const name = (GOODS[g]?.name ?? 'Goods').toLowerCase();
   const out: Child[] = [tipTitle('Treasury carry', `${name} · ${from} → ${to}`)];

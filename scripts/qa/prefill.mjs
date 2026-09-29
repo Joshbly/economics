@@ -13,7 +13,8 @@ const L = (id) => `.lv-item[data-lever="${id}"] .lv-body`;
 const selVals = (id) => page.locator(`${L(id)} select:visible`).evaluateAll((ss) => ss.map((s) => s.options[s.selectedIndex]?.text));
 await q.s('R.setSpeed(0)');
 
-// Markets -> coal in Milldale
+// Markets -> coal in town 1
+const town1 = await q.s('s.towns[1].name');
 await q.s(`R.select({kind:'market', town:1, good:3})`);
 await page.waitForTimeout(500);
 for (const [btn, lever] of [['Trade here', 'trade'], ['Levy here', 'levy'], ['Limit here', 'limit']]) {
@@ -24,7 +25,7 @@ for (const [btn, lever] of [['Trade here', 'trade'], ['Levy here', 'levy'], ['Li
   const open = await page.evaluate(() => document.querySelector('.lv-item.open')?.dataset.lever);
   const vals = await selVals(lever);
   const focused = await page.evaluate(() => document.activeElement?.className);
-  check(`Markets "${btn}" -> ${lever}`, (await q.s('ui.tab')) === 'levers' && open === lever && vals.includes('Coal') && vals.some((v) => /Milldale/.test(v)), `open=${open} selects=${vals.join('/')} focus=${focused}`);
+  check(`Markets "${btn}" -> ${lever}`, (await q.s('ui.tab')) === 'levers' && open === lever && vals.includes('Coal') && vals.includes(town1), `open=${open} selects=${vals.join('/')} focus=${focused}`);
   await q.shot('pf-' + lever);
 }
 // gold and IOU
@@ -73,9 +74,15 @@ const mv = page.locator(`${T} .lv-carry form`);
 check('holdings + carry form visible after buying', held > 0 && (await mv.isVisible()), `held=${held}`);
 await q.shot('pf-holdings');
 if (await mv.isVisible()) {
-  const ms = mv.locator('select');
-  await ms.nth(0).selectOption({ index: 0 });
-  await ms.nth(2).selectOption({ label: 'Bread' });
+  await mv.locator('select').nth(0).selectOption({ label: 'Bread' });
+  const t0 = await q.s('s.towns[0].name');
+  const r0 = mv.locator('.bt-r', { hasText: t0 }).first();
+  if (!((await r0.locator('.bt-pickb:text-is("from")').getAttribute('class')) ?? '').includes('on')) await r0.locator('.bt-pickb:text-is("from")').click();
+  for (let t = 1; t < (await q.s('s.towns.length')); t++) {
+    const r = mv.locator('.bt-r', { hasText: await q.s(`s.towns[${t}].name`) }).first();
+    if (((await r.locator('.bt-pickb:text-is("from")').getAttribute('class')) ?? '').includes('on')) await r.locator('.bt-pickb:text-is("from")').click();
+  }
+  await mv.locator('.bt-r', { hasText: await q.s('s.towns[1].name') }).first().locator('.bt-pickb:text-is("to")').click();
   await mv.locator('.seg-btn:text-is("Everything")').click();
   await mv.locator('.seg-btn:text-is("Once, now")').click();
   await page.waitForTimeout(150);

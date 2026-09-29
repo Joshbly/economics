@@ -31,6 +31,7 @@ import type {
   Treasury,
 } from './types';
 import { GOLD_GOOD, IOU_GOOD, STATE } from './types';
+import { FLOW_OUT, noteFlow } from './stats/flows';
 
 export function newPerson(s: SimState, town: TownId, name: string): Person {
   const p: Person = {
@@ -219,6 +220,7 @@ export function newShipment(
 ): Shipment {
   const sh: Shipment = { id: s.ids.shipment++, owner, from, to, good, qty, basis, depart, arrive, wagons, order: -1, line: -1 };
   s.shipments.push(sh);
+  noteFlow(s, from, good, FLOW_OUT, qty); // the town sends it out (stats/flows.ts)
   return sh;
 }
 

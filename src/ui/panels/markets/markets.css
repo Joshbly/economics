@@ -200,3 +200,30 @@
   .mk-cell .mk-vol { display: none; }
   .mk-toolbar-note { display: none; }
 }
+
+/* ---- one good, town by town (./bytown.ts) --------------------------------------- */
+.bt { display: flex; flex-direction: column; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.bt-r { display: grid; grid-template-columns: minmax(64px, 1.4fr) repeat(5, minmax(30px, 0.8fr)) minmax(58px, 1.1fr) minmax(38px, 0.8fr); align-items: center; column-gap: 4px; padding: 2px 4px; border-radius: 4px; }
+.bt-pick .bt-r { grid-template-columns: minmax(58px, 1.3fr) repeat(3, minmax(28px, 0.75fr)) minmax(48px, 1fr) minmax(28px, 0.7fr) 38px 28px; }
+.bt { min-width: 0; overflow: hidden; }
+.bt-counting { padding: 4px; font-size: 11px; color: var(--ink-3); }
+.bt-r > span, .bt-r > button { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-1); }
+.bt-r > .bt-town { text-align: left; color: var(--ink-0); font-weight: 500; }
+.bt-h > span { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-3); cursor: help; }
+.bt-h > span:first-child { text-align: left; }
+.bt-r.bt-focus { background: var(--gold-wash); }
+.bt-total { border-top: 1px solid var(--line-2); margin-top: 2px; padding-top: 3px; }
+.bt-total > span { color: var(--ink-2); }
+.bt-plus { color: var(--gold-hi) !important; }
+.bt-minus { color: var(--info) !important; }
+.bt-short { color: var(--warn, #e0a44a) !important; }
+.bt-unsold { color: var(--ink-2) !important; }
+.bt-dim { color: var(--ink-3) !important; }
+.bt-r > .bt-pickb { justify-self: end; padding: 0 5px; height: 18px; font-size: 10px; text-align: center; }
+.bt-r > .bt-pickb.on { color: var(--gold-hi); border-color: var(--gold); background: var(--gold-wash); }
+.bt-town.ent-link { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.mk-flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0 8px; margin: 2px 0 6px; }
+.mk-flow-c { display: flex; flex-direction: column; min-width: 0; }
+.mk-flow-l { font-size: 10px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-flow-v { font: 600 14px/1.3 var(--font-display); color: var(--ink-0); font-variant-numeric: tabular-nums; }
+.mk-flow-note { margin: 2px 0 8px; }

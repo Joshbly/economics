@@ -61,6 +61,8 @@ import {
   unitOf,
 } from './data';
 import { pvChart } from './pvchart';
+import { byTownTable, qtyCell, townFlowRows } from './bytown';
+import { recentFlows } from '../../../sim/stats/flows';
 
 export interface Detail {
   el: HTMLElement;
@@ -218,6 +220,17 @@ export function createDetail(hooks: DetailHooks): Detail {
   const histSub = h('div', { class: 'card-sub' });
   const histCard = card('Price history', histSub, winCtl.el, pv.el, realmLines.el);
 
+  // ---- made, used and moved (sim/stats/flows.ts) -----------------------------------------
+  const flowCells = ['Made here', 'Used here', 'Brought in', 'Sent out', 'Traded in the market'].map((label) => {
+    const v = h('span', { class: 'mk-flow-v' });
+    return { el: h('div', { class: 'mk-flow-c' }, h('span', { class: 'mk-flow-l' }, label), v), v };
+  });
+  const flowStrip = h('div', { class: 'mk-flow' }, flowCells.map((c) => c.el));
+  const flowNote = h('p', { class: 'note mk-flow-note' });
+  const flowTable = byTownTable({ onTown: (t) => hooks.pick(t, good) });
+  const flowSub = h('div', { class: 'card-sub' });
+  const flowCard = card('Made, used and moved', flowSub, null, flowStrip, flowNote, flowTable.el);
+
   // ---- auction ------------------------------------------------------------------------
   const reading = h('div', { class: 'mk-reading' });
   const curve = curveChart({ height: 240 });
@@ -242,7 +255,7 @@ export function createDetail(hooks: DetailHooks): Detail {
 
   const instrNote = h('div', { class: 'mk-instr' });
 
-  const el = h('div', { class: 'mk-detail' }, nav, title, actions, tileWrap, instrNote, histCard, auctionCard, realmCard, holdCard, rulesCard);
+  const el = h('div', { class: 'mk-detail' }, nav, title, actions, tileWrap, instrNote, flowCard, histCard, auctionCard, realmCard, holdCard, rulesCard);
 
   // ---- actions ------------------------------------------------------------------------------------
   function doTrade(): void {
@@ -289,12 +302,41 @@ export function createDetail(hooks: DetailHooks): Detail {
     else if (mode === 'realm') paintRealmTiles(s);
     else if (mode === 'iou' && m) paintIouTiles(s, m);
     else if (mode === 'gold' && m) paintGoldTiles(s, m);
+    paintFlows(s);
     paintHistory(s, m);
     paintAuction(s, m);
     paintRealm(s);
     paintHolders(s);
     paintRules(s);
     paintInstrument(s, m);
+  }
+
+  /** Where the good comes from and goes: this town's made / used / in / out, and every town's. */
+  function paintFlows(s: SimState): void {
+    flowCard.hidden = !isGood(good);
+    if (!isGood(good)) return;
+    const us = pluralize(unitOf(good));
+    const f = town >= 0 ? recentFlows(marketAt(s, town, good)) : townFlowRows(s, good).realm;
+    const vals = [f.made, f.used, f.in, f.out, f.traded];
+    flowStrip.hidden = town < 0;
+    flowCells.forEach((c, i) => setText(c.v, qtyCell(vals[i])));
+    setText(flowSub, `${us} a day, over the last ${f.days || 1} day${f.days === 1 ? '' : 's'}`);
+    const g = goodLabel(good).toLowerCase();
+    const where = town >= 0 ? s.towns[town]?.name ?? '' : '';
+    const net = f.made - f.used;
+    const lead =
+      town >= 0
+        ? f.made < 0.05 && f.used < 0.05
+          ? `${where} neither makes nor uses ${g}.`
+          : net > 0.05
+            ? `${where} makes ${qtyCell(f.made)} ${us} of ${g} a day and uses ${qtyCell(f.used)}: ${qtyCell(net)} more than it needs, which it sends out.`
+            : `${where} makes ${qtyCell(f.made)} ${us} of ${g} a day and uses ${qtyCell(f.used)}: it brings in the other ${qtyCell(-net)}.`
+        : `Every town together makes ${qtyCell(f.made)} ${us} of ${g} a day and uses ${qtyCell(f.used)}.`;
+    setText(
+      flowNote,
+      `${lead} Made is what the workshops produce; used is what is eaten, burnt, worn out or worked into other goods and buildings. Traded is different: what changed hands in the market hall — makers selling, people and workshops buying, traders buying to send away or selling what they brought. Stock in shops and larders makes up the rest.`,
+    );
+    flowTable.update(s, good, town);
   }
 
   function paintHeader(s: SimState): void {

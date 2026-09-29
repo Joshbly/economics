@@ -63,6 +63,7 @@ import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 import { debtOf, quoteRate, requestLoan } from './bank';
 import { fairPrice } from './firms';
+import { FLOW_IN, FLOW_USED, noteFlow } from '../stats/flows';
 
 const {
   SESSION_TIMES,
@@ -285,6 +286,7 @@ function scratch(s: SimState): TraderScratch {
 function deliver(s: SimState, sh: Shipment): void {
   const q = sh.qty;
   if (!(q > 0) || sh.to < 0 || sh.to >= s.towns.length) return;
+  noteFlow(s, sh.to, sh.good, FLOW_IN, q); // the town brings it in (stats/flows.ts)
   if (sh.owner === STATE) {
     const tg = s.treasury.goods;
     for (let t = tg.length; t <= sh.to; t++) tg.push(new Array(N_GOODS).fill(0));
@@ -1181,6 +1183,7 @@ export function tradersDispatch(s: SimState, books: Books): void {
     const k = Math.min(1, (w * WAGON_CAPACITY) / total);
     const load = total * k;
     // fuel for the trip
+    noteFlow(s, f.town, G.oil, FLOW_USED, Math.min(Math.max(0, f.inv[G.oil]), w * tf));
     f.inv[G.oil] = Math.max(0, f.inv[G.oil] - w * tf);
     bump(s, 'oil_burned', w * tf);
     const wage = carterWage(s, home, f);
@@ -1362,7 +1365,10 @@ export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: G
   const tf = tripFuel(r);
   const own = Math.min(wagons, free, tf > 0 ? Math.floor(Math.max(0, f.inv[G.oil]) / tf + 1e-9) : free);
   for (let i = 0; i < own; i++) tr.busy.push(s.day + 2 * r.days);
-  if (own > 0) f.inv[G.oil] = Math.max(0, f.inv[G.oil] - own * tf);
+  if (own > 0) {
+    noteFlow(s, f.town, G.oil, FLOW_USED, Math.min(Math.max(0, f.inv[G.oil]), own * tf));
+    f.inv[G.oil] = Math.max(0, f.inv[G.oil] - own * tf);
+  }
   tg[good] -= rest;
   if (tg[good] < 1e-9) tg[good] = 0;
   const sh = newShipment(s, STATE, from, to, good, rest, unitCost + paid / rest, dep, dep + r.days, wagons);

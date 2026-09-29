@@ -17,7 +17,7 @@ import { PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../..
 import { GOODS } from '../../../sim/goods';
 import { isAimed } from '../../../sim/policy/levies';
 import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
-import { carryDest, carryHoldDays, carryOnRoad, describeCarry, shortTargets } from '../../../sim/policy/carry';
+import { carryDest, carryFrom, carryHoldDays, carryOnRoad, carrySources, describeCarry, shortTargets } from '../../../sim/policy/carry';
 import { CARRY_FULL_SHARE, WAGON_CAPACITY } from '../../../sim/config';
 import type { CarryRule, Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
@@ -403,10 +403,10 @@ function carryRow(c: CarryRule): CarryRow {
 function paintCarry(s: SimState, v: CarryRow, c: CarryRule): void {
   v.sw.set(c.enabled);
   toggleClass(v.el, 'off', !c.enabled);
-  const A = s.towns[c.from]?.name ?? '';
+  const A = carryFrom(s, c);
   const B = carryDest(s, c);
   setText(v.title, `${GOODS[c.good]?.name ?? 'Goods'} · ${A} → ${B}`);
-  const have = fin(s.treasury.goods[c.from]?.[c.good]);
+  const have = carrySources(s, c).reduce((x, t) => x + fin(s.treasury.goods[t]?.[c.good]), 0);
   let state = '';
   if (c.enabled && c.wagons === 'full' && c.heldSince >= 0 && have > 0.005) {
     const fill = Math.min(100, Math.round((100 * Math.min(have, c.qty >= 0 ? fin(c.allow) : have)) / WAGON_CAPACITY));

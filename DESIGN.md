@@ -494,7 +494,14 @@ that pay ¤5 per year each, forever). Seven primitives:
      displaced the trading houses' own carting.) Saves from
      before carry rules had *supply routes* (a buy order with `route`): loading turns
      each into its buy order, a carry rule (everything, same wagons) and a sell order
-     at the destination (save.fillOrders).
+     at the destination (save.fillOrders). **From several stores** (`sources`, standing
+     rules): the rule draws on each store equally (util.shareOut water-fills: a store that
+     holds less gives what it has and the others make up the rest); `from` is the first.
+     **What it needs** (`need`, a fixed destination): instead of everything or a daily
+     amount, each load is what the destination needs by the same measure as Where it runs
+     short (carry.destNeed; the Treasury's asks there cap it, or without one its average
+     daily shortage alone). The carry form picks both from a town-by-town table of the good
+     (what each town makes, uses, its market's balance and what the Treasury holds there).
 3. **Levy** — attach a signed rate to any flow. Positive = the Treasury takes,
    negative ("give") = the Treasury pays. Bases:
    * `sale` of a good (payer: buyer or seller; % of value or ¤ per unit)
@@ -659,6 +666,8 @@ entryStep           (monthly) new firms, expansions, houses
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance
 spoilage            perishables decay everywhere (stores, pantries, cargo on the road)
+foldFlows           each town's goods made / used / brought in / sent out today join its markets'
+                    last MARKET_BALANCE_DAYS days (stats/flows.ts, §7)
 statsStep           indicators, series, national accounts
 eventsStep          news, strikes
 day += 1
@@ -679,6 +688,26 @@ outstanding, gold price, Purse, minted total, levy revenue and payments,
 population, births/deaths/migration, hunger rate, homelessness, average health,
 contentment, Gini of wealth and income (monthly), shipping rate, trade balance,
 output by good, firm counts, bankruptcies, per-market price & volume.
+
+**Goods flows** (`stats/flows.ts`), town by town and good by good, over each market's
+last MARKET_BALANCE_DAYS days (MarketState.madeHist / usedHist / inHist / outHist;
+recentFlows averages them a day). They answer "who makes what, and how much", which the
+market's volume does not: volume is what changed hands in the town's market hall
+(bought and sold), a flow is what was produced or consumed there or crossed its bounds.
+* **made** — produced by the town's workshops (firms.firmsProduce; Σ over towns = the
+  day's output by good);
+* **used** — used up there: households' bread, fish, coal, ale and furniture wear;
+  workshops' inputs and tool wear; materials built into projects and builders' tool wear;
+  fuel burnt by trading-house wagons and freight lines leaving the town (spoilage is not
+  use);
+* **in** — wagons landing there (traders.deliver) and goods bought from foreign ships at
+  its port (settlement);
+* **out** — wagons leaving (factory.newShipment) and goods sold to foreign ships.
+made − used is the town's net: + it makes more than it uses (and sends the rest out or
+stocks it), − it uses more than it makes (it brings the rest in or draws down stock).
+The day's tally lives in the runtime cache (a flat array); only the folded histories are
+saved. Shown in Markets → a good → "Made, used and moved" (the by-town table), the Markets
+grid's "Made & used" view, and the Carry form.
 
 ---------------------------------------------------------------------------
 

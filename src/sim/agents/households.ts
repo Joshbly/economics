@@ -32,6 +32,7 @@ import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { bufferTarget, foodIndex, goodsBudget } from './demandModel';
 import { hasLevyBase, netWage, wageCtx } from './labor';
+import { flowIndex, flowTally, FLOW_USED } from '../stats/flows';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -696,6 +697,7 @@ export function householdsConsume(s: SimState): void {
   let aleDrunk = 0;
   let coalBurned = 0;
   let furnWorn = 0;
+  const flows = flowTally(s); // what each town uses up (stats/flows.ts)
 
   for (let i = 0; i < s.people.length; i++) {
     const p = s.people[i];
@@ -725,6 +727,10 @@ export function householdsConsume(s: SimState): void {
     p.foodSat = clamp((eatB + eatF) / FOOD_NEED, 0, FOOD_MAX);
     eatenBread += eatB;
     eatenFish += eatF;
+    if (t >= 0 && t < s.towns.length) {
+      flows[flowIndex(t, G.bread, FLOW_USED)] += eatB;
+      flows[flowIndex(t, G.fish, FLOW_USED)] += eatF;
+    }
 
     // ---- heat: burn today's need, plus comfort coal only above a winter reserve ----
     const hc = Math.max(0, pan[G.coal]);
@@ -736,12 +742,14 @@ export function householdsConsume(s: SimState): void {
     pan[G.coal] = Math.max(0, left);
     p.heatSat = heat > 0 ? clamp(burn / heat, 0, 1) : 1;
     coalBurned += burn + extra;
+    if (t >= 0 && t < s.towns.length) flows[flowIndex(t, G.coal, FLOW_USED)] += burn + extra;
 
     // ---- ale ----
     const ha = Math.max(0, pan[G.ale]);
     const drink = Math.min(ha, planned ? c.alePlan[p.id] : 0);
     pan[G.ale] = ha - drink;
     aleDrunk += drink;
+    if (t >= 0 && t < s.towns.length) flows[flowIndex(t, G.ale, FLOW_USED)] += drink;
     p.joy = clamp(ema(fin(p.joy), aleJoy(drink), JOY_EMA), 0, 1);
 
     // ---- furniture: a durable stock that wears at home ----
@@ -749,6 +757,7 @@ export function householdsConsume(s: SimState): void {
     const worn = hfu * FURNITURE_WEAR_DAY;
     pan[G.furniture] = hfu - worn;
     furnWorn += worn;
+    if (t >= 0 && t < s.towns.length) flows[flowIndex(t, G.furniture, FLOW_USED)] += worn;
 
     // ---- health ----
     const housed = p.home >= 0;

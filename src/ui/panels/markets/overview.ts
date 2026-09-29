@@ -15,6 +15,8 @@ import { h, replace, setText, setTone, toggleClass } from '../../dom';
 import { DASH, fmtNum, fmtPct, fmtPrice, fmtQty, pluralize } from '../../format';
 import { drawSparkline, goodColor, segmented, T, tipKV, tipNote, tipTitle } from '../../widgets';
 import { attachSideTip } from './sidetip';
+import { netCell, qtyCell, townFlowRows } from './bytown';
+import { recentFlows } from '../../../sim/stats/flows';
 import {
   badgeOf,
   balanceAt,
@@ -30,7 +32,7 @@ import {
   type Badge,
 } from './data';
 
-export type PriceMode = 'base' | 'gross';
+export type PriceMode = 'base' | 'gross' | 'flows';
 
 export interface Overview {
   el: HTMLElement;
@@ -120,6 +122,7 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     options: [
       { value: 'base', label: 'Base price', title: 'The price the auction cleared at, before any levy' },
       { value: 'gross', label: 'Buyers pay', title: 'What buyers paid per unit, levies included' },
+      { value: 'flows', label: 'Made & used', title: 'What each town makes a day (large), and made − used (coloured: + it sends the rest out, − it brings the rest in), over the last 14 days' },
     ],
     value: mode,
     size: 'sm',
@@ -130,6 +133,14 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     },
   });
   const grid = h('div', { class: 'mk-grid', role: 'grid', 'aria-label': 'Prices in every market' });
+  const flowLegend = h(
+    'div',
+    { class: 'mk-legend' },
+    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-vol' }, '489'), ' made a day (14 days)'),
+    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-up' }, '+296'), ' makes more than it uses · ', h('span', { class: 'mk-dn' }, '−245'), ' uses more than it makes'),
+    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-vol' }, 'u 193'), ' used a day'),
+    h('span', { class: 'mk-lg mk-lg-dim' }, 'Traded (the other views) is what changed hands in the market hall, not what was made.'),
+  );
   const legend = h(
     'div',
     { class: 'mk-legend' },
@@ -145,7 +156,9 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     h('div', { class: 'mk-toolbar' }, modeCtl.el, h('div', { class: 'mk-toolbar-note' }, 'Click any cell to open that market')),
     grid,
     legend,
+    flowLegend,
   );
+  flowLegend.hidden = true;
 
   const ro = new ResizeObserver(() => drawAllSparks(true));
   ro.observe(grid);
@@ -298,6 +311,13 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     if (fin(sh) > 0.05) out.push(tipKV('Demand unmet today', `${fmtQty(sh)} ${us}`, 'warn'));
     if (fin(su) > 0.05) out.push(tipKV('Left unsold today', `${fmtQty(su)} ${us}`));
     if (c.good >= 0 && c.good < N_GOODS) {
+      const f = c.town >= 0 ? recentFlows(marketAt(s, c.town, c.good)) : townFlowRows(s, c.good).realm;
+      out.push(tipKV('Made a day', `${qtyCell(f.made)} ${us}`));
+      out.push(tipKV('Used a day', `${qtyCell(f.used)} ${us}`));
+      if (c.town >= 0) {
+        if (f.in >= 0.05) out.push(tipKV('Brought in a day', `${qtyCell(f.in)} ${us}`));
+        if (f.out >= 0.05) out.push(tipKV('Sent out a day', `${qtyCell(f.out)} ${us}`));
+      }
       const b = balanceAt(s, c.town, c.good);
       out.push(tipKV(`Last ${b.days} days`, balanceWords(b, us), badgeOf(b.volume, b.shortage, b.surplus) === 'shortage' ? 'warn' : undefined));
     }
@@ -345,6 +365,10 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     lastSig = sig;
     lastS = s;
     const nat = new Map<number, ReturnType<typeof nationalGood>>();
+    const flowsView = mode === 'flows';
+    legend.hidden = flowsView;
+    flowLegend.hidden = !flowsView;
+    const realmFlows = new Map<number, ReturnType<typeof townFlowRows>>();
     for (const c of cells) {
       let price: number;
       let traded: boolean;
@@ -368,6 +392,30 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
         badge = b ? badgeOf(b.volume, b.shortage, b.surplus) : m ? badgeOf(m.volume, m.shortage, m.surplus) : null;
         hist = m?.hist ?? [];
       }
+      setTone(c.badge, ['mk-badge-shortage', 'mk-badge-surplus'], badge ? 'mk-badge-' + badge : null);
+      if (flowsView) {
+        // what the town makes a day, and made − used (coloured), over the last 14 days
+        let f;
+        let spark: number[];
+        if (c.town < 0) {
+          let r = realmFlows.get(c.good);
+          if (!r) realmFlows.set(c.good, (r = townFlowRows(s, c.good)));
+          f = r.realm;
+          spark = [];
+        } else {
+          const m = marketAt(s, c.town, c.good);
+          f = recentFlows(m);
+          spark = (m?.madeHist ?? []).slice();
+        }
+        setText(c.price, f.made >= 0.05 ? qtyCell(f.made) : DASH);
+        toggleClass(c.el, 'idle', !(f.made >= 0.05));
+        setText(c.arrow, '');
+        setText(c.chVal, netCell(f.net));
+        setTone(c.change, ['mk-up', 'mk-dn'], f.net > 0.05 ? 'mk-up' : f.net < -0.05 ? 'mk-dn' : null);
+        setText(c.vol, f.used >= 0.05 ? 'u ' + qtyCell(f.used) : '');
+        c.spark = spark;
+        continue;
+      }
       setText(c.price, fmtCellPrice(price));
       toggleClass(c.el, 'idle', !traded);
       const ch = changeParts(relChange(hist, CHANGE_DAYS), true);
@@ -375,7 +423,6 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
       setText(c.chVal, ch.text);
       setTone(c.change, ['mk-up', 'mk-dn'], ch.tone);
       setText(c.vol, traded ? fmtVol(vol) : DASH);
-      setTone(c.badge, ['mk-badge-shortage', 'mk-badge-surplus'], badge ? 'mk-badge-' + badge : null);
       const n = hist.length;
       const a = Math.max(0, n - SPARK_DAYS);
       c.spark = Array.prototype.slice.call(hist, a) as number[];

@@ -59,3 +59,26 @@ export function dist(ax: number, ay: number, bx: number, by: number): number {
   const dy = ay - by;
   return Math.sqrt(dx * dx + dy * dy);
 }
+
+/**
+ * Split `total` into equal shares for sites that can each take at most caps[i]; what a full site
+ * cannot take goes to the others (water-filling). Σ result ≤ total.
+ */
+export function shareOut(total: number, caps: readonly number[], eps = 1e-6): number[] {
+  const out = caps.map(() => 0);
+  let left = Math.max(0, total);
+  let open = caps.map((_, i) => i).filter((i) => caps[i] > eps);
+  while (left > eps && open.length) {
+    const each = left / open.length;
+    const next: number[] = [];
+    for (const i of open) {
+      const take = Math.min(each, caps[i] - out[i]);
+      out[i] += take;
+      left -= take;
+      if (caps[i] - out[i] > eps) next.push(i);
+    }
+    if (next.length === open.length) break; // every site took its full share
+    open = next;
+  }
+  return out;
+}
