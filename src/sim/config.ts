@@ -868,3 +868,16 @@ export const STATS_TOP_SHARE = 0.1;
 export const IOU_SELL_FLOOR_MIN_SHARE = 0.1;
 /** Warn when a sell floor is below this share of today's price. */
 export const SELL_FLOOR_WARN_SHARE = 0.5;
+
+// ---- Treasury supply routes, moves with a sale, in-kind handouts (policy/player.ts, policy/routes.ts) ----
+/** A route (or a move) offering its goods "for whatever they fetch" asks no less than this share of the
+ *  destination's reference price: a token floor, so the auction sets the price. */
+export const ROUTE_MARKET_FLOOR_SHARE = 0.05;
+/** Range of the margin over landed cost a route (or a move with a sale) may ask: −90 % … +1000 %. */
+export const ROUTE_MARGIN_MIN = -0.9;
+export const ROUTE_MARGIN_MAX = 10;
+/** While a supply route is still buying, its purchases leave once they fill this share of a wagon
+ *  (WAGON_CAPACITY) or amount to ROUTE_HOLD_DAYS of the order's daily quantity, whichever is less:
+ *  the Purse pays a whole wagon's trip however little it carries. What is left leaves when the buying ends. */
+export const ROUTE_LOAD_SHARE = 0.5;
+export const ROUTE_HOLD_DAYS = 3;

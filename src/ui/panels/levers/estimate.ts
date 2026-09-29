@@ -5,13 +5,14 @@
 // closely enough to be a useful guide; never exact (behaviour will respond).
 // ============================================================================
 import { DAYS_PER_MONTH, DAYS_PER_YEAR, IOU_COUPON } from '../../../sim/config';
-import { N_GOODS } from '../../../sim/goods';
+import { CONSUMER_GOODS, G, N_GOODS, SECTORS } from '../../../sim/goods';
 import { inGroup } from '../../../sim/policy/levies';
 import { FIRM_BASE, STATE } from '../../../sim/types';
-import type { Group, Levy, Person, SimState } from '../../../sim/types';
+import type { Firm, Group, Levy, Person, SimState } from '../../../sim/types';
 import { fmtNum, plural } from '../../format';
 import { tailMean } from '../../widgets';
 import { fin, fmtM, fmtQ, goodName, townName, unitsOf } from './common';
+import { saleWhoOf, saleWhoWords } from './levyDefs';
 
 export type LevyDraft = Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total'>;
 
@@ -55,6 +56,7 @@ export function estimateLevy(s: SimState, l: LevyDraft): LevyEstimate | null {
 
   switch (l.base) {
     case 'sale': {
+      if ((l.group && l.group !== 'all') || sec) return saleTargetedEstimate(s, l, towns, goods);
       let value = 0;
       let qty = 0;
       for (const t of towns)
@@ -293,4 +295,98 @@ export function estimateLevy(s: SimState, l: LevyDraft): LevyEstimate | null {
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sale levies aimed at some traders only
+// ---------------------------------------------------------------------------
+
+/** Units of good g one firm buys a day: its recipe inputs at its usual output, tool wear, carters' loads. */
+function firmBuysPerDay(s: SimState, f: Firm, g: number): { q: number; rough: boolean } {
+  const d = SECTORS[f.sector];
+  if (!d) return { q: 0, rough: false };
+  let q = 0;
+  let rough = false;
+  for (const [ig, per] of d.inputs) if (ig === g) q += per * Math.max(0, fin(f.output));
+  if (g === G.tools && d.toolUse > 0) q += d.toolUse * f.workers.length;
+  if (f.sector === 'trader') {
+    // merchandise loaded here in the last day (bought in this market to be carried elsewhere)
+    for (const sh of s.shipments) if (sh && sh.owner === FIRM_BASE + f.id && sh.from === f.town && sh.good === g && sh.depart >= s.day - 1) q += fin(sh.qty);
+    rough = true;
+  }
+  if (f.sector === 'builder') rough = true; // materials come and go with projects
+  return { q, rough };
+}
+
+function saleTargetedEstimate(s: SimState, l: LevyDraft, towns: number[], goods: number[]): LevyEstimate {
+  const rate = fin(l.rate);
+  const pct = l.unit === 'pct';
+  const who = saleWhoOf(l.group, l.sector);
+  const words = saleWhoWords(who);
+  const sec = l.sector && l.sector !== 'any' ? l.sector : null;
+  const buyer = l.payer !== 'seller';
+  let qty = 0;
+  let value = 0;
+  let rough = false;
+  let n = 0;
+  if (who.startsWith('f:')) {
+    const inTown = new Set(towns);
+    for (const f of s.firms) {
+      if (!f || !f.alive || f.status === 'closed' || f.sector === 'stateworks') continue;
+      if (!inTown.has(f.town) || (sec && f.sector !== sec)) continue;
+      let touched = false;
+      for (const g of goods) {
+        let q = 0;
+        if (buyer) {
+          const b = firmBuysPerDay(s, f, g);
+          q = b.q;
+          rough ||= b.rough;
+        } else if (SECTORS[f.sector]?.out === g) q = Math.max(0, fin(f.sales));
+        else if (f.sector === 'trader' && f.trade) {
+          // carters sell the stock they hold in this town's market
+          const m = s.markets[f.town * N_GOODS + g];
+          q = Math.min(fin(m?.volEma), Math.max(0, fin(f.trade.stock[f.town]?.[g])) * 0.25);
+          rough = true;
+        }
+        if (q > 0) {
+          qty += q;
+          value += q * priceAt(s, f.town, g);
+          touched = true;
+        }
+      }
+      if (touched) n++;
+    }
+  } else {
+    // households: their share of the town's consumer purchases (market volume less what firms buy)
+    rough = true;
+    for (const t of towns) {
+      let pop = 0;
+      let members = 0;
+      for (const p of s.people) {
+        if (!p || !p.alive || p.town !== t) continue;
+        pop++;
+        if (personMatches(s, p, l.group)) members++;
+      }
+      n += members;
+      const share = pop > 0 ? members / pop : 0;
+      for (const g of goods) {
+        if (!CONSUMER_GOODS.includes(g)) continue;
+        const m = s.markets[t * N_GOODS + g];
+        let firmQ = 0;
+        for (const f of s.firms) if (f && f.alive && f.town === t && f.sector !== 'stateworks') firmQ += firmBuysPerDay(s, f, g).q;
+        const hh = Math.max(0, fin(m?.volEma > 0 ? m.volEma : m?.volume) - firmQ);
+        qty += hh * share;
+        value += hh * share * priceAt(s, t, g);
+      }
+    }
+  }
+  const unitW = l.good >= 0 ? ` (${fmtQ(qty)} ${unitsOf(l.good)})` : '';
+  const whoText = !who.startsWith('f:') ? `${fmtNum(n)} ${words}` : sec ? `${fmtNum(n)} ${n === 1 ? (SECTORS[sec]?.name ?? 'workshop').toLowerCase() : words}` : plural(n, 'workshop');
+  const gw = l.good >= 0 ? goodName(l.good).toLowerCase() : 'goods';
+  return {
+    baseText: `${buyer ? 'Purchases' : 'Sales'} of ${gw} by ${whoText}${where(s, l.town)} ≈ ${fmtM(value)} a day${unitW}`,
+    amount: pct ? rate * value : rate * qty,
+    per: 'day',
+    rough,
+  };
 }

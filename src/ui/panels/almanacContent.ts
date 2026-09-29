@@ -32,12 +32,12 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
       {
         title: 'Your seven levers',
         body: `- **Mint** — create money in the Purse, or destroy money you hold.
-- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. You can also move goods you hold between towns.
+- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. You can also move goods you hold between towns, and set up supply routes: buy in one town, carry by wagon, offer in another.
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a loan rate above a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital.
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
 - **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects.
-- **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank.
+- **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank; or a one-off handout of goods you hold in a town.
 
 Everything else is up to you to discover.`,
       },
@@ -66,6 +66,14 @@ The Markets tab shows each auction's demand and supply curves: the clearing poin
 A negative rate closes the gap the other way: buyers pay less than sellers receive, and the Treasury pays the difference.
 
 The auction curve in the Markets tab draws the gap.`,
+      },
+      {
+        title: 'Levies on some traders only',
+        body: `A levy on sales can name who it applies to: only the purchases of one trade's workshops (say, grain bought by bakeries), of every workshop, of households, or of one group of households; or only the sales of one trade's workshops.
+
+Such a rule does not open a gap for the whole market. The auction still finds one price; the named traders pay that price plus the rate when they buy (or receive it less the rate when they sell). With a negative rate they pay less, or receive more, and the Treasury makes up the difference.
+
+Because everyone else still trades at the auction price, a rule aimed at one trade changes what that trade can afford to bid — and through its bids, the price everyone pays.`,
       },
       {
         title: 'Legal price lines',
@@ -182,6 +190,22 @@ When you pay someone, their deposit grows and so do the bank's reserves. When yo
         body: `Every town has a trading house with wagons and carters. When a good is cheap in one town and dear in another by more than it costs to haul it, traders buy, load and ship it. Hauling costs the carters' wages, the oil the wagons burn, and wear on the wagons. Paved roads make wagons faster and hauling cheaper.
 
 The shipping rate on the top bar is what it costs to move one unit ten tiles.`,
+      },
+      {
+        title: 'Your wagons and supply routes',
+        body: `The Treasury has no wagons of its own. To move goods it hires the trading house of the town they leave from: it pays the carters' wages, the oil and the wear for the round trip, plus a little more, for every wagon it needs. A wagon carries 120 units; a half-empty wagon costs as much as a full one.
+
+**Move goods** sends goods you already hold. You can keep them in store where they arrive, or offer them there: at a price you set, at what they cost (freight included) plus a margin, or for whatever they fetch.
+
+A **supply route** chains three ordinary steps every day: a buy order in one town, the wagons that carry what it bought, and an offer in the destination's market. The offer can be at a price you set, at landed cost (what each unit cost to buy and carry) plus a margin, or for whatever the goods fetch. Nothing is exempt from the markets: your purchases raise the price where you buy, your offers lower it where you sell, and goods that spoil go on spoiling on the road and while they wait.
+
+**Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town, every Treasury wagon on the road with its arrival, and each route's pipeline: bought today, on the road, waiting to sell, sold today — and what it has earned against what it cost.`,
+      },
+      {
+        title: 'Handing out goods',
+        body: `A **Transfer** can hand out goods instead of money: so many units of a good you hold in a town to every member of a group there. People put them in their pantries; workshops (of every trade, or of one) put them in their stores, as if they had bought them.
+
+Goods handed out are goods nobody has to buy that day, so the market for them is quieter while they last.`,
       },
       {
         title: 'The port and gold',

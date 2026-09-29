@@ -1,6 +1,7 @@
 // ============================================================================
 // The player's primitives: validation + execution of PlayerActions, Treasury
-// orders in markets, Treasury workforce, transfers. See DESIGN §5.
+// orders in markets (incl. supply routes: buy → carry → offer, policy/routes.ts),
+// Treasury workforce, transfers (money, or goods in kind). See DESIGN §5.
 // OWNER: market-policy agent.
 //
 // Nothing here is a "policy": the player composes seven neutral primitives
@@ -20,8 +21,13 @@ import {
   PLAYER_MAX_UNIT_RATE,
   PLAYER_MAX_WORKERS,
   PLAYER_MIN_RATE,
+  WAGON_CAPACITY,
   PRICE_MIN,
   IOU_SELL_FLOOR_MIN_SHARE,
+  ROUTE_MARGIN_MAX,
+  ROUTE_MARGIN_MIN,
+  ROUTE_HOLD_DAYS,
+  ROUTE_LOAD_SHARE,
   SELL_FLOOR_WARN_SHARE,
 } from '../config';
 import { dateLabel } from '../calendar';
@@ -42,6 +48,7 @@ import type {
   LimitKind,
   Order,
   OrderMarket,
+  OrderRoute,
   PlayerAction,
   PlayerOrder,
   Sector,
@@ -50,10 +57,11 @@ import type {
   TransferGroup,
 } from '../types';
 import { addAsk, addBid, type Books } from '../market/markets';
-import { bankClaimRoom, inGroup } from './levies';
+import { bankClaimRoom, inGroup, isTargetedSale } from './levies';
+import { heldAtOrigin, isRouteOrder, marketFloor, newRoute, routeBusy, routeFloor } from './routes';
 import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject } from '../agents/construction';
-import { shipTreasuryGoods } from '../agents/traders';
+import { freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
 import { roadPlan } from '../world/paths';
 
 // ---------------------------------------------------------------------------
@@ -100,9 +108,13 @@ const PAYERS_FOR: Record<LevyBase, LevyPayer[]> = {
   estate: ['receiver'],
 };
 
-/** Which filters are meaningful for each base (others are normalised to "any"). */
+/**
+ * Which filters are meaningful for each base (others are normalised to "any").
+ * 'sale': a trade or a group makes the rule a targeted one (levies.isTargetedSale): it applies
+ * only to the purchases (payer 'buyer') or sales (payer 'seller') of the traders it names.
+ */
 const FILTERS_FOR: Record<LevyBase, { good: boolean; town: boolean; toTown: boolean; sector: boolean; group: boolean; kind: boolean }> = {
-  sale: { good: true, town: true, toTown: false, sector: false, group: false, kind: false },
+  sale: { good: true, town: true, toTown: false, sector: true, group: true, kind: false },
   wage: { good: false, town: true, toTown: false, sector: true, group: true, kind: false },
   profit: { good: false, town: true, toTown: false, sector: true, group: false, kind: false },
   money: { good: false, town: true, toTown: false, sector: true, group: true, kind: false },
@@ -224,6 +236,43 @@ const GROUP_EACH: Record<Group, string> = {
   firms: 'every firm',
 };
 
+/** Who a targeted sale rule names, as buyers or sellers: "coal mines", "hungry households". */
+const SALE_GROUP_TEXT: Record<Group, string> = {
+  all: 'everyone',
+  persons: 'households',
+  employed: 'households in work',
+  unemployed: 'households without work',
+  homeless: 'people without a home',
+  owners: 'property owners',
+  nonowners: 'households who own no property',
+  hungry: 'hungry households',
+  firms: 'firms',
+};
+
+function saleTargetText(l: Levy): string {
+  const sec = sectorPlural(l.sector);
+  if (sec) return sec;
+  return SALE_GROUP_TEXT[l.group] ?? 'households';
+}
+
+/** Body of the sentence for a targeted sale rule (after "The Treasury now "), without the place. */
+function targetedSaleBody(l: Levy, where: string): string {
+  const take = l.dir === 1;
+  const pct = l.unit === 'pct';
+  const amt = pct ? pctText(l.rate) : moneyText(l.rate);
+  const g = l.good;
+  const gt = g >= 0 ? goodLower(g) : 'goods';
+  const u = g >= 0 ? unitName(g, 1) : 'unit';
+  const every = g >= 0 ? `every ${u} of ${gt}` : 'every unit of goods';
+  const who = saleTargetText(l);
+  if (l.payer === 'seller') {
+    if (take) return pct ? `takes ${amt} of the price of ${gt} sold by ${who}${where}, out of what they receive` : `takes ${amt} for ${every} sold by ${who}${where}, out of what they receive`;
+    return pct ? `pays ${who} an extra ${amt} of the price of the ${gt} they sell${where}` : `pays ${who} an extra ${amt} for ${every} they sell${where}`;
+  }
+  if (take) return pct ? `takes ${amt} on top of the price of ${gt} bought by ${who}${where}` : `takes ${amt} on top of the price of ${every} bought by ${who}${where}`;
+  return pct ? `pays ${amt} of the price of ${gt} bought by ${who}${where}` : `pays ${amt} toward ${every} bought by ${who}${where}`;
+}
+
 function payerText(l: Levy): string {
   switch (l.payer) {
     case 'buyer':
@@ -316,7 +365,9 @@ export function describeLevy(s: SimState, l: Levy): string {
   const f = FILTERS_FOR[l.base];
   const where = f.town && l.town >= 0 && l.base !== 'shipment' ? ` in ${townName(s, l.town)}` : '';
   let body: string;
-  if (l.base === 'head') {
+  if (isTargetedSale(l)) {
+    body = targetedSaleBody(l, where);
+  } else if (l.base === 'head') {
     body = take ? `takes ${moneyText(l.rate)} a day from ${GROUP_EACH[l.group] ?? 'every person'}` : `pays ${moneyText(l.rate)} a day to ${GROUP_EACH[l.group] ?? 'every person'}`;
     body += where;
   } else {
@@ -324,7 +375,7 @@ export function describeLevy(s: SimState, l: Levy): string {
     const who = payerText(l);
     body += take ? `, charged to ${who}` : `, paid to ${who}`;
   }
-  if (f.group && l.base !== 'head' && l.group && l.group !== 'all') body += ` (only ${GROUP_TEXT[l.group] ?? l.group})`;
+  if (f.group && l.base !== 'head' && l.base !== 'sale' && l.group && l.group !== 'all') body += ` (only ${GROUP_TEXT[l.group] ?? l.group})`;
   if (l.threshold > 0) {
     if (l.base === 'goods' && l.unit !== 'pct') body += `, beyond the first ${qtyText(l.threshold)} units`;
     else if (l.unit === 'pct') body += `, on the part above ${moneyText(l.threshold)}`;
@@ -357,7 +408,7 @@ export function levyShortLabel(s: SimState, l: Levy): string {
   let what: string;
   switch (l.base) {
     case 'sale':
-      what = `${g} sales (${payerText(l)})`;
+      what = isTargetedSale(l) ? `${l.good >= 0 ? g : 'goods'} ${l.payer === 'seller' ? 'sold' : 'bought'} by ${saleTargetText(l)}` : `${g} sales (${payerText(l)})`;
       break;
     case 'wage':
       what = `wages${atSec} (${payerText(l)})`;
@@ -472,11 +523,23 @@ function marketText(s: SimState, m: OrderMarket): string {
   return 'gold';
 }
 
+/** How a route (or a move with a sale) offers its goods: "at landed cost", "for no less than ¤3.20 each"... */
+function sellRuleText(mode: OrderRoute['sell'], price: number, margin: number): string {
+  if (mode === 'fixed') return `for no less than ${moneyText(price)} each`;
+  if (mode === 'market') return 'for whatever it fetches';
+  if (Math.abs(margin) < 1e-9) return 'at landed cost';
+  return margin > 0 ? `at landed cost plus ${pctText(margin)}` : `at ${pctText(-margin)} below landed cost`;
+}
+
 /** Plain sentence describing a Treasury order. */
 export function describeOrder(s: SimState, o: PlayerOrder): string {
   const m = o.market;
   const span = o.once ? ' today' : o.until >= 0 ? ` until ${dateLabel(o.until)}` : '';
   const cap = o.total >= 0 ? ` (at most ${qtyText(o.total)} in all)` : '';
+  if (m.kind === 'good' && o.route) {
+    const r = o.route;
+    return `The Treasury will buy up to ${amountOf(m.good, o.qty)} a day in ${townName(s, m.town)} at up to ${moneyText(o.price)}${span}${cap}, carry it to ${townName(s, r.to)} and offer it there ${sellRuleText(r.sell, r.sellPrice, r.sellMargin)}.`;
+  }
   if (m.kind === 'labor') {
     const lcap = o.total >= 0 ? ` (at most ${qtyText(o.total)} worker-days in all)` : '';
     return `The Treasury will employ up to ${qtyText(o.qty)} people in ${townName(s, m.town)} at ${moneyText(o.price)} a day${span}${lcap}. They work on the Treasury's building projects there, or wait idle.`;
@@ -496,9 +559,10 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
     : `The Treasury will sell up to ${qtyText(o.qty)} oz of gold a day, for no less than ${moneyText(o.price)} an ounce${span}${cap}.`;
 }
 
-function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number): string {
+function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null): string {
   if (m.kind === 'labor') return `Employ ${qtyText(qty)} · ${townName(s, m.town)} · ${moneyText(price)}/day`;
-  return `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
+  const base = `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
+  return route ? `${base} → ${townName(s, route.to)}` : base;
 }
 
 function policyNews(s: SimState, text: string, town = -1): void {
@@ -559,6 +623,16 @@ function checkLevy(s: SimState, raw: Partial<LevyDraft> | undefined): Checked<Le
     group = 'all';
   }
   if (base === 'head' && group === 'firms') return { ok: false, message: 'A per-head rule applies to people; use a money or building rule for firms.' };
+  if (base === 'sale') {
+    // Targeting (levies.isTargetedSale): a trade → that trade's firms; a group → people in it
+    // ('persons' every household, 'firms' every firm). People do not sell goods in the markets.
+    const people = group !== 'all' && group !== 'firms';
+    if (sector === 'stateworks') return { ok: false, message: "The Treasury's own workforce does not trade in the markets; choose another trade." };
+    if (payer === 'seller' && people)
+      return { ok: false, message: 'Goods are sold by firms and merchants, not by households: on the selling side a rule can single out a trade (or all firms), not a group of people.' };
+    if (sector !== 'any' && people) return { ok: false, message: 'A rule on purchases can single out a trade or a group of people, not both.' };
+    if (sector !== 'any' && group === 'firms') group = 'all'; // a trade already means its firms
+  }
   let buildingKind = (raw.buildingKind ?? 'any') as BuildingKind | 'any';
   if (buildingKind !== 'any' && !BUILDING_KINDS.includes(buildingKind)) return { ok: false, message: `Unknown kind of building "${String(raw.buildingKind)}".` };
   if (!f.kind) buildingKind = 'any';
@@ -770,27 +844,22 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       }
       Object.assign(o, next);
       if (o.total >= 0 && o.filled >= o.total && o.enabled) o.enabled = false;
-      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty);
+      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route);
       return { ok: true, message: o.enabled ? describeOrder(s, o) : 'Order paused.', id: o.id };
     }
     case 'cancelOrder': {
       const i = s.policy.orders.findIndex((x) => x.id === a.id);
       if (i < 0) return fail('No such order.');
-      const [o] = s.policy.orders.splice(i, 1);
-      return { ok: true, message: `Order withdrawn (${qtyText(o.filled)} filled in all).`, id: o.id };
+      const o = s.policy.orders[i];
+      // A supply route stops buying; what it already bought stays in the Treasury's stores.
+      const kept = isRouteOrder(o) ? routeLeftovers(s, o) : '';
+      if (isRouteOrder(o)) o.route.waiting = 0; // waiting stock becomes ordinary holdings
+      s.policy.orders.splice(i, 1);
+      if (kept) policyNews(s, `The Treasury has stopped its supply route “${o.label}”. ${kept}`, o.market.kind === 'good' ? o.market.town : -1);
+      return { ok: true, message: `Order withdrawn (${qtyText(o.filled)} filled in all).${kept ? ' ' + kept : ''}`, id: o.id };
     }
-    case 'moveGoods': {
-      if (!validTown(s, a.from) || !validTown(s, a.to)) return fail('Unknown town.');
-      if (a.from === a.to) return fail('Choose two different towns.');
-      if (!validGood(a.good)) return fail('Unknown good.');
-      if (!isNum(a.qty) || a.qty <= 0) return fail('The quantity must be a positive number.');
-      const have = t.goods[a.from]?.[a.good] ?? 0;
-      if (have <= 1e-9) return fail(`The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)}.`);
-      const q = Math.min(a.qty, have);
-      const r = shipTreasuryGoods(s, a.from, a.to, a.good, q);
-      if (r && r.ok) policyNews(s, `The Treasury sent ${amountOf(a.good, q)} from ${townName(s, a.from)} to ${townName(s, a.to)}.`, a.from);
-      return r ?? fail('The goods could not be moved.');
-    }
+    case 'moveGoods':
+      return moveGoods(s, a);
     case 'addLevy': {
       if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
       const c = checkLevy(s, a.levy);
@@ -970,7 +1039,17 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   }
   const once = !!a.once;
   if (once) until = s.day;
-  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, a.price, qty);
+  // Supply route: goods BUY orders only (policy/routes.ts).
+  let route: OrderRoute | null = null;
+  let routeNote = '';
+  if (a.route !== undefined && a.route !== null) {
+    if (m.kind !== 'good' || a.side !== 'buy') return fail('Only a purchase of goods can be carried to another town and offered there.');
+    const rc = checkRoute(s, m.town, m.good, a.route);
+    if (!rc.ok) return fail(rc.message);
+    route = rc.route;
+    routeNote = rc.note;
+  }
+  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, a.price, qty, route);
   const market: OrderMarket =
     m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : { kind: m.kind };
   const o: PlayerOrder = {
@@ -988,7 +1067,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     value: 0,
     filledToday: 0,
     created: s.day,
-    route: null, // TODO(routes): build from a.route
+    route,
   };
   s.policy.orders.push(o);
   let note = '';
@@ -999,6 +1078,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (a.side === 'buy' && !s.treasury.autoMint && !(s.treasury.purse > 0))
     note = m.kind === 'labor' ? ' The Purse is empty, so these workers cannot be paid until money comes in.' : ' The Purse is empty, so nothing will be bought until money comes in.';
   if (m.kind === 'labor' && !findStateworks(s, m.town)) note = ' (There is no Treasury workforce in that town.)';
+  if (routeNote) note += ' ' + routeNote;
   if (a.side === 'sell' && m.kind !== 'labor') {
     const ref = orderRefPrice(s, m);
     if (ref > 0 && a.price < SELL_FLOOR_WARN_SHARE * ref)
@@ -1007,6 +1087,110 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   const text = describeOrder(s, o);
   policyNews(s, text, m.kind === 'good' || m.kind === 'labor' ? m.town : -1);
   return { ok: true, message: text + note, id: o.id };
+}
+
+type SellSpec = { mode: OrderRoute['sell']; price: number; margin: number };
+
+/** Validate how goods are to be offered at their destination (a route's `sell`, or moveGoods' `sell`). */
+function checkSell(mode: unknown, price: unknown, margin: unknown): { ok: true; spec: SellSpec } | { ok: false; message: string } {
+  if (mode !== 'fixed' && mode !== 'cost' && mode !== 'market') return { ok: false, message: 'Choose how the goods are offered on arrival: at a fixed lowest price, at landed cost, or for whatever they fetch.' };
+  if (mode === 'fixed') {
+    if (!isNum(price) || price <= 0 || price > PLAYER_MAX_PRICE) return { ok: false, message: `The lowest selling price must be above zero and at most ${moneyText(PLAYER_MAX_PRICE)}.` };
+    return { ok: true, spec: { mode, price, margin: 0 } };
+  }
+  if (mode === 'cost') {
+    const mg = margin === undefined ? 0 : margin;
+    if (!isNum(mg) || mg < ROUTE_MARGIN_MIN || mg > ROUTE_MARGIN_MAX)
+      return { ok: false, message: `The margin over landed cost must lie between ${pctText(ROUTE_MARGIN_MIN)} and ${pctText(ROUTE_MARGIN_MAX)} (0.1 = 10%).` };
+    return { ok: true, spec: { mode, price: 0, margin: mg } };
+  }
+  return { ok: true, spec: { mode, price: 0, margin: 0 } };
+}
+
+/** Validate a supply route from `from` (the order's town) for good `g`. */
+function checkRoute(s: SimState, from: TownId, g: number, raw: unknown): { ok: true; route: OrderRoute; note: string } | { ok: false; message: string } {
+  if (!raw || typeof raw !== 'object') return { ok: false, message: 'No route given.' };
+  const r = raw as { to?: unknown; sell?: unknown; sellPrice?: unknown; sellMargin?: unknown };
+  if (!validTown(s, r.to)) return { ok: false, message: 'Choose the town the goods are carried to.' };
+  const to = r.to;
+  if (to === from) return { ok: false, message: 'The goods must be carried to a different town from the one they are bought in.' };
+  if (!(freightPerUnit(s, from, to) >= 0)) return { ok: false, message: `No wagon road links ${townName(s, from)} and ${townName(s, to)}.` };
+  const c = checkSell(r.sell, r.sellPrice, r.sellMargin);
+  if (!c.ok) return c;
+  let note = '';
+  if (!traderOf(s, from)) note = `There is no trading house in ${townName(s, from)} yet to carry the goods; what is bought waits there until one opens.`;
+  else if (!s.treasury.autoMint) note = `Freight is paid from the Purse as the goods leave; on days it cannot be paid they wait in ${townName(s, from)}.`;
+  void g;
+  return { ok: true, route: newRoute(to, c.spec.mode, c.spec.price, c.spec.margin), note };
+}
+
+/** What a route still holds, in words (for its cancellation), or '' if nothing. */
+function routeLeftovers(s: SimState, o: PlayerOrder): string {
+  if (!isRouteOrder(o)) return '';
+  const g = o.market.good;
+  const r = o.route;
+  const parts: string[] = [];
+  if (r.waiting > 1e-3) parts.push(`${amountOf(g, r.waiting)} unsold in ${townName(s, r.to)}`);
+  if (r.inTransit > 1e-3) parts.push(`${amountOf(g, r.inTransit)} on the road there`);
+  const held = heldAtOrigin(s, o);
+  if (held > 1e-3) parts.push(`${amountOf(g, held)} still in ${townName(s, o.market.town)}`);
+  if (!parts.length) return '';
+  return `What it had bought stays in the Treasury's stores as ordinary holdings: ${parts.join(', ')}.`;
+}
+
+/** moveGoods: carry Treasury goods to another town, optionally offering them there (an ordinary sell order capped at the quantity moved). */
+function moveGoods(s: SimState, a: Extract<PlayerAction, { type: 'moveGoods' }>): ActionResult {
+  if (!validTown(s, a.from) || !validTown(s, a.to)) return fail('Unknown town.');
+  if (a.from === a.to) return fail('Choose two different towns.');
+  if (!validGood(a.good)) return fail('Unknown good.');
+  if (!isNum(a.qty) || a.qty <= 0) return fail('The quantity must be a positive number.');
+  const have = s.treasury.goods[a.from]?.[a.good] ?? 0;
+  if (have <= 1e-9) return fail(`The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)}.`);
+  let spec: SellSpec | null = null;
+  if (a.sell !== undefined && a.sell !== null) {
+    if (typeof a.sell !== 'object') return fail('Say how the goods are to be offered on arrival.');
+    const c = checkSell(a.sell.mode, a.sell.price, a.sell.margin);
+    if (!c.ok) return fail(c.message);
+    if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
+    spec = c.spec;
+  }
+  // What the goods were worth where they were (the Treasury keeps no cost record of its stores).
+  const origin = s.markets[a.from * N_GOODS + a.good];
+  const worth = origin && origin.ema > 0 && Number.isFinite(origin.ema) ? origin.ema : 0;
+  const q = Math.min(a.qty, have);
+  const r = sendTreasuryCargo(s, a.from, a.to, a.good, q);
+  if (!r.ok) return { ok: false, message: r.message };
+  if (!spec) {
+    policyNews(s, `The Treasury sent ${amountOf(a.good, r.qty)} from ${townName(s, a.from)} to ${townName(s, a.to)}.`, a.from);
+    return { ok: true, message: r.message, id: r.id };
+  }
+  // Landed cost per unit: the goods' value at the origin plus the freight per unit.
+  const landed = worth + r.paid / Math.max(1e-9, r.qty);
+  const floor = spec.mode === 'fixed' ? spec.price : spec.mode === 'cost' ? Math.max(0, landed * (1 + spec.margin)) : marketFloor(s, a.to, a.good);
+  const market: OrderMarket = { kind: 'good', town: a.to, good: a.good };
+  const o: PlayerOrder = {
+    id: s.ids.policy++,
+    label: orderShortLabel(s, 'sell', market, floor, r.qty),
+    enabled: true,
+    market,
+    side: 'sell',
+    price: floor,
+    qty: r.qty,
+    total: r.qty,
+    until: -1,
+    once: false,
+    filled: 0,
+    value: 0,
+    filledToday: 0,
+    created: s.day,
+    route: null,
+  };
+  s.policy.orders.push(o);
+  const how = sellRuleText(spec.mode, spec.mode === 'fixed' ? spec.price : 0, spec.margin);
+  const floorNote = spec.mode === 'cost' ? ` (${moneyText(floor)} each: what they were worth in ${townName(s, a.from)} plus the freight${spec.margin ? ', and the margin' : ''})` : '';
+  const text = `The Treasury sent ${amountOf(a.good, r.qty)} from ${townName(s, a.from)} to ${townName(s, a.to)} and will offer them there ${how}${floorNote} once they arrive.`;
+  policyNews(s, text, a.from);
+  return { ok: true, message: `${r.message} ${text}`, id: r.id };
 }
 
 function build(s: SimState, a: Extract<PlayerAction, { type: 'build' }>): ActionResult {
@@ -1086,18 +1270,42 @@ function projectResult(s: SimState, r: ReturnType<typeof startProject>, label: s
 // ---------------------------------------------------------------------------
 const TRANSFER_GROUPS: TransferGroup[] = [...GROUPS, 'bank'];
 
+/** Validate a transfer's optional trade filter: only with group 'firms'. Returns an error or null. */
+function checkTransferSector(a: Extract<PlayerAction, { type: 'transfer' }>): string | null {
+  if (a.sector === undefined || a.sector === null) return null;
+  if (a.group !== 'firms') return 'A trade can only be chosen when handing out to firms.';
+  if (!ALL_SECTOR_KEYS.includes(a.sector) || a.sector === 'stateworks') return `Unknown trade "${String(a.sector)}".`;
+  return null;
+}
+
+/** "firms" / "coal mines" — the recipients of a transfer to firms, in words. */
+function firmsText(sector: Sector | undefined): string {
+  return sector ? sectorPlural(sector) || 'firms' : 'firms';
+}
+
+/** "each of 3 coal mines" — or "the one coal mine" when a trade's firms number one. */
+function eachOf(n: number, who: string, group: TransferGroup, sector: Sector | undefined): string {
+  if (n === 1 && group === 'firms') return `the one ${sector ? (SECTORS[sector]?.name ?? 'firm').toLowerCase() : 'firm'}`;
+  return `each of ${withCommas(n)} ${who}`;
+}
+
 function transfer(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): ActionResult {
   if (!TRANSFER_GROUPS.includes(a.group)) return fail('Unknown group.');
+  if (a.good !== undefined && a.good !== null) return transferGoods(s, a);
   if (a.town !== -1 && !validTown(s, a.town)) return fail('Unknown town.');
   if (!isNum(a.amount) || a.amount <= 0) return fail('The amount must be a positive number.');
   if (a.amount > PLAYER_MAX_MONEY) return fail(`At most ${moneyText(PLAYER_MAX_MONEY)} at once.`);
   if (a.dir !== 1 && a.dir !== -1) return fail('Direction must be 1 (pay) or −1 (take).');
+  const se = checkTransferSector(a);
+  if (se) return fail(se);
+  const sector = a.group === 'firms' ? (a.sector ?? undefined) : undefined;
   const t = s.treasury;
   if (a.dir === 1 && !t.autoMint && !(t.purse > 0)) return fail('The Purse is empty. Create money first, or turn on auto-mint.');
   if (a.group === 'bank' && a.dir === -1 && !(bankClaimRoom(s) > 0)) return fail('The Bank has no capital of its own to spare, so there is nothing to take.');
-  const n = a.group === 'bank' ? 1 : countRecipients(s, a.group, a.town);
-  if (n === 0) return fail(`Nobody matches: there are no ${GROUP_PLURAL[a.group as Group] ?? 'recipients'}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);
-  const total = executeTransfer(s, a.group, a.town, a.amount, a.dir);
+  const n = a.group === 'bank' ? 1 : countRecipients(s, a.group, a.town, sector);
+  const who = a.group === 'firms' ? firmsText(sector) : (GROUP_PLURAL[a.group as Group] ?? 'recipients');
+  if (n === 0) return fail(`Nobody matches: there are no ${a.group === 'bank' ? 'recipients' : who}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);
+  const total = executeTransfer(s, a.group, a.town, a.amount, a.dir, sector);
   const where = a.town >= 0 ? ` in ${townName(s, a.town)}` : '';
   let text: string;
   if (a.group === 'bank') {
@@ -1106,19 +1314,93 @@ function transfer(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): 
   } else if (a.dir === 1) {
     const each = n > 0 ? total / n : 0;
     const scaled = each < a.amount - 1e-6 ? ' — all the Purse could spare' : '';
-    text = `The Treasury handed ${moneyText(each)} to each of ${withCommas(n)} ${GROUP_PLURAL[a.group] ?? 'recipients'}${where} (${moneyText(total)} in all${scaled}).`;
+    text = `The Treasury handed ${moneyText(each)} to ${eachOf(n, who, a.group, sector)}${where} (${moneyText(total)} in all${scaled}).`;
   } else {
-    text = `The Treasury collected up to ${moneyText(a.amount)} from each of ${withCommas(n)} ${GROUP_PLURAL[a.group] ?? 'people'}${where} (${moneyText(total)} in all).`;
+    text = `The Treasury collected up to ${moneyText(a.amount)} from ${eachOf(n, who, a.group, sector)}${where} (${moneyText(total)} in all).`;
   }
   policyNews(s, text, a.town);
   return { ok: true, message: text };
 }
 
-function transferMembers(s: SimState, group: Group, town: TownId, fn: (ref: number, isFirm: boolean) => void): void {
+/**
+ * Handing out goods from the Treasury's stores in a town (transfer with `good`): `amount`
+ * units to each member of the group there — people's pantries, or firms' stores (group
+ * 'firms', optionally one trade; tools handed to a workshop join its tool stock that evening,
+ * firms.absorbTools). With too little in store every member gets an equal share of what is
+ * held. No money moves.
+ */
+function transferGoods(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): ActionResult {
+  const g = a.good as number;
+  if (!validGood(g)) return fail('Unknown good.');
+  if (a.dir !== 1) return fail('Goods can only be handed out; to gather goods, the Treasury buys them in the market.');
+  if (a.group === 'bank') return fail('The Bank takes no goods; hand them to people or firms.');
+  if (!validTown(s, a.town)) return fail('Choose the town whose Treasury stores the goods come from.');
+  if (!isNum(a.amount) || a.amount <= 0) return fail('The quantity for each recipient must be a positive number.');
+  if (a.amount > PLAYER_MAX_QTY) return fail(`At most ${qtyText(PLAYER_MAX_QTY)} units each.`);
+  const se = checkTransferSector(a);
+  if (se) return fail(se);
+  const group = a.group as Group;
+  const sector = group === 'firms' ? (a.sector ?? undefined) : undefined;
+  if (group !== 'firms' && !GOODS[g].consumer) return fail(`People have no use for ${goodLower(g)} at home; hand it to firms instead.`);
+  const town = a.town;
+  const have = s.treasury.goods[town]?.[g] ?? 0;
+  if (!(have > 1e-9)) return fail(`The Treasury holds no ${goodLower(g)} in ${townName(s, town)}. Buy some there first (or carry some there).`);
+  const n = countRecipients(s, group, town, sector);
+  const who = group === 'firms' ? firmsText(sector) : (GROUP_PLURAL[group] ?? 'people');
+  if (n === 0) return fail(`Nobody matches: there are no ${who} in ${townName(s, town)}.`);
+  const total = executeGoodsTransfer(s, group, town, g, a.amount, sector);
+  const each = total / n;
+  const short = each < a.amount - 1e-6 ? ' — all its stores there held' : '';
+  const text = `The Treasury handed ${amountOf(g, each)} from its stores in ${townName(s, town)} to ${eachOf(n, who, group, sector)} there (${qtyText(total)} in all${short}).`;
+  policyNews(s, text, town);
+  return { ok: true, message: text };
+}
+
+/**
+ * In kind: move `amount` units of good `g` per member of `group` in `town` from the Treasury's
+ * stores there (equal shares of what is held if that is less) into people's pantries / firms'
+ * stores. Group 'firms' may be narrowed to one trade. Records stats.acc.transfer_goods_<g>
+ * (units) and transfer_goods_value (¤ at the town's price). Returns the units handed out.
+ */
+export function executeGoodsTransfer(s: SimState, group: Group, town: TownId, g: number, amount: number, sector?: Sector): number {
+  if (!(amount > 0) || !Number.isFinite(amount) || !validGood(g) || !validTown(s, town)) return 0;
+  const tg = s.treasury.goods[town];
+  const have = tg ? Math.max(0, tg[g]) : 0;
+  if (!(have > 1e-12)) return 0;
+  const n = countRecipients(s, group, town, sector);
+  if (n === 0) return 0;
+  const each = Math.min(amount, have / n);
+  if (!(each > 0)) return 0;
+  let total = 0;
+  transferMembers(
+    s,
+    group,
+    town,
+    (ref, isFirm) => {
+      const inv = isFirm ? s.firms[ref - FIRM_BASE]?.inv : s.people[ref]?.pantry;
+      if (!inv) return;
+      inv[g] += each;
+      total += each;
+    },
+    sector,
+  );
+  tg[g] = Math.max(0, tg[g] - total);
+  if (tg[g] < 1e-9) tg[g] = 0;
+  const acc = s.stats.acc;
+  const k = 'transfer_goods_' + g;
+  acc[k] = (acc[k] || 0) + total;
+  const m = s.markets[town * N_GOODS + g];
+  const price = m && m.ema > 0 && Number.isFinite(m.ema) ? m.ema : 0;
+  acc.transfer_goods_value = (acc.transfer_goods_value || 0) + total * price;
+  return total;
+}
+
+function transferMembers(s: SimState, group: Group, town: TownId, fn: (ref: number, isFirm: boolean) => void, sector?: Sector): void {
   if (group === 'firms') {
     for (const f of s.firms) {
       if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.owner === STATE) continue;
       if (town >= 0 && f.town !== town) continue;
+      if (sector && f.sector !== sector) continue;
       fn(FIRM_BASE + f.id, true);
     }
     return;
@@ -1131,10 +1413,10 @@ function transferMembers(s: SimState, group: Group, town: TownId, fn: (ref: numb
   }
 }
 
-function countRecipients(s: SimState, group: TransferGroup, town: TownId): number {
+function countRecipients(s: SimState, group: TransferGroup, town: TownId, sector?: Sector): number {
   if (group === 'bank') return 1;
   let n = 0;
-  transferMembers(s, group, town, () => n++);
+  transferMembers(s, group, town, () => n++, sector);
   return n;
 }
 
@@ -1142,12 +1424,13 @@ function countRecipients(s: SimState, group: TransferGroup, town: TownId): numbe
  * One-off transfer: dir 1 = give `amount` to every member of the group (in
  * `town`, or all towns if -1); dir −1 = take up to `amount` from each.
  * 'bank' group → pay to/from BANK (a recapitalisation / levy on the bank).
- * 'all' and 'persons' mean every person; 'firms' every active private firm.
+ * 'all' and 'persons' mean every person; 'firms' every active private firm (of
+ * `sector` only, when given).
  * If the Purse cannot cover a payment to everyone (auto-mint off), each member
  * gets an equal share of what it holds. Payments to people count as income
  * (person.earned). Returns total ¤ moved.
  */
-export function executeTransfer(s: SimState, group: TransferGroup, town: TownId, amount: number, dir: 1 | -1): number {
+export function executeTransfer(s: SimState, group: TransferGroup, town: TownId, amount: number, dir: 1 | -1, sector?: Sector): number {
   if (!(amount > 0) || !Number.isFinite(amount)) return 0;
   if (group === 'bank') {
     // Stats count Bank transfers from the 'recap'/'transfer' flows (stats.ts), not here.
@@ -1157,24 +1440,31 @@ export function executeTransfer(s: SimState, group: TransferGroup, town: TownId,
     const take = Math.min(amount, bankClaimRoom(s));
     return take > 0 ? pay(s, BANK, STATE, take, 'transfer') : 0;
   }
+  const sec = group === 'firms' ? sector : undefined;
   let each = amount;
   if (dir === 1 && !s.treasury.autoMint) {
-    const n = countRecipients(s, group, town);
+    const n = countRecipients(s, group, town, sec);
     if (n === 0) return 0;
     const avail = Math.max(0, s.treasury.purse);
     if (avail < each * n) each = avail / n;
     if (!(each > 0)) return 0;
   }
   let total = 0;
-  transferMembers(s, group as Group, town, (ref, isFirm) => {
-    const moved = dir === 1 ? pay(s, STATE, ref, each, 'transfer') : pay(s, ref, STATE, each, 'transfer');
-    if (!moved) return;
-    total += moved;
-    if (!isFirm) {
-      const p = s.people[ref];
-      if (p) p.earned += dir === 1 ? moved : -moved;
-    }
-  });
+  transferMembers(
+    s,
+    group as Group,
+    town,
+    (ref, isFirm) => {
+      const moved = dir === 1 ? pay(s, STATE, ref, each, 'transfer') : pay(s, ref, STATE, each, 'transfer');
+      if (!moved) return;
+      total += moved;
+      if (!isFirm) {
+        const p = s.people[ref];
+        if (p) p.earned += dir === 1 ? moved : -moved;
+      }
+    },
+    sec,
+  );
   const acc = s.stats.acc;
   if (dir === 1) acc.transfer_give = (acc.transfer_give || 0) + total;
   else acc.transfer_take = (acc.transfer_take || 0) + total;
@@ -1194,7 +1484,9 @@ function orderExhausted(o: PlayerOrder): boolean {
 }
 
 /**
- * Morning: drop expired levies/limits/orders; reset order.filledToday;
+ * Morning: drop expired levies/limits/orders (a supply route's order stays while it still
+ * holds, carries or offers goods: its buy side is over, its sales go on); reset
+ * order.filledToday and a route's shippedToday / soldToday;
  * set treasury.givesSuspended = !autoMint && purse <= 0;
  * apply labour orders: for each town, the stateworks firm's target = Σ qty of
  * enabled 'labor' buy orders there and its wage = the highest such price
@@ -1222,9 +1514,21 @@ export function policyBeginDay(s: SimState): void {
   }
   if (P.orders.length) {
     const keep: PlayerOrder[] = [];
-    for (const o of P.orders) if (!(o.until >= 0 && o.until < day)) keep.push(o);
+    for (const o of P.orders) {
+      if (!(o.until >= 0 && o.until < day)) keep.push(o);
+      else if (isRouteOrder(o)) {
+        if (routeBusy(s, o)) keep.push(o);
+        else policyNews(s, routeSummary(s, o), o.market.town);
+      }
+    }
     if (keep.length !== P.orders.length) P.orders = keep;
-    for (const o of P.orders) o.filledToday = 0;
+    for (const o of P.orders) {
+      o.filledToday = 0;
+      if (o.route) {
+        o.route.shippedToday = 0;
+        o.route.soldToday = 0;
+      }
+    }
   }
 
   const t = s.treasury;
@@ -1263,6 +1567,54 @@ export function policyBeginDay(s: SimState): void {
 interface Submitted {
   po: PlayerOrder;
   ord: Order;
+  /** true: the ask of a supply route's waiting stock at its destination (credited to the route). */
+  route: boolean;
+}
+
+/** A finished supply route in words (when its order lapses with nothing left to carry or sell). */
+function routeSummary(s: SimState, o: PlayerOrder): string {
+  if (!isRouteOrder(o)) return '';
+  const r = o.route;
+  const g = o.market.good;
+  return `The Treasury's supply route “${o.label}” has run its course: ${amountOf(g, o.filled)} bought in ${townName(s, o.market.town)} for ${moneyText(o.value)}, ${qtyText(r.soldTotal)} sold in ${townName(s, r.to)} for ${moneyText(r.revenue)}, freight ${moneyText(r.freightPaid)}.`;
+}
+
+/**
+ * Supply routes, after clearing: load what each route has bought and not yet sent
+ * (routes.heldAtOrigin — today's purchases, and any left waiting for freight) onto the
+ * Treasury's wagons (traders.sendTreasuryCargo): freight from the Purse to the origin's
+ * trading house, cargo tagged with the order, basis = purchase cost + freight per unit.
+ * Purchase cost: today's units at today's average price, older ones at the order's average.
+ * While the order is still buying, a load leaves once it fills ROUTE_LOAD_SHARE of a wagon or
+ * amounts to ROUTE_HOLD_DAYS of the order's daily quantity (whichever is less): the Purse pays
+ * a whole wagon's trip however little it carries. When the freight cannot be paid (auto-mint
+ * off, Purse short) the goods wait at the origin and the route tries again the next day.
+ */
+function shipRoutes(s: SimState, paidToday: Record<number, number>): void {
+  for (const o of s.policy.orders) {
+    if (!isRouteOrder(o)) continue;
+    const held = heldAtOrigin(s, o);
+    if (!(held > 1e-6)) continue;
+    const buying = o.enabled && !(o.until >= 0 && o.until <= s.day) && !orderExhausted(o) && !o.once;
+    if (buying && held < Math.min(ROUTE_LOAD_SHARE * WAGON_CAPACITY, ROUTE_HOLD_DAYS * o.qty) - 1e-6) continue;
+    const r = o.route;
+    const life = o.filled > 0 ? o.value / o.filled : o.price;
+    const qT = Math.min(held, Math.max(0, o.filledToday));
+    const pT = qT > 0 && o.filledToday > 0 ? (paidToday[o.id] ?? 0) / o.filledToday : life;
+    const unitCost = (qT * pT + (held - qT) * life) / held;
+    const res = sendTreasuryCargo(s, o.market.town, r.to, o.market.good, held, { unitCost, order: o.id });
+    if (res.ok) {
+      r.shippedToday += res.qty;
+      r.shippedTotal += res.qty;
+      r.freightPaid += res.paid;
+      r.inTransit += res.qty;
+    } else {
+      // Held back (no freight money, no trading house): say why on the first day of a spell.
+      const fails = (rt(s).bag.routeFails ??= {}) as Record<number, number>;
+      if (fails[o.id] !== s.day - 1) policyNews(s, `The Treasury's ${goodLower(o.market.good)} bought in ${townName(s, o.market.town)} for ${townName(s, r.to)} waits there: ${lowerFirst(res.message)}`, o.market.town);
+      fails[o.id] = s.day;
+    }
+  }
 }
 
 /**
@@ -1284,6 +1636,33 @@ export function playerOrders(s: SimState, books: Books): void {
   const committed: Record<number, number> = {};
   let iouBuyCommitted = 0;
   let goldCommitted = 0;
+  // ---- supply routes: offer the goods waiting at each destination (even once the buy side is over);
+  // what a route bought and still holds at its origin is kept from the Treasury's other sell orders there ----
+  for (const po of orders) {
+    if (!isRouteOrder(po)) continue;
+    const r = po.route;
+    const held = heldAtOrigin(s, po);
+    if (held > 1e-9) {
+      const ko = po.market.town * N_GOODS + po.market.good;
+      committed[ko] = (committed[ko] || 0) + held;
+    }
+    if (!(r.waiting > 1e-9)) continue;
+    const g = po.market.good;
+    if (!validTown(s, r.to) || !validGood(g)) continue;
+    const k = r.to * N_GOODS + g;
+    // Never offer more than the Treasury holds there (spoilage, or stock another order sold).
+    const have = Math.max(0, (t.goods[r.to]?.[g] ?? 0) - (committed[k] || 0));
+    if (r.waiting > have) r.waiting = have;
+    if (!(r.waiting > 1e-9)) {
+      r.waiting = 0;
+      continue;
+    }
+    const book = books.goods[k];
+    if (!book) continue;
+    committed[k] = (committed[k] || 0) + r.waiting;
+    const ord = addAsk(book, STATE, routeFloor(s, po), r.waiting, { exempt: true, tag: po.id });
+    sub.push({ po, ord, route: true });
+  }
   for (const po of orders) {
     if (!po.enabled || po.market.kind === 'labor') continue;
     if (po.until >= 0 && po.until < s.day) continue;
@@ -1323,22 +1702,44 @@ export function playerOrders(s: SimState, books: Books): void {
     if (!book || !(q > 1e-9)) continue;
     if (buy) budget -= q * po.price;
     const ord = buy ? addBid(book, STATE, po.price, q, { exempt: true, tag: po.id }) : addAsk(book, STATE, po.price, q, { exempt: true, tag: po.id });
-    sub.push({ po, ord });
+    sub.push({ po, ord, route: false });
   }
 }
 
-/** After clearing: update order.filled/filledToday/value; disable once-orders and exhausted totals. */
+/**
+ * After clearing: update order.filled/filledToday/value; credit supply routes' sales
+ * (waiting −, soldToday/soldTotal/revenue +) and ship what they bought (shipRoutes);
+ * disable once-orders and exhausted totals.
+ */
 export function playerAfterClear(s: SimState, books: Books): void {
+  void books;
   const sub = rt(s).bag.playerSubmitted as Submitted[] | undefined;
+  let routes = false;
+  const paidToday: Record<number, number> = {};
   if (sub) {
-    for (const { po, ord } of sub) {
+    for (const { po, ord, route } of sub) {
       const f = ord.filled > 0 ? ord.filled : 0;
+      if (route) {
+        const r = po.route;
+        if (!r) continue;
+        if (f > 0) {
+          r.waiting = Math.max(0, r.waiting - f);
+          if (r.waiting < 1e-9) r.waiting = 0;
+          r.soldToday += f;
+          r.soldTotal += f;
+          r.revenue += Math.max(0, ord.paid);
+        }
+        continue;
+      }
       po.filledToday += f;
       po.filled += f;
       if (f > 0) po.value += po.side === 'buy' ? ord.paid : -ord.paid;
+      if (po.route && f > 0) paidToday[po.id] = (paidToday[po.id] || 0) + Math.max(0, ord.paid);
     }
     sub.length = 0;
   }
+  for (const o of s.policy.orders) if (o.route) routes = true;
+  if (routes) shipRoutes(s, paidToday);
   // Treasury workforce: attribute today's workers to the labour orders of each town (in order).
   const orders = s.policy.orders;
   if (orders.some((o) => o.market.kind === 'labor')) {

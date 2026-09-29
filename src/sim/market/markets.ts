@@ -19,6 +19,10 @@
 // ladder) are settled as one group — one affordability check and one payment
 // per leg — and the group's result is spread over its orders in proportion to
 // their auction fills (so each order's `paid` is at the group's average cost).
+// Per-order extras come from port duties (foreign merchants' orders, credited to
+// 'import'/'export' rules) or from targeted sale rules (levies.isTargetedSale:
+// added in addBid/addAsk to the orders of the firms / people a rule names, and
+// credited back to those rules at settlement).
 //
 // Books and orders are pooled per state (runtime bag) and reused every day:
 // orders are transient and must not be held past the day's market phase.
@@ -30,12 +34,14 @@ import {
   MARKET_HIST_DAYS,
   MARKET_VOL_EMA,
   PRICE_MIN,
+  WEDGE_BPCT_MIN,
+  WEDGE_SPCT_MAX,
 } from '../config';
 import { N_GOODS, SECTORS } from '../goods';
 import { cashOf, pay, type Flow } from '../ledger';
 import { rt } from '../runtime';
 import { BANK, FIRM_BASE, FOREIGN, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
-import type { Book, MarketState, Order, Ref, SimState, TownId, Wedge } from '../types';
+import type { Book, Levy, MarketState, Order, Ref, Sector, SimState, TownId, Wedge } from '../types';
 import { pushCapped } from '../util';
 
 // Local copies of hot constants (imported bindings may be getters under some loaders).
@@ -43,7 +49,17 @@ const STATE_REF = STATE;
 const BANK_REF = BANK;
 const FOREIGN_REF = FOREIGN;
 const FIRM_REF_BASE = FIRM_BASE;
-import { attributePortActual, attributeSaleActual, saleWedgeInto } from '../policy/levies';
+import {
+  attributePortActual,
+  attributeSaleActual,
+  attributeTargetedActual,
+  hasTargetedSale,
+  saleWedgeInto,
+  targetedExtrasFor,
+  targetedExtrasFrom,
+  targetedSaleRules,
+  type Extras,
+} from '../policy/levies';
 import { noteBinding, priceBounds } from '../policy/limits';
 import { buyerPct, buyerUnit, clearBook, curveInto, sellerPct, sellerUnit, type ClearResult } from './auction';
 
@@ -58,12 +74,24 @@ export interface OrderOpts {
   xPct?: number; // per-order extra levy (fraction of base) — e.g. port duties
   xUnit?: number; // per-order extra levy (¤/unit)
   tag?: number;
+  /**
+   * Bought to be sold again elsewhere (a trading house's merchandise): targeted buyer-side sale
+   * rules do not ride on it. A share of the price paid on a trade's purchases is for what it uses;
+   * on goods bought for resale it would be collected again on every round trip between towns, the
+   * resellers outbidding one another for ever more of it.
+   */
+  resale?: boolean;
 }
 
-/** A book with a private pool of recycled orders and the list of Treasury orders on it. */
+/** A book with a private pool of recycled orders, the list of Treasury orders on it and today's targeted sale rules. */
 interface PooledBook extends Book {
   spare: Order[];
   stateOrders: Order[];
+  /** Targeted sale rules in force today on this market's bids / asks (levies.targetedSaleRules); empty = none. */
+  tBuy: Levy[];
+  tSell: Levy[];
+  /** The state the rules belong to (set by openBooks while any targeted rule is in force), else null. */
+  sim: SimState | null;
 }
 
 function makeOrder(): Order {
@@ -71,7 +99,7 @@ function makeOrder(): Order {
 }
 
 function makeBook(town: TownId, good: number): PooledBook {
-  return { town, good, bids: [], asks: [], wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1, spare: [], stateOrders: [] };
+  return { town, good, bids: [], asks: [], wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1, spare: [], stateOrders: [], tBuy: [], tSell: [], sim: null };
 }
 
 function recycle(b: Book): void {
@@ -88,7 +116,9 @@ function recycle(b: Book): void {
 /**
  * Create one Book per goods market (with wedge from levies.saleWedge and
  * ceiling/floor from limits.priceBounds) plus the IOU and gold books
- * (no wedge; limits do not apply to them).
+ * (no wedge; limits do not apply to them). Targeted sale rules in force today are
+ * listed per book (bids / asks) so addBid/addAsk can put them on the matching
+ * orders; with none in force this costs one scan of the rule list.
  * The Books object (and its orders) is reused from the previous call on the same
  * state: calling openBooks again invalidates yesterday's books and orders.
  */
@@ -107,10 +137,22 @@ export function openBooks(s: SimState): Books {
     recycle(books.gold);
   }
   const hasLimits = s.policy.limits.length > 0;
+  const targeted = s.policy.levies.length > 0 && hasTargetedSale(s);
   for (let t = 0; t < nT; t++) {
     for (let g = 0; g < N_GOODS; g++) {
       const b = books.goods[t * N_GOODS + g];
       saleWedgeInto(s, t, g, b.wedge);
+      const pb = b as PooledBook;
+      if (!pb.tBuy) pb.tBuy = [];
+      if (!pb.tSell) pb.tSell = [];
+      pb.tBuy.length = 0;
+      pb.tSell.length = 0;
+      pb.sim = null;
+      if (targeted) {
+        targetedSaleRules(s, t, g, 'buyer', pb.tBuy);
+        targetedSaleRules(s, t, g, 'seller', pb.tSell);
+        if (pb.tBuy.length || pb.tSell.length) pb.sim = s;
+      }
       if (hasLimits) {
         const pb = priceBounds(s, t, g);
         b.ceiling = pb.max;
@@ -125,11 +167,13 @@ export function openBooks(s: SimState): Books {
     b.wedge.bPct = b.wedge.bUnit = b.wedge.sPct = b.wedge.sUnit = 0;
     b.ceiling = -1;
     b.floor = -1;
+    (b as PooledBook).sim = null;
   }
   return books;
 }
 
 const VOID_BOOK: PooledBook = makeBook(-1, -1);
+const _xo: Extras = { pct: 0, unit: 0 };
 
 /** The book of a market: goods by town, IOU_GOOD → books.iou, GOLD_GOOD → books.gold. Invalid → a detached book that never clears. */
 export function bookFor(books: Books, town: TownId, good: number): Book {
@@ -159,6 +203,16 @@ function addOrder(book: Book, side: 0 | 1, ref: Ref, limit: number, qty: number,
   o.filled = 0;
   o.price = 0;
   o.paid = 0;
+  // Targeted sale rules ride on the orders of the traders they name (never on Treasury orders).
+  const sim = pb.sim;
+  if (sim && !o.exempt && ref !== STATE_REF && !(side === 0 && opts?.resale)) {
+    const rules = side === 0 ? pb.tBuy : pb.tSell;
+    if (rules.length) {
+      targetedExtrasFrom(sim, rules, ref, _xo);
+      if (_xo.pct) o.xPct += _xo.pct;
+      if (_xo.unit) o.xUnit += _xo.unit;
+    }
+  }
   if (valid) {
     (side === 0 ? book.bids : book.asks).push(o);
     if (ref === STATE_REF && pb.stateOrders) pb.stateOrders.push(o);
@@ -311,6 +365,9 @@ function zeroFills(orders: Order[], from: number, to: number): void {
 
 function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
   const w = book.wedge;
+  const pbk = book as PooledBook;
+  const tBuy = pbk.sim ? pbk.tBuy : null; // targeted sale rules on bids / asks (null: none)
+  const tSell = pbk.sim ? pbk.tSell : null;
   const flow: Flow = kind === K_GOODS ? 'buy' : 'asset';
   const good = book.good;
   const town = book.town;
@@ -449,7 +506,8 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       b.paid = b.filled * pu;
     }
 
-    // attribution of the buyer leg: sale part vs per-order extras (→ export rules)
+    // attribution of the buyer leg: sale part vs per-order extras (foreign bids → export
+    // rules; anyone else's → the targeted sale rules that put them there)
     if (isGoods && (taken || gotGive)) {
       const moved = taken - gotGive;
       const salePart = o.exempt ? 0 : p * w.bPct + w.bUnit;
@@ -458,8 +516,10 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
       const kk = Math.abs(th) > 1e-12 ? moved / (th * got) : 0;
       saleBuyer += salePart * got * kk;
       if (extraPart) {
-        expTotal += extraPart * got * kk;
-        expQty += got;
+        if (ref === FOREIGN_REF) {
+          expTotal += extraPart * got * kk;
+          expQty += got;
+        } else if (tBuy && tBuy.length) attributeTargetedActual(s, tBuy, ref, p, got, extraPart * got * kk);
       }
     }
     if (isGoods && !o.exempt) buyQtyNE += got;
@@ -522,8 +582,10 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
         const kk = Math.abs(th) > 1e-12 ? moved / (th * c) : 0;
         saleSeller += salePart * c * kk;
         if (extraPart) {
-          impTotal += extraPart * c * kk;
-          impQty += c;
+          if (o.ref === FOREIGN_REF) {
+            impTotal += extraPart * c * kk;
+            impQty += c;
+          } else if (tSell && tSell.length) attributeTargetedActual(s, tSell, o.ref, p, c, extraPart * c * kk);
         }
       }
       if (!o.exempt) sellQtyNE += c;
@@ -758,5 +820,36 @@ export function expectedNet(s: SimState, town: TownId, good: number): number {
   if (good === IOU_GOOD || good === GOLD_GOOD) return e;
   const w = saleWedgeInto(s, town, good, W_SCRATCH);
   const n = e * (1 - w.sPct) - w.sUnit;
+  return Math.max(1e-6, n);
+}
+
+const X_SCRATCH: Extras = { pct: 0, unit: 0 };
+
+/**
+ * expectedGross for one buyer: the market-wide wedge plus the targeted sale rules that name
+ * `who` (a trader's ref: its trade or its group; or a trade, for a firm that is only planned —
+ * levies.targetedExtrasFor), clamped as the auction clamps (buyerPct ≥ WEDGE_BPCT_MIN).
+ * Equals expectedGross when no such rule applies.
+ */
+export function expectedGrossFor(s: SimState, town: TownId, good: number, who: Ref | Sector): number {
+  if (good === IOU_GOOD || good === GOLD_GOOD) return expectedGross(s, town, good);
+  const x = targetedExtrasFor(s, town, good, 'buyer', who, X_SCRATCH);
+  if (!x.pct && !x.unit) return expectedGross(s, town, good);
+  const e = refPrice(marketOf(s, town, good));
+  const w = saleWedgeInto(s, town, good, W_SCRATCH);
+  const pct = Math.max(WEDGE_BPCT_MIN, w.bPct + x.pct);
+  const g = e * (1 + pct) + w.bUnit + x.unit;
+  return Math.max(0.01 * e, PRICE_MIN, g);
+}
+
+/** expectedNet for one seller (a trader's ref, or a trade): the market-wide wedge plus the targeted sale rules that name it (clamped as the auction clamps). */
+export function expectedNetFor(s: SimState, town: TownId, good: number, who: Ref | Sector): number {
+  if (good === IOU_GOOD || good === GOLD_GOOD) return expectedNet(s, town, good);
+  const x = targetedExtrasFor(s, town, good, 'seller', who, X_SCRATCH);
+  if (!x.pct && !x.unit) return expectedNet(s, town, good);
+  const e = refPrice(marketOf(s, town, good));
+  const w = saleWedgeInto(s, town, good, W_SCRATCH);
+  const pct = Math.min(WEDGE_SPCT_MAX, w.sPct + x.pct);
+  const n = e * (1 - pct) - w.sUnit - x.unit;
   return Math.max(1e-6, n);
 }

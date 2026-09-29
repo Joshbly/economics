@@ -212,7 +212,7 @@
 .lv-hold-r > span { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-1); }
 .lv-hold-r > span:first-child { text-align: left; }
 .lv-hold-h { min-height: 24px; background: #1a2028; }
-.lv-hold-h > span { font-size: 9.5px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-2); }
+.lv-hold-h > span { font-size: 10.5px; font-weight: 600; color: var(--ink-2); }
 .lv-hold-g { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-0) !important; }
 .lv-hold-line { display: flex; align-items: baseline; gap: 6px; padding: 2px 1px; font-size: 11.5px; color: var(--ink-2); }
 .lv-hold-k { color: var(--ink-2); }
@@ -315,7 +315,7 @@
 /* ---------- Transfer ---------------------------------------------------------------- */
 .lv-tally { display: grid; grid-template-columns: minmax(0, 0.8fr) auto minmax(0, 1fr) auto minmax(0, 1.3fr); align-items: center; gap: 8px; margin-top: 6px; padding: 9px 12px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: #12161c; }
 .lv-tally > div { display: flex; flex-direction: column; min-width: 0; }
-.lv-tally > div:last-child { text-align: right; }
+.lv-tally > div:nth-child(5) { text-align: right; }
 .lv-tally > div:nth-child(3) { text-align: center; }
 .lv-tally-x { color: var(--ink-3); font-size: 16px; }
 .lv-big { font: 600 17px/1.2 var(--font-display); color: var(--ink-0); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -410,3 +410,126 @@
 .lv-ctl > .lv-chips { flex-basis: 100%; }
 .lv-foot .btn { padding: 0 11px; }
 .lv-foot .btn .icon { margin-left: -2px; }
+
+/* ==========================================================================
+   Trade → Route: the supply-route composer (./levers/route.ts)
+   ========================================================================== */
+.lv-kindrow { padding-bottom: 2px; }
+.lv-route { display: flex; flex-direction: column; }
+
+/* the good across every town */
+.lv-cmp { display: flex; flex-direction: column; margin-top: 5px; }
+.lv-cmp-r { display: grid; grid-template-columns: 50px repeat(var(--cols, 4), minmax(0, 1fr)); align-items: stretch; column-gap: 3px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.lv-cmp-r > span { padding: 2px 3px; text-align: right; color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-cmp-r > span.strong { color: var(--ink-0); font-weight: 600; }
+.lv-cmp-r > span.faint { color: var(--ink-3); }
+.lv-cmp-r > .lv-cmp-l { padding-left: 0; text-align: left; font-size: 10.5px; color: var(--ink-3); }
+.lv-cmp-h > span { padding-top: 3px; padding-bottom: 1px; font-size: 10px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink-1); border-radius: 4px 4px 0 0; }
+.lv-cmp-town i { display: block; height: 11px; font-style: normal; font-size: 8.5px; font-weight: 700; letter-spacing: 0.1em; line-height: 11px; text-transform: uppercase; }
+.lv-cmp-r > .is-from { background: rgba(106, 167, 224, 0.09); }
+.lv-cmp-r > .is-to { background: rgba(216, 171, 78, 0.1); }
+.lv-cmp-h > .is-from, .lv-cmp-h > .is-from i { color: #9cc6ee; }
+.lv-cmp-h > .is-to, .lv-cmp-h > .is-to i { color: var(--gold-hi); }
+.lv-cmp-r:last-child > span.is-from, .lv-cmp-r:last-child > span.is-to { border-radius: 0 0 4px 4px; }
+
+/* three steps on a rail */
+.lv-steps { display: flex; flex-direction: column; margin: 6px 0 2px; }
+.lv-step { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; }
+.lv-step-rail { position: relative; display: flex; justify-content: center; }
+.lv-step-rail::after { content: ""; position: absolute; top: 27px; bottom: 1px; left: 50%; width: 1px; margin-left: -0.5px; background: linear-gradient(180deg, var(--gold-line), var(--line-2)); }
+.lv-step:last-child .lv-step-rail::after { display: none; }
+.lv-step-n { display: grid; place-items: center; width: 22px; height: 22px; margin-top: 3px; border-radius: 50%; border: 1px solid var(--gold-line); background: radial-gradient(circle at 35% 30%, rgba(242, 205, 114, 0.22), rgba(216, 171, 78, 0.06) 70%); color: var(--gold-hi); font: 650 11px/1 var(--font); font-variant-numeric: tabular-nums; }
+.lv-step-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 4px 0 12px; }
+.lv-step:last-child .lv-step-main { padding-bottom: 6px; }
+.lv-step-t { font-size: 10.5px; font-weight: 650; letter-spacing: 0.1em; line-height: 22px; text-transform: uppercase; color: var(--ink-1); }
+.lv-step-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.lv-step-line > .select-wrap { flex: 1 1 0; min-width: 92px; }
+.lv-step-line .lv-w { line-height: 28px; }
+.lv-step-main > .seg { width: 100%; }
+.lv-step-note { color: var(--ink-2); }
+
+/* per-unit economics: buy + freight = landed → sells for · margin */
+.lv-eq { display: grid; grid-template-columns: minmax(0, 1fr) 9px minmax(0, 1fr) 9px minmax(0, 1fr) 11px minmax(0, 1fr) minmax(0, 1.1fr); align-items: center; column-gap: 3px; margin-top: 8px; padding: 8px 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: #12161c; }
+.lv-eq-c { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lv-eq-l { font-size: 10px; font-weight: 600; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-eq-v { font: 600 13.5px/1.25 var(--font-display); color: var(--ink-0); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.01em; }
+.lv-eq-s { font-size: 10px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-eq-op { color: var(--ink-3); font-size: 13px; text-align: center; }
+.lv-eq-c:last-child { margin-left: 4px; padding-left: 7px; border-left: 1px solid var(--line-2); }
+.lv-eq-c.good .lv-eq-v, .lv-eq-c.good .lv-eq-s { color: var(--good); }
+.lv-eq-c.bad .lv-eq-v, .lv-eq-c.bad .lv-eq-s { color: var(--bad); }
+
+/* ==========================================================================
+   Treasury stores & wagons (./levers/flows.ts) — Levers → Trade and Ledger
+   ========================================================================== */
+.lv-flows { display: flex; flex-direction: column; gap: 12px; }
+.lv-flows-kv { margin-top: 0; }
+.lv-kv-s { font-size: 10px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-kv-v.good { color: var(--good); }
+.lv-goodtag { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 12.5px; font-weight: 600; color: var(--ink-0); white-space: nowrap; }
+
+/* wagons on the road */
+.lv-ships { display: flex; flex-direction: column; gap: 5px; }
+.lv-ships[hidden] { display: none; }
+.lv-ship { display: grid; grid-template-columns: auto minmax(0, 1fr) 74px auto; align-items: center; gap: 9px; padding: 6px 6px 7px 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: var(--bg-2); transition: border-color 0.15s; }
+.lv-ship:hover { border-color: var(--line-2); }
+.lv-ship-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lv-nowrap { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.lv-ship-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.lv-ship-t { display: block; min-width: 0; font-size: 12px; font-weight: 600; color: var(--ink-0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.lv-ship-tag { flex: none; height: 14px; padding: 0 5px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.07em; line-height: 15px; text-transform: uppercase; color: var(--ink-2); background: var(--bg-4); cursor: default; }
+.lv-ship-tag.gold { color: var(--gold-hi); background: var(--gold-wash); }
+.lv-ship-s { min-width: 0; font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-ship-when { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
+.lv-ship-eta { font-size: 11px; color: var(--ink-1); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lv-ship-bar { height: 4px; }
+
+/* supply routes */
+.lv-rts { display: flex; flex-direction: column; gap: 6px; }
+.lv-rts[hidden] { display: none; }
+.lv-rt { display: flex; flex-direction: column; gap: 6px; padding: 8px 7px 9px 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: var(--bg-2); transition: opacity 0.15s, border-color 0.15s; }
+.lv-rt:hover { border-color: var(--line-2); }
+.lv-rt.off { opacity: 0.62; }
+.lv-rt.off:hover { opacity: 0.9; }
+.lv-rt-head { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 24px; }
+.lv-rt-head .lv-if-sw { padding: 0; display: inline-flex; }
+.lv-rt-head .spacer { flex: 1; min-width: 2px; }
+.lv-rt-path { min-width: 0; font-size: 12px; color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-rt-sub { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.lv-rt-status { flex: none; height: 17px; margin-top: 0; font-size: 10px; }
+.lv-rt-terms { min-width: 0; font-size: 11px; line-height: 1.45; color: var(--ink-2); }
+.lv-rt-money { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 8px; padding: 0 2px; }
+.lv-rt-money .lv-stat { min-width: 0; }
+.lv-rt-money .lv-stat-v { overflow: hidden; text-overflow: ellipsis; }
+.lv-rt-money .lv-stat:last-child { padding-left: 8px; border-left: 1px solid var(--line-2); }
+
+/* the pipeline: bought today → on the road → waiting → sold today */
+.lv-pipe { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 2px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: #12161c; }
+.lv-pipe-c { position: relative; display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 5px 5px 6px 10px; cursor: default; }
+.lv-pipe-c:first-child { padding-left: 8px; }
+.lv-pipe-c + .lv-pipe-c::before { content: ""; position: absolute; left: -4px; top: 50%; width: 7px; height: 7px; margin-top: -4px; border-top: 1px solid var(--line-3); border-right: 1px solid var(--line-3); background: #12161c; transform: rotate(45deg); }
+.lv-pipe-l { font-size: 9px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-pipe-v { font: 600 13.5px/1.25 var(--font-display); color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-pipe-s { font-size: 10px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-pipe-c.on .lv-pipe-v { color: var(--ink-0); }
+.lv-pipe-c.on .lv-pipe-l { color: var(--gold); }
+.lv-if-route .lv-pipe { margin: 3px 0 1px; }
+.lv-pipe.compact .lv-pipe-c { padding-top: 4px; padding-bottom: 5px; }
+.lv-pipe.compact .lv-pipe-v { font-size: 12.5px; }
+.lv-pipe.compact .lv-pipe-l { font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+
+.lv-ledger-flows .lv-flows { gap: 12px; }
+
+/* Levy → sale: who the rule applies to (full width in the conditions grid) */
+.lv-cond-who { grid-column: 1 / -1; }
+
+/* Transfer → goods: units needed vs units held */
+.lv-tally-held { display: block; grid-column: 1 / -1; position: relative; height: 4px; margin-top: 2px; border-radius: 3px; background: var(--bg-4); overflow: hidden; }
+.lv-tally-held[hidden] { display: none; }
+.lv-tally-held > i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--gold-lo), var(--gold-hi)); transition: width 0.25s var(--ease); }
+.lv-tally-held.over > i { background: linear-gradient(90deg, rgba(232, 132, 90, 0.6), var(--bad)); }
+.lv-hint.warn { color: var(--warn); }
+
+/* Stores: holdings a supply route is offering where they are */
+.lv-hold-r > span.routed { color: var(--gold-hi); }
+.lv-hold-r > span.routed::before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 5px 1px 0; border-radius: 50%; background: var(--gold); vertical-align: middle; }

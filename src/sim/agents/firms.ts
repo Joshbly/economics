@@ -148,8 +148,8 @@ import { dayOfYear, farmSeason, heatNeed, isMonthEnd, monthOf, seasonFactor } fr
 import { newFirm } from '../factory';
 import { G, GOODS, N_GOODS, SECTORS, type SectorDef } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, repayPrincipal, writeOff } from '../ledger';
-import { addAsk, addBid, bookFor, expectedGross, expectedNet, marketOf, type Books } from '../market/markets';
-import { chargeLevy, employerWageCost, wageLevyRates } from '../policy/levies';
+import { addAsk, addBid, bookFor, expectedGross, expectedGrossFor, expectedNet, expectedNetFor, marketOf, type Books } from '../market/markets';
+import { chargeLevy, employerWageCost, hasTargetedSale, wageLevyRates } from '../policy/levies';
 import { wageBounds } from '../policy/limits';
 import { rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
@@ -510,6 +510,8 @@ export function noteShortfall(s: SimState, firmId: number, amount: number): void
 interface PriceTable {
   net: number[][];
   gross: number[][];
+  /** Some sale rule in force today is aimed at particular trades (levies.isTargetedSale): firms read their own prices (grossOf / netOf). */
+  targeted: boolean;
 }
 
 function priceTable(s: SimState): PriceTable {
@@ -517,7 +519,7 @@ function priceTable(s: SimState): PriceTable {
   let pt = bag.firmPrices as PriceTable | undefined;
   const nT = s.towns.length;
   if (!pt || pt.net.length !== nT) {
-    pt = { net: [], gross: [] };
+    pt = { net: [], gross: [], targeted: false };
     for (let t = 0; t < nT; t++) {
       pt.net.push(new Array(N_GOODS).fill(1));
       pt.gross.push(new Array(N_GOODS).fill(1));
@@ -532,7 +534,37 @@ function priceTable(s: SimState): PriceTable {
       g[k] = fin(expectedGross(s, t, k), 1e-4);
     }
   }
+  pt.targeted = s.policy.levies.length > 0 && hasTargetedSale(s);
   return pt;
+}
+
+const _ownGross: number[] = new Array(N_GOODS).fill(1);
+
+/**
+ * The prices a firm expects to pay (gross), per good: its town's, adjusted for any sale rule
+ * aimed at its trade on the buying side — e.g. a share of the price of its tools paid by the
+ * Treasury (levies.isTargetedSale). This is what makes such a rule reach the firm's plans
+ * (materials and tool costs → workforce, bids). Returns the town row itself when no rule
+ * applies (the common case), else a scratch row valid until the next call.
+ */
+function grossOf(s: SimState, f: Firm, pt: PriceTable): number[] {
+  const row = pt.gross[f.town];
+  if (!pt.targeted || !row) return row;
+  const ref = firmRef(f.id);
+  let own = false;
+  for (let g = 0; g < N_GOODS; g++) {
+    const v = fin(expectedGrossFor(s, f.town, g, ref), 1e-4);
+    _ownGross[g] = v;
+    if (v !== row[g]) own = true;
+  }
+  return own ? _ownGross : row;
+}
+
+/** The net price a firm expects for good `g`: its town's, adjusted for any sale rule aimed at its trade on the selling side. */
+function netOf(s: SimState, f: Firm, pt: PriceTable, g: number): number {
+  const v = pt.net[f.town]?.[g];
+  if (!pt.targeted || v === undefined) return v ?? 0;
+  return fin(expectedNetFor(s, f.town, g, firmRef(f.id)), 1e-6);
 }
 
 /** Expected gross prices (length N_GOODS) in a town, for other modules' cost estimates. */
@@ -668,10 +700,11 @@ function hiringUrgency(s: SimState, f: Firm, w: number, pt: PriceTable): number 
   if (!d || !d.producer || !(w > 0)) return 0;
   const g = d.out;
   const t = f.town;
-  const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t]?.[g] ?? 0;
+  const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : netOf(s, f, pt, g);
   const apl = nW > 0 ? Math.max(0, fin(f.output)) / nW : d.prodPerWorker;
-  const mc = materialCostPerUnit(f.sector, pt.gross[t]);
-  const tc = toolCostPerUnit(f.sector, pt.gross[t][G.tools], Math.max(1e-6, apl));
+  const gross = grossOf(s, f, pt);
+  const mc = materialCostPerUnit(f.sector, gross);
+  const tc = toolCostPerUnit(f.sector, gross[G.tools], Math.max(1e-6, apl));
   const value = d.alpha * Math.max(0, pExp - mc - tc) * apl;
   // Set against what the hand costs the firm (employer-side wage levies included), not the posted wage.
   return clamp(value / Math.max(1e-9, employerWageCost(s, t, f.sector, w)) - WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX);
@@ -731,10 +764,10 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const eff = nW > 0 ? clamp(es / nW, 0.3, 3) : 0.95;
   const site = siteMultiplier(s, f);
   const sPlan = planSeason(d, s.day);
-  const gross = pt.gross[t];
+  const gross = grossOf(s, f, pt);
   const m = s.markets[t * N_GOODS + g];
   // The firm's price: its own expectation (which follows the prices it realises and the market's).
-  const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+  const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : netOf(s, f, pt, g);
   const mc = materialCostPerUnit(k, gross);
   // Tool wear and, for perishables, the stock that rots while waiting to be sold
   // (spoil rate × days of stock held, as a share of the price).
@@ -874,7 +907,7 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   let probe = 0;
   if (cap >= 1 && !(f.sales > 1) && f.inv[g] < 1) {
     const q1 = potentialOutput(k, eff, d.toolsPerWorker * eff, sPlan, site);
-    const pp = demandPriceFor(m, q1, pt.net[t][g]);
+    const pp = demandPriceFor(m, q1, netOf(s, f, pt, g));
     if (q1 > 0 && pp > mc + tc + wEff / q1) {
       raw = Math.max(raw, 1);
       probe = pp;
@@ -982,6 +1015,7 @@ export function firmsProduce(s: SimState): void {
     const k = f.sector;
     const g = d.out;
     const t = f.town;
+    const gross = grossOf(s, f, pt);
     const leff = workforceEff(s, f) * strikeFactor(s, t);
     const tools = Math.max(0, fin(f.tools));
     let q = 0;
@@ -1012,7 +1046,7 @@ export function firmsProduce(s: SimState): void {
       for (const [j, a] of d.inputs) {
         const use = Math.min(Math.max(0, f.inv[j]), a * q);
         f.inv[j] = Math.max(0, f.inv[j] - use);
-        matVal += use * pt.gross[t][j];
+        matVal += use * gross[j];
         vaIn += use * fin(bp[j]);
         acc[K_USE[j]] = (acc[K_USE[j]] || 0) + use;
       }
@@ -1024,7 +1058,7 @@ export function firmsProduce(s: SimState): void {
     wearTotal += wear;
     if (f.id < sc.n) {
       sc.matUsed[f.id] += matVal;
-      sc.toolWear[f.id] += wear * pt.gross[t][G.tools];
+      sc.toolWear[f.id] += wear * gross[G.tools];
     }
   }
   bump(s, 'realva', realva);
@@ -1149,7 +1183,7 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
   const ref = firmRef(f.id);
   const t = f.town;
   const book = bookFor(books, t, g);
-  const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][g];
+  const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : netOf(s, f, pt, g);
   // `sales` (with a floor that keeps unsold stock on offer) sizes the offer; the stock
   // target must come from real sales only, or it would grow with the stock itself.
   const sales = salesRef(s, f, stock);
@@ -1177,7 +1211,7 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
     // missing inputs must not price itself out of the market on a freak cost figure).
     const norm = d.prodPerWorker * siteMultiplier(s, f) * seasonFactor(d.season, s.day);
     const apl = Math.max(nW > 0 ? fin(f.output) / nW : 0, 0.5 * norm);
-    floor = (distressed ? 0.5 : 1) * ASK_COST_FLOOR * fin(unitVariableCost(f.sector, f.wage, apl, pt.gross[t]), 0);
+    floor = (distressed ? 0.5 : 1) * ASK_COST_FLOOR * fin(unitVariableCost(f.sector, f.wage, apl, grossOf(s, f, pt)), 0);
   }
   const perish = isPerishable(g);
   const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
@@ -1216,7 +1250,7 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
   const d = SECTORS[f.sector];
   const k = f.sector;
   const t = f.town;
-  const gross = pt.gross[t];
+  const gross = grossOf(s, f, pt);
   const nW = f.workers.length;
   const tgtW = Math.max(0, fin(f.target));
   if (!(tgtW > 0) && nW === 0) return;
@@ -1230,7 +1264,7 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
   // ---- inputs: keep INPUT_BUFFER_DAYS of planned production ----
   if (d.inputs.length && tgtW > 0) {
     const qPlan = Math.max(fin(f.output), potentialOutput(k, tgtW * eff, d.toolsPerWorker * tgtW * eff, season, site));
-    const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t][d.out];
+    const pNet = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : netOf(s, f, pt, d.out);
     const mc = materialCostPerUnit(k, gross);
     const tc = toolCostPerUnit(k, gross[G.tools], Math.max(1e-6, qPlan / Math.max(1, planW)), carryRate(s));
     for (const [j, a] of d.inputs) {
@@ -1270,8 +1304,10 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
       const qty = gap * (TOOLS_GAP_CLOSE + (1 - TOOLS_GAP_CLOSE) * sh);
       const top = 1.1 + (TOOLS_MAX_BID_MULT - 1.1) * sh;
       const pT = gross[G.tools];
-      // Never above TOOLS_MAX_BID_MULT × what tools cost to make (see fairPrice).
-      const lim = TOOLS_MAX_BID_MULT * fairPrice(s, t, G.tools, gross);
+      // Never above TOOLS_MAX_BID_MULT × what tools cost to make (see fairPrice), in the firm's own
+      // terms: a share of its tools' price paid (or taken) by the Treasury scales the cap with it.
+      const own = pt.gross[t][G.tools] > 0 ? pT / pt.gross[t][G.tools] : 1;
+      const lim = TOOLS_MAX_BID_MULT * fairPrice(s, t, G.tools, gross) * own;
       const book = bookFor(books, t, G.tools);
       pushBid(book, Math.min(pT * top, lim), qty * 0.25, 1);
       pushBid(book, Math.min(pT * (1 + top) * 0.5, lim), qty * 0.25, 1);
@@ -1662,7 +1698,7 @@ export function firmsEndDay(s: SimState): void {
     f.lossDays = f.profit < 0 ? fin(f.lossDays) + 1 : 0;
     if (d.producer) {
       const g = d.out;
-      const expNet = pt.net[f.town]?.[g] ?? f.pExp;
+      const expNet = pt.net[f.town] ? netOf(s, f, pt, g) : f.pExp;
       let x = expNet;
       let speed = PRICE_EXP_EMA;
       const mk = s.markets[f.town * N_GOODS + g];

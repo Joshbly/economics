@@ -3,7 +3,9 @@
 // sense for each flow (mirrors the validation tables in sim/policy/player.ts
 // and the semantics in sim/policy/levies.ts), with neutral in-sentence words.
 // ============================================================================
-import type { Group, LevyBase, LevyPayer, LevyUnit } from '../../../sim/types';
+import { SECTORS } from '../../../sim/goods';
+import type { Group, LevyBase, LevyPayer, LevyUnit, Sector } from '../../../sim/types';
+import type { Option } from '../../widgets';
 import { unitOf } from './common';
 
 export interface BaseDef {
@@ -39,7 +41,8 @@ const B = (
 ): BaseDef => ({ base, label, family, units, payers, good: false, town: false, toTown: false, sector: false, group: false, kind: false, threshold: true, stock: false, ...f, explain });
 
 export const BASES: BaseDef[] = [
-  B('sale', 'sales', 'Trade', ['pct', 'perUnit'], ['buyer', 'seller'], { good: true, town: true, threshold: false }, 'Charged on every trade in the market, as a wedge between what buyers pay and what sellers receive. Treasury orders are exempt.'),
+  // sector / group: who a sale levy applies to (see saleWho* below); market-wide by default.
+  B('sale', 'sales', 'Trade', ['pct', 'perUnit'], ['buyer', 'seller'], { good: true, town: true, sector: true, group: true, threshold: false }, 'Charged on every trade in the market, as a wedge between what buyers pay and what sellers receive. Treasury orders are exempt.'),
   B('import', 'imports', 'Trade', ['pct', 'perUnit'], ['buyer'], { good: true, threshold: false }, 'Charged on goods foreign ships sell at the port, paid by whoever buys them.'),
   B('export', 'exports', 'Trade', ['pct', 'perUnit'], ['seller'], { good: true, threshold: false }, 'Charged on goods sold to foreign ships at the port, paid by the seller.'),
   B('wage', 'wages', 'Work & income', ['pct', 'perUnit'], ['worker', 'employer'], { town: true, sector: true, group: true }, 'Charged on each day’s wage as it is paid — out of the worker’s pay, or on top of the employer’s bill.'),
@@ -141,4 +144,82 @@ export function thresholdMeaning(base: LevyBase, unit: LevyUnit): { label: strin
       qty: false,
     };
   return { label: 'Only above', hint: 'Applies only when the amount involved exceeds this.', qty: false };
+}
+
+// ---------------------------------------------------------------------------
+// Who a sale levy applies to. Encoded in the levy's own filters:
+//   everyone              group 'all',     sector 'any'   (a market-wide wedge)
+//   workshops (any trade) group 'firms',   sector 'any'
+//   workshops of a trade  group 'firms',   sector <trade>
+//   households            group 'persons', sector 'any'
+//   households in a group group <group>,   sector 'any'
+// Sellers are always workshops (households do not sell goods in the markets).
+// ---------------------------------------------------------------------------
+export type SaleWho = string; // 'all' | 'f:any' | 'f:<sector>' | 'p:<group>'
+
+const WHO_SECTORS = (Object.keys(SECTORS) as Sector[]).filter((k) => k !== 'stateworks');
+
+/** Plural noun for a trade's workshops: "bakeries", "farms", "trading houses". */
+export function tradePlural(sec: Sector): string {
+  const n = (SECTORS[sec]?.name ?? sec).toLowerCase();
+  if (n.endsWith('y')) return n.slice(0, -1) + 'ies';
+  if (n.endsWith('s')) return n; // "toolworks"
+  if (n.endsWith('sh') || n.endsWith('ch')) return n + 'es';
+  return n + 's';
+}
+
+const HOUSEHOLD_GROUPS: { value: Group; label: string }[] = [
+  { value: 'persons', label: 'Any household' },
+  { value: 'employed', label: 'Households in work' },
+  { value: 'unemployed', label: 'Households without work' },
+  { value: 'homeless', label: 'Households without a home' },
+  { value: 'owners', label: 'Property owners' },
+  { value: 'nonowners', label: 'Households owning no property' },
+  { value: 'hungry', label: 'Hungry households' },
+];
+
+/** Options for "applies to" (buyers: workshops or households; sellers: workshops). */
+export function saleWhoOptions(payer: LevyPayer): Option<SaleWho>[] {
+  const buyer = payer !== 'seller';
+  const out: Option<SaleWho>[] = [{ value: 'all', label: buyer ? 'Every buyer' : 'Every seller' }];
+  out.push({ value: 'f:any', label: 'Any workshop', group: 'Workshops' });
+  for (const k of WHO_SECTORS) {
+    if (!buyer && !SECTORS[k].producer && k !== 'trader') continue;
+    out.push({ value: 'f:' + k, label: SECTORS[k].name, group: 'Workshops' });
+  }
+  if (buyer) for (const g of HOUSEHOLD_GROUPS) out.push({ value: 'p:' + g.value, label: g.label, group: 'Households' });
+  return out;
+}
+
+/** The "applies to" choice a levy's filters encode. */
+export function saleWhoOf(group: Group, sector: Sector | 'any'): SaleWho {
+  if (sector && sector !== 'any') return 'f:' + sector;
+  if (group === 'firms') return 'f:any';
+  if (group && group !== 'all') return 'p:' + group;
+  return 'all';
+}
+
+/** The filters for an "applies to" choice. */
+export function saleWhoFilters(who: SaleWho, payer: LevyPayer): { group: Group; sector: Sector | 'any' } {
+  if (who.startsWith('f:')) {
+    const k = who.slice(2);
+    return { group: 'firms', sector: k === 'any' ? 'any' : (k as Sector) };
+  }
+  if (who.startsWith('p:') && payer !== 'seller') return { group: who.slice(2) as Group, sector: 'any' };
+  return { group: 'all', sector: 'any' };
+}
+
+/** Is this sale levy aimed at some traders only (not a market-wide wedge)? */
+export function saleTargeted(group: Group, sector: Sector | 'any'): boolean {
+  return (!!group && group !== 'all') || (!!sector && sector !== 'any');
+}
+
+/** Words for who pays / receives: "bakeries", "households in work", "workshops". */
+export function saleWhoWords(who: SaleWho): string {
+  if (who === 'all') return '';
+  if (who === 'f:any') return 'workshops';
+  if (who.startsWith('f:')) return tradePlural(who.slice(2) as Sector);
+  const g = who.slice(2);
+  const opt = HOUSEHOLD_GROUPS.find((x) => x.value === g);
+  return g === 'persons' ? 'households' : (opt?.label ?? 'households').toLowerCase();
 }

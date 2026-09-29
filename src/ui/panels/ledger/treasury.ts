@@ -5,6 +5,8 @@
 //   position     what the Treasury holds vs what it owes (T-account)
 //   statement    income & spending by category: today / this month / last month
 //                (treasury.flows / flowsMonth / flowsLastMonth; + = into the Purse)
+//   stores       Treasury stores & wagons: holdings, wagons on the road and
+//                supply-route pipelines (shared with Levers → Trade; live)
 //   rules        every levy with what it took (or paid) today, this month,
 //                last month and in all
 //   history      the Purse and cumulative money minted
@@ -19,6 +21,7 @@ import { setTab } from '../../uiState';
 import { button, emptyState, kpi, kpiGrid, lineChart, SERIES, T, table, tipNote, tipTitle } from '../../widgets';
 import { attachSideTip } from '../markets/sidetip';
 import { card, D, fin, foot, L, rangeControl, tAccount, x0, type RangeDays } from './common';
+import { flowsView } from '../levers/flows';
 
 export interface LedgerView {
   el: HTMLElement;
@@ -179,11 +182,17 @@ export function createTreasuryView(): LedgerView {
   });
   const chart = lineChart({ height: 170, format: fmtMoneyShort, tickFormat: (v) => fmtMoneyShort(v).replace('.00', ''), label: 'The Purse and money minted' });
 
+  // stores & wagons (live: refreshed on every update, not only when a day passes)
+  const flows = flowsView({ place: 'ledger' });
+  const flowsCard = card('Stores & wagons', 'where the Treasury’s goods are and where they are going', null, flows.el);
+  flowsCard.classList.add('lv-ledger-flows');
+
   const el = h(
     'div',
     { class: 'ldg-view' },
     kpiGrid(Object.values(tiles), 3),
     card('Position', 'valued at today’s prices', null, pos.el, netRow),
+    flowsCard,
     card('Income & spending', stmtSub, null, stmt, foot('Positive figures came into the Purse; negative ones went out. Hover a line for what it covers.')),
     card('Levy rules', 'what each rule took (+) or paid (−)', null, rules.el, rulesEmpty),
     card('The Purse over time', 'end of each day', rangeCtl.el, chart.el),
@@ -191,6 +200,11 @@ export function createTreasuryView(): LedgerView {
 
   function update(s: SimState, force: boolean): void {
     stateRef = s;
+    try {
+      flows.update(s);
+    } catch (e) {
+      console.error('[ledger] stores & wagons failed', e);
+    }
     const t = s.treasury;
     const nsig = `${s.day}|${range}|${s.policy?.levies?.length}`;
     if (!force && nsig === sig && lastS === s) return;

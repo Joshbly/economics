@@ -4,7 +4,8 @@
 //             (+ collected, − paid), on/off, inline rate edit, remove
 //   Limits  : description, days it bound this month, on/off, remove
 //   Orders  : description, filled today / in all, value, on/off, inline price
-//             edit, cancel
+//             edit, cancel. Supply routes show their pipeline instead
+//             (bought today → on the road → waiting → sold today) and result.
 //   Projects: Treasury construction with progress
 // Rows are keyed by id and updated in place (4×/s safe).
 // ============================================================================
@@ -15,9 +16,11 @@ import type { Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
 import { fmtDay, fmtPct, fmtPrice, plural } from '../../format';
 import { icon, numberInput, toggle, type NumberInput } from '../../widgets';
-import { fin, flowTone, fmtMS, fmtQ, keyedList, polishRule, run, safe, signedMoney, tersely, TONES } from './common';
-import { baseDef } from './levyDefs';
+import { fin, flowTone, fmtMS, fmtQ, keyedList, polishRule, run, safe, signedMoney, tersely, TONES, unitsOf } from './common';
+import { baseDef, saleWhoOf, saleWhoWords } from './levyDefs';
 import { projectList, treasuryProjects } from './projects';
+import { pipeline, routeResult, routeWords, type Pipeline } from './flows';
+import { sellText } from './route';
 
 // ---------------------------------------------------------------------------
 // Inline number editor (a value pill that turns into an input on click)
@@ -133,8 +136,10 @@ function levyTitle(s: SimState, l: Levy): string {
   const g = l.good >= 0 ? (GOODS[l.good]?.name ?? 'Goods') : 'All goods';
   const where = l.town >= 0 ? ` · ${s.towns[l.town]?.name ?? ''}` : '';
   switch (l.base) {
-    case 'sale':
-      return `${g} sales${where}`;
+    case 'sale': {
+      const who = saleWhoWords(saleWhoOf(l.group, l.sector));
+      return who ? `${g} ${l.payer === 'seller' ? 'sold' : 'bought'} by ${who}${where}` : `${g} sales${where}`;
+    }
     case 'wage':
       return `Wages${where}`;
     case 'rent':
@@ -269,9 +274,13 @@ interface OrderRow {
   value: ReturnType<typeof stat>;
   price: InlineEdit;
   side: HTMLElement;
+  /** Supply routes only. */
+  pipe: Pipeline | null;
+  result: ReturnType<typeof stat> | null;
 }
 
 function orderRow(o: PlayerOrder): OrderRow {
+  if (o.route) return routeOrderRow(o);
   const id = o.id;
   const sw = toggle({ value: o.enabled, title: 'Pause or resume this order', onChange: (v) => run({ type: 'updateOrder', id, patch: { enabled: v } }, null) });
   const title = h('div', { class: 'lv-if-t' });
@@ -289,10 +298,66 @@ function orderRow(o: PlayerOrder): OrderRow {
     h('div', { class: 'lv-if-main' }, h('div', { class: 'lv-if-head' }, side, title, h('span', { class: 'spacer' }), price.el), desc, h('div', { class: 'lv-if-stats' }, today.el, all.el, value.el)),
     h('div', { class: 'lv-if-act' }, rm),
   );
-  return { el, sw, title, desc, today, all, value, price, side };
+  return { el, sw, title, desc, today, all, value, price, side, pipe: null, result: null };
+}
+
+/** A supply route: the buy order's pill and switch, its pipeline and running result. */
+function routeOrderRow(o: PlayerOrder): OrderRow {
+  const id = o.id;
+  const sw = toggle({ value: o.enabled, title: 'Pause or resume buying for this route', onChange: (v) => run({ type: 'updateOrder', id, patch: { enabled: v } }, null) });
+  const title = h('div', { class: 'lv-if-t' });
+  const desc = h('div', { class: 'lv-if-d' });
+  const today = stat('Today');
+  const all = stat('Bought');
+  const value = stat('Sold');
+  const result = stat('Result');
+  const price = inlineEdit('Change the most the route pays', (v) => run({ type: 'updateOrder', id, patch: { price: v } }, null));
+  const side = h('span', { class: 'lv-dir' });
+  const pipe = pipeline({ compact: true });
+  const rm = removeBtn('Withdraw this route: it stops buying, and what it bought stays in the Treasury’s stores', () => run({ type: 'cancelOrder', id }, null));
+  const el = h(
+    'div',
+    { class: 'lv-if lv-if-route' },
+    h('div', { class: 'lv-if-sw' }, sw.el),
+    h(
+      'div',
+      { class: 'lv-if-main' },
+      h('div', { class: 'lv-if-head' }, side, title, h('span', { class: 'spacer' }), price.el),
+      desc,
+      pipe.el,
+      h('div', { class: 'lv-if-stats' }, all.el, value.el, result.el),
+    ),
+    h('div', { class: 'lv-if-act' }, rm),
+  );
+  return { el, sw, title, desc, today, all, value, price, side, pipe, result };
+}
+
+function paintRouteOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
+  const r = o.route;
+  if (!r || o.market.kind !== 'good') return;
+  v.sw.set(o.enabled);
+  toggleClass(v.el, 'off', !o.enabled);
+  setText(v.side, 'Route');
+  setTone(v.side, TONES, 'gold');
+  setText(v.title, `${GOODS[o.market.good]?.name ?? 'Goods'} → ${s.towns[r.to]?.name ?? ''}`);
+  v.title.title = `${GOODS[o.market.good]?.name ?? 'Goods'}: bought in ${s.towns[o.market.town]?.name ?? ''}, offered in ${s.towns[r.to]?.name ?? ''}`;
+  const g = o.market.good;
+  setText(v.desc, `${s.towns[o.market.town]?.name ?? ''} → ${s.towns[r.to]?.name ?? ''}: up to ${fmtQ(o.qty)} ${unitsOf(g)} a day at ≤ ${fmtPrice(o.price)}, offered ${sellText(r, g)}.`);
+  v.desc.title = tersely(routeWords(s, o) || o.label);
+  v.pipe?.set(s, o);
+  setText(v.all.v, fmtQ(fin(o.filled)) + (o.total >= 0 ? ` / ${fmtQ(o.total)}` : ''));
+  setText(v.value.v, fmtQ(fin(r.soldTotal)));
+  const rr = routeResult(o).result;
+  if (v.result) {
+    setText(v.result.v, Math.abs(rr) >= 1000 ? (rr > 0 ? '+' : '−') + fmtMS(Math.abs(rr)) : signedMoney(rr));
+    v.result.v.title = 'Sales at the destination less purchases and freight: ' + signedMoney(rr);
+    setTone(v.result.v, TONES, flowTone(rr));
+  }
+  v.price.refresh('≤ ' + fmtPrice(o.price), o.price, false, PLAYER_MAX_PRICE);
 }
 
 function paintOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
+  if (v.pipe) return paintRouteOrder(s, v, o);
   v.sw.set(o.enabled);
   toggleClass(v.el, 'off', !o.enabled);
   const labor = o.market.kind === 'labor';
@@ -367,7 +432,8 @@ export function inForce(): InForce {
       setTone(gLevy.count, TONES, flowTone(lNet));
       const bound = P.limits.filter((l) => l.enabled && l.binding > 0).length;
       setText(gLimit.count, `${P.limits.length}${bound ? ` · ${bound} binding` : ''}`);
-      setText(gOrder.count, String(P.orders.length));
+      const nr = P.orders.filter((o) => !!o.route).length;
+      setText(gOrder.count, nr ? `${P.orders.length} · ${plural(nr, 'route')}` : String(P.orders.length));
       setText(gProj.count, String(np));
       show(empty, P.levies.length + P.limits.length + P.orders.length + np === 0);
     },

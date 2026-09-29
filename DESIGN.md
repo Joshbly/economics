@@ -348,7 +348,8 @@ day by a **uniform-price call auction** (`market/auction.ts`):
 2. Convert limits to **base price** terms using the market's levy wedge:
    `bidBase = (limit − buyerUnit)/(1 + buyerPct)` and
    `askBase = (limit + sellerUnit)/(1 − sellerPct)` (plus any per-order
-   extra levy, e.g. port duties).
+   extra levy: port duties on foreign orders, or a targeted sale rule on the
+   orders of the traders it names — §5 Levy).
 3. Pick the clearing base price by (a) maximum executable volume, (b) minimum
    imbalance, (c) market pressure, (d) closest to the reference price.
 4. Apply price Limits: a ceiling/floor overrides the price; the long side is
@@ -382,6 +383,29 @@ that pay ¤5 per year each, forever). Seven primitives:
    (selling = issuing new IOUs, buying = retiring them), the Gold market.
    Price limit, quantity per day, duration (once / N days / standing), optional
    total cap. Also *Move goods* between towns (pays freight).
+   * **Supply route** (a goods *buy* order with `route`): everything the order buys
+     is carried to another town and offered there. Every step is a real flow: the
+     purchase clears in the origin's auction; the day's purchases are loaded onto
+     the Treasury's wagons with freight paid from the Purse to the origin's trading
+     house (its free wagons and fuel, the full-wagon trip cost + TREASURY_FREIGHT_PREMIUM,
+     exempt from shipment levies and quotas — as *Move goods*); a load leaves once
+     it fills ROUTE_LOAD_SHARE of a wagon or amounts to ROUTE_HOLD_DAYS of the daily
+     quantity (the rest leaves when the buying ends), each cargo tagged with the
+     order (`Shipment.order`) and valued at its landed cost (purchase price + freight
+     per unit). On arrival it waits in the Treasury's stores there (`route.waiting`,
+     average `route.landed`) and is offered every day as an exempt Treasury ask at a
+     floor set by the route's rule: a fixed price, landed cost × (1 + margin), or a
+     token ROUTE_MARKET_FLOOR_SHARE of the local price ("for whatever it fetches").
+     Perishables spoil on the road and in store like any cargo. When the freight
+     cannot be paid (auto-mint off) the goods wait at the origin — counted as the
+     order's units bought minus units loaded, capped by the Treasury's holdings there
+     — and leave the next day it can. The sales go on after the buy side ends; the
+     order lapses only once nothing is held, carried or waiting. Cancelling stops the
+     buying; what it bought stays in the Treasury's stores as ordinary holdings.
+   * *Move goods* may also offer the goods on arrival: an ordinary Treasury sell
+     order at the destination capped at the quantity moved, at a fixed price, at
+     landed cost (the goods' price where they came from + freight per unit) ×
+     (1 + margin), or at the token floor.
 3. **Levy** — attach a signed rate to any flow. Positive = the Treasury takes,
    negative ("give") = the Treasury pays. Bases:
    * `sale` of a good (payer: buyer or seller; % of value or ¤ per unit)
@@ -398,6 +422,24 @@ that pay ¤5 per year each, forever). Seven primitives:
    * `estate` of the deceased (% above threshold)
    Filters: good, town, sector, group (all / employed / unemployed / homeless /
    owners / non-owners / hungry), threshold, expiry.
+   *Targeted sale levies.* A `sale` rule with a trade or a group applies only to
+   the traders it names: payer *buyer* + a trade → purchases by firms of that
+   trade; payer *buyer* + a group → purchases by people in that group ("persons"
+   every household, "firms" every firm); payer *seller* + a trade (or "firms") →
+   sales by those firms (people do not sell goods, so a group of people cannot be
+   named on the selling side, nor a trade and a group of people at once). Such a
+   rule is not part of the market's wedge: it rides on the named traders' own
+   orders as per-order extras (`Order.xPct/xUnit`, as port duties do), so the
+   auction converts just those limits and settlement moves just that money (a
+   buyer-side give: the Treasury pays the stated share of the price, the buyer the
+   rest; the seller receives the full price) and credits it to the rule. Treasury
+   orders are exempt; foreign merchants are never named. The named traders plan
+   with it: a firm's expected input prices and output price, an entrant's costings
+   and a named household's expected prices include its own targeted rules, so a
+   share of the price of the tools coal mines buy lowers their cost and they plan
+   more output; a share of the oil trading houses buy lowers their trip cost (and
+   the freight the Treasury pays them). Builders bid with it but plan on market
+   prices (their demand follows their projects, not prices).
 4. **Limit** — legal bounds: max/min price of a good, min/max wage, max/min
    rent, max loan rate, import/export/shipment quotas (0 = ban), minimum bank
    reserve ratio, minimum bank capital ratio.
@@ -407,7 +449,15 @@ that pay ¤5 per year each, forever). Seven primitives:
    between two towns, a house block (Treasury landlord), a workshop of any
    sector (Treasury-owned; its profits flow to the Purse), a pier at the port
    (more foreign ship capacity), or expand a Treasury workshop.
-7. **Transfer** — a one-off lump-sum payment to (or seizure from) a group.
+7. **Transfer** — a one-off lump-sum payment to (or seizure from) a group
+   (group "firms" may be narrowed to one trade). *In kind:* hand out units of a good
+   the Treasury holds in a town (payments only) to every member of a group there —
+   into people's larders (goods households use) or firms' stores (any good; tools
+   handed to a workshop join its tool stock that evening). If the stores hold too
+   little, everyone gets an equal share of what is there. No money moves; the units
+   are recorded in `stats.acc.transfer_goods_<good>`. A gift of goods a firm would
+   have bought anyway displaces its own purchases: unlike a share of the price, it
+   does not change what the firm plans to make.
 
 Settings: *Auto-mint* (when on, any payment the Purse cannot cover mints the
 difference; when off, "give" levies and transfers are suspended while the
@@ -426,7 +476,7 @@ composing these primitives.
 beginDay            calendar, season, random events, reset daily accumulators
 policyBeginDay      expire orders/levies/limits
 bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisation, window
-tradersBeginDay     shipments arrive, wagons return
+tradersBeginDay     shipments arrive (a supply route's cargo joins its waiting stock), wagons return
 firmsPlan           employment targets, wage adjustments, vacancies
 constructionPlan    builders' workforce targets
 laborMarket         layoffs, job search, matching, Treasury workers
@@ -436,10 +486,11 @@ firmsPayWages       wages (+ wage levies); Treasury workers paid from the Purse
 householdsBeginDay  income EMA, expectations, budgets
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
-  traderOrders, foreignOrders, bankOrders, playerOrders
+  traderOrders, foreignOrders, bankOrders, playerOrders (incl. supply routes' asks
+  at their destinations)
 clearAll            auctions + settlement (money via ledger, goods moved)
 tradersDispatch     filled purchases → shipments
-playerAfterClear    Treasury order bookkeeping
+playerAfterClear    Treasury order bookkeeping; supply routes: credit sales, load the purchases
 householdsConsume   eating, heating, ale, furniture wear, health, contentment
 housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
 firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy
@@ -448,7 +499,7 @@ stockLevies         money/goods/head/building levies
 entryStep           (monthly) new firms, expansions, houses
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance
-spoilage            perishables decay everywhere
+spoilage            perishables decay everywhere (a route's counts of goods on the road / in store too)
 statsStep           indicators, series, national accounts
 eventsStep          news, strikes
 day += 1

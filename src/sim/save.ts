@@ -57,7 +57,7 @@ const TREASURY_NUMS = ['purse', 'minted', 'burned', 'gold', 'iouOutstanding', 'r
 const FOREIGN_ARRAYS = ['world', 'world0', 'shipCap', 'importsQty', 'exportsQty'];
 const IDS = ['person', 'firm', 'building', 'loan', 'shipment', 'project', 'policy'];
 /** Fields that may legitimately be null in saved records. */
-const NULLABLE = new Set(['curve', 'trade', 'build']);
+const NULLABLE = new Set(['curve', 'trade', 'build', 'route']);
 
 function typeOf(x: unknown): string {
   if (x === null) return 'null';
@@ -224,6 +224,34 @@ function migrate(raw: Obj): void {
   }
 }
 
+const ROUTE_NUMS = ['sellPrice', 'sellMargin', 'inTransit', 'waiting', 'landed', 'shippedToday', 'soldToday', 'shippedTotal', 'soldTotal', 'freightPaid', 'revenue'] as const;
+
+/**
+ * Treasury orders and shipments from before supply routes: `route` defaults to null and
+ * `Shipment.order` to −1. A damaged route record is repaired (missing counters → 0) or, when
+ * its destination or selling rule is unusable, dropped (its goods stay ordinary holdings).
+ */
+function fillRoutes(s: SimState): void {
+  const nT = s.towns.length;
+  for (const o of s.policy.orders as unknown as Obj[]) {
+    if (!isObj(o)) continue;
+    const r = o.route;
+    if (!isObj(r)) {
+      o.route = null;
+      continue;
+    }
+    const m = o.market as Obj | undefined;
+    const okTo = isNum(r.to) && r.to >= 0 && r.to < nT && Math.floor(r.to) === r.to;
+    const okSell = r.sell === 'fixed' || r.sell === 'cost' || r.sell === 'market';
+    if (!okTo || !okSell || !isObj(m) || m.kind !== 'good' || o.side !== 'buy') {
+      o.route = null;
+      continue;
+    }
+    for (const k of ROUTE_NUMS) if (!isNum(r[k])) r[k] = 0;
+  }
+  for (const sh of s.shipments as unknown as Obj[]) if (isObj(sh) && !isNum(sh.order)) sh.order = -1;
+}
+
 /** Fill optional bookkeeping that older or hand-edited saves may lack. */
 function fillDefaults(s: SimState): void {
   const st = s.stats;
@@ -247,6 +275,7 @@ function fillDefaults(s: SimState): void {
     if (!isNum(f.monthSold)) f.monthSold = 0;
     if (!isNum(f.profitLong)) f.profitLong = 0;
   }
+  fillRoutes(s);
   const set = s.settings;
   if (typeof set.events !== 'boolean') set.events = true;
   if (typeof set.scenario !== 'string') set.scenario = 'founding';

@@ -7,6 +7,7 @@
 // ============================================================================
 import { PLAYER_MAX_PCT, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
 import { G, SECTORS } from '../../../sim/goods';
+import { inGroup } from '../../../sim/policy/levies';
 import { describeLevy } from '../../../sim/policy/player';
 import type { BuildingKind, Group, Levy, LevyBase, LevyPayer, LevyUnit, Sector, SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
@@ -15,7 +16,7 @@ import type { PrefillRequest } from '../../uiState';
 import { goodOptions, numberInput, segmented, selectInput, townOptions, type Option } from '../../widgets';
 import { fin, formEl, formFoot, hint, msgLine, run, safe, signedMoney, submitButton, type Lever } from './common';
 import { estimateLevy, type LevyDraft, type LevyEstimate } from './estimate';
-import { BASES, baseDef, groupsFor, PAYER_WORD, thresholdMeaning, unitLabel } from './levyDefs';
+import { BASES, baseDef, groupsFor, PAYER_WORD, saleTargeted, saleWhoFilters, saleWhoOf, saleWhoOptions, saleWhoWords, thresholdMeaning, unitLabel, type SaleWho } from './levyDefs';
 
 const SECTOR_KEYS = (Object.keys(SECTORS) as Sector[]).filter((k) => k !== 'stateworks');
 
@@ -37,6 +38,7 @@ export function levyLever(): Lever {
   let group: Group = 'all';
   let kind: BuildingKind | 'any' = 'any';
   let ends: 'never' | 'after' = 'never';
+  let who: SaleWho = 'all'; // sale levies: who the rule applies to
   let last: SimState | null = null;
   let estKey = '';
   let est: LevyEstimate | null = null;
@@ -115,13 +117,17 @@ export function levyLever(): Lever {
   const endsSeg = segmented<'never' | 'after'>({ options: [{ value: 'never', label: 'Never' }, { value: 'after', label: 'After' }], value: ends, size: 'sm', onChange: (v) => ((ends = v), changed()) });
   const endDays = numberInput({ value: 90, integer: true, min: 1, max: 36000, unit: 'days', width: '92px', onChange: changed });
 
+  const whoSel = selectInput<SaleWho>({ options: saleWhoOptions('buyer'), value: who, onChange: (v) => ((who = v), changed()), title: 'Who the rule applies to' });
+  const whoLab = h('div', { class: 'lv-cond-l' }, 'Applies to');
+  const whoHint = h('div', { class: 'lv-cond-h' });
+  const cWho = h('div', { class: 'lv-cond-c lv-cond-who' }, whoLab, whoSel.el, whoHint);
   const cGroup = h('div', { class: 'lv-cond-c' }, h('div', { class: 'lv-cond-l' }, 'Only for'), groupSel.el);
   const cSector = h('div', { class: 'lv-cond-c' }, h('div', { class: 'lv-cond-l' }, 'Firms in'), firmSectorSel.el);
   const thrLab = h('div', { class: 'lv-cond-l' }, 'Exempt first');
   const thrHint = h('div', { class: 'lv-cond-h' });
   const cThr = h('div', { class: 'lv-cond-c' }, thrLab, thrMoney.el, thrQty.el, thrHint);
   const cEnds = h('div', { class: 'lv-cond-c' }, h('div', { class: 'lv-cond-l' }, 'Ends'), h('div', { class: 'row' }, endsSeg.el, endDays.el));
-  const conds = h('div', { class: 'lv-cond' }, cGroup, cSector, cThr, cEnds);
+  const conds = h('div', { class: 'lv-cond' }, cWho, cGroup, cSector, cThr, cEnds);
 
   // ---- preview -----------------------------------------------------------------------
   const decree = h('div', { class: 'lv-decree' });
@@ -180,7 +186,12 @@ export function levyLever(): Lever {
     let sec: Sector | 'any' = d.sector ? sector : 'any';
     if (base === 'building' && bk === 'house') sec = 'any';
     if (base === 'building' && sec !== 'any') bk = 'firm';
-    const g = d.group ? group : 'all';
+    let g = d.group ? group : 'all';
+    if (base === 'sale') {
+      const f = saleWhoFilters(who, payer);
+      g = f.group;
+      sec = f.sector;
+    }
     return {
       label: '',
       enabled: true,
@@ -198,6 +209,18 @@ export function levyLever(): Lever {
       buildingKind: bk,
       until: ends === 'after' && endDays.value >= 1 ? s.day + Math.round(endDays.value) - 1 : -1,
     };
+  }
+
+  /** Live count of who a sale rule would reach ("5 bakeries in Millbrook"). */
+  function whoCount(s: SimState, w: SaleWho, t: number): string {
+    const where = t >= 0 ? ` in ${s.towns[t]?.name ?? ''}` : ' in the realm';
+    if (w === 'all') return `Every ${payer === 'seller' ? 'seller' : 'buyer'}${where}: a wedge between what buyers pay and sellers receive.`;
+    const f = saleWhoFilters(w, payer);
+    let n = 0;
+    if (w.startsWith('f:')) {
+      for (const x of s.firms) if (x && x.alive && x.status !== 'closed' && x.sector !== 'stateworks' && (t < 0 || x.town === t) && (f.sector === 'any' || x.sector === f.sector)) n++;
+    } else for (const p of s.people) if (p && p.alive && (t < 0 || p.town === t) && inGroup(s, p, f.group)) n++;
+    return `${plural(n, w.startsWith('f:') ? (f.sector === 'any' ? 'workshop' : (SECTORS[f.sector]?.name ?? 'workshop').toLowerCase()) : 'household', w.startsWith('f:') ? (f.sector === 'any' ? 'workshops' : saleWhoWords(w)) : 'households')}${where}. Only their ${payer === 'seller' ? 'sales' : 'purchases'} are charged; everyone else trades at the auction price.`;
   }
 
   function paint(): void {
@@ -237,10 +260,26 @@ export function levyLever(): Lever {
     toTown = toSel.value;
     show(frag(wPayer), d.payers.length === 2);
     setText(wPayer, dir === 1 ? 'charged to' : 'paid to');
-    setText(explain, d.explain + (d.stock && unit === 'pct' ? ' The rate is per year.' : ''));
+    // sale levies: who they apply to (buyers may be workshops or households; sellers are workshops)
+    const isSale = base === 'sale';
+    if (isSale) {
+      whoSel.setOptions(saleWhoOptions(payer), who);
+      who = whoSel.value;
+    }
+    const targeted = isSale && who !== 'all';
+    const whoW = saleWhoWords(who);
+    const buyer = payer !== 'seller';
+    setText(whoHint, isSale ? whoCount(s, who, town) : '');
+    setText(
+      explain,
+      targeted
+        ? `Charged only on what ${whoW} ${buyer ? 'buy' : 'sell'}: ${dir === 1 ? (buyer ? 'they pay the auction price plus the rate' : 'they receive the auction price less the rate') : buyer ? 'they pay the auction price less the rate' : 'they receive the auction price plus the rate'}. Treasury orders are exempt.`
+        : d.explain + (d.stock && unit === 'pct' ? ' The rate is per year.' : ''),
+    );
 
     // conditions
-    show(cGroup, d.group && base !== 'head');
+    show(cWho, isSale);
+    show(cGroup, d.group && base !== 'head' && !isSale);
     show(cSector, base === 'money' || base === 'goods');
     show(cThr, d.threshold);
     const tm = thresholdMeaning(base, unit);
@@ -255,7 +294,9 @@ export function levyLever(): Lever {
     const sameRoute = base === 'shipment' && dr.town >= 0 && dr.town === dr.toTown;
     const valid = Number.isFinite(dr.rate) && dr.rate > 0 && !sameRoute;
     const pseudo: Levy = { ...dr, id: 0, created: s.day, today: 0, month: 0, lastMonth: 0, total: 0 };
-    setText(decree, valid ? safe(() => describeLevy(s, pseudo), '') : sameRoute ? 'Choose two different towns for the route (or “any town” at one end).' : 'Set a rate above zero to see the rule in words.');
+    let words = valid ? safe(() => describeLevy(s, pseudo), '') : '';
+    if (valid && base === 'sale' && saleTargeted(dr.group, dr.sector) && whoW && !words.toLowerCase().includes(whoW)) words = words.replace(/\.$/, '') + ` — only when ${whoW} ${payer === 'seller' ? 'sell' : 'buy'}.`;
+    setText(decree, valid ? words : sameRoute ? 'Choose two different towns for the route (or “any town” at one end).' : 'Set a rate above zero to see the rule in words.');
     const key = JSON.stringify(dr) + '|' + s.day;
     if (key !== estKey) {
       estKey = key;
@@ -311,6 +352,7 @@ export function levyLever(): Lever {
       last = s;
       if (req.good !== undefined) good = req.good;
       if (req.town !== undefined) town = req.town;
+      who = 'all';
       setBase(req.base ?? base);
       return true;
     },
@@ -323,6 +365,7 @@ export function levyLever(): Lever {
       last = null;
       town = -1;
       toTown = -1;
+      who = 'all';
     },
   };
 }

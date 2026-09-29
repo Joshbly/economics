@@ -30,17 +30,25 @@
 // average cost in trade.basis[home] and waiting time in trade.age[home]; stock in
 // other towns lives in trade.stock[town] and is sold there by an ask ladder that
 // drifts down (to below landed cost) as the stock ages.
+//
+// A house prices what it uses (fuel, wagons) and what it sells at its own expected prices
+// (markets.expectedGrossFor / expectedNetFor): a sale rule aimed at trading houses
+// (levies.isTargetedSale — e.g. a share of the price of the oil they buy) enters their trip
+// cost, their fuel and wagon bids and the net price they expect at a destination. Merchandise
+// is bought for resale: buyer-side rules do not apply to it (OrderOpts.resale), so it is
+// priced at the market's. Without such rules all of these are the market's prices.
 // ============================================================================
 import * as CFG from '../config';
 import { newShipment } from '../factory';
 import { G, GOODS, N_GOODS } from '../goods';
 import { pay } from '../ledger';
-import { addAsk, addBid, bookFor, expectedGross, expectedNet, marketOf, type Books } from '../market/markets';
-import { chargeLevy, employerWageCost, levyAmount, saleWedgeInto, type LevyCtx } from '../policy/levies';
+import { addAsk, addBid, bookFor, expectedGross, expectedGrossFor, expectedNetFor, marketOf, type Books } from '../market/markets';
+import { chargeLevy, employerWageCost, levyAmount, saleWedgeInto, targetedExtrasFor, type Extras, type LevyCtx } from '../policy/levies';
 import { noteBinding, priceBounds, quota } from '../policy/limits';
+import { routeArrived, syncRouteTransit } from '../policy/routes';
 import { rt, type Route } from '../runtime';
 import { FIRM_BASE, STATE } from '../types';
-import type { ActionResult, Firm, GoodId, Order, SimState, TownId, TraderState, Wedge } from '../types';
+import type { ActionResult, Firm, GoodId, Order, Ref, Sector, Shipment, SimState, TownId, TraderState, Wedge } from '../types';
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 import { debtOf, quoteRate, requestLoan } from './bank';
@@ -156,10 +164,11 @@ function carterWage(s: SimState, town: TownId, f: Firm | undefined): number {
  * DESIGN §3.4 and the world calibration count one leg), road wear and the wagon's capital
  * (idle wear + interest on its tools) for the days it is away.
  */
-export function tripCost(s: SimState, from: TownId, r: Route, wage: number): number {
+export function tripCost(s: SimState, from: TownId, r: Route, wage: number, who?: Ref | Sector): number {
   const days2 = 2 * r.days;
-  const oil = expectedGross(s, from, G.oil);
-  const tools = expectedGross(s, from, G.tools);
+  // Oil and wagons at the house's own prices (`who`: the house, or the trade) when given.
+  const oil = who === undefined ? expectedGross(s, from, G.oil) : expectedGrossFor(s, from, G.oil, who);
+  const tools = who === undefined ? expectedGross(s, from, G.tools) : expectedGrossFor(s, from, G.tools, who);
   const capital = TOOLS_PER_WAGON * tools * (TOOLS_IDLE_WEAR_DAY + Math.max(0, fin(s.bank.baseRate)) / DAYS_PER_YEAR) * days2;
   return fin(wage * days2 + oil * tripFuel(r) + WAGON_WEAR_DAY * days2 * tools + capital);
 }
@@ -188,7 +197,8 @@ export function traderOf(s: SimState, town: TownId): Firm | undefined {
 export function freightPerUnit(s: SimState, a: TownId, b: TownId): number {
   const r = usableRoute(s, a, b);
   if (!r) return a === b ? 0 : -1;
-  return tripCost(s, a, r, carterWage(s, a, traderOf(s, a))) / WAGON_CAPACITY;
+  const f = traderOf(s, a);
+  return tripCost(s, a, r, carterWage(s, a, f), f ? FIRM_BASE + f.id : 'trader') / WAGON_CAPACITY;
 }
 
 /** Share of a good that survives `days` of storage/travel. */
@@ -258,7 +268,7 @@ function scratch(s: SimState): TraderScratch {
 // ---------------------------------------------------------------------------
 
 /** Land a shipment at its destination. */
-function deliver(s: SimState, sh: { owner: number; to: TownId; good: GoodId; qty: number; basis: number }): void {
+function deliver(s: SimState, sh: Shipment): void {
   const q = sh.qty;
   if (!(q > 0) || sh.to < 0 || sh.to >= s.towns.length) return;
   if (sh.owner === STATE) {
@@ -266,6 +276,8 @@ function deliver(s: SimState, sh: { owner: number; to: TownId; good: GoodId; qty
     for (let t = tg.length; t <= sh.to; t++) tg.push(new Array(N_GOODS).fill(0));
     tg[sh.to][sh.good] += q;
     bump(s, 'delivered_units', q);
+    // Cargo of a supply route joins the route's stock waiting to be sold there (policy/routes).
+    if (sh.order >= 0) routeArrived(s, sh);
     return;
   }
   const f = sh.owner >= FIRM_BASE ? s.firms[sh.owner - FIRM_BASE] : undefined;
@@ -310,6 +322,7 @@ export function tradersBeginDay(s: SimState): void {
     else list[k++] = sh;
   }
   list.length = k;
+  syncRouteTransit(s); // Treasury supply routes: units still on the road
 
   for (const f of s.firms) {
     if (!f || f.sector !== 'trader' || !f.trade) continue;
@@ -385,7 +398,7 @@ function planFleet(s: SimState, f: Firm, tr: TraderState, c: TraderScratch): voi
   const gap = toolsWanted - Math.max(0, f.tools);
   if (!(gap > 0.05)) return;
   const qty = Math.min(gap, TRADER_INVEST_WAGONS_DAY * TOOLS_PER_WAGON);
-  const limit = expectedGross(s, f.town, G.tools) * TRADER_TOOLS_BID_MULT;
+  const limit = expectedGrossFor(s, f.town, G.tools, FIRM_BASE + f.id) * TRADER_TOOLS_BID_MULT;
   c.toolsPlan[f.id] = [qty, limit];
   // Finance the fleet with an investment loan when short of cash (throttled).
   const cost = qty * limit;
@@ -558,8 +571,8 @@ function homeSupply(s: SimState, home: TownId, g: GoodId, limitGross: number): n
  * selling) — the bid of the marginal unserved buyer on yesterday's demand curve, capped by
  * any legal price ceiling.
  */
-function destPrice(s: SimState, dest: TownId, g: GoodId, q: number): number {
-  const ref = expectedNet(s, dest, g);
+function destPrice(s: SimState, dest: TownId, g: GoodId, q: number, who: Ref): number {
+  const ref = expectedNetFor(s, dest, g, who);
   const m = marketOf(s, dest, g);
   const c = m.curve;
   if (!(m.shortage > 0.5) || !c || c.bids.length < 2) return ref;
@@ -577,8 +590,11 @@ function destPrice(s: SimState, dest: TownId, g: GoodId, q: number): number {
     if (ceil >= 0 && pb > ceil) pb = ceil;
   }
   const w = saleWedgeInto(s, dest, g, _w);
-  return Math.max(ref, pb * (1 - w.sPct) - w.sUnit);
+  const x = targetedExtrasFor(s, dest, g, 'seller', who, _xs);
+  return Math.max(ref, pb * (1 - w.sPct - x.pct) - w.sUnit - x.unit);
 }
+
+const _xs: Extras = { pct: 0, unit: 0 };
 
 /** Shipment levies per unit on `q` units of a good bought at `pBuy` sent home → dest. */
 function shipLevyUnit(s: SimState, home: TownId, dest: TownId, g: GoodId, pBuy: number, q: number): number {
@@ -604,7 +620,7 @@ function quotaLeft(s: SimState, c: TraderScratch, g: GoodId, from: TownId, to: T
 function stockAsks(s: SimState, books: Books, ref: number, town: TownId, g: GoodId, qty: number, basis: number, age: number, dump: boolean): void {
   if (!(qty > 1e-6)) return;
   const book = bookFor(books, town, g);
-  const pNet = expectedNet(s, town, g);
+  const pNet = expectedNetFor(s, town, g, ref);
   if (dump) {
     addAsk(book, ref, pNet * 0.5, qty);
     return;
@@ -675,15 +691,15 @@ function fuelTarget(s: SimState, f: Firm, tr: TraderState): number {
  * above it (a town without wells whose price went stale) — the landed cost from the
  * cheapest town where oil actually trades (its price + freight).
  */
-function oilAnchor(s: SimState, home: TownId): number {
-  let best = expectedGross(s, home, G.oil);
+function oilAnchor(s: SimState, home: TownId, who: Ref): number {
+  let best = expectedGrossFor(s, home, G.oil, who);
   for (let t = 0; t < s.towns.length; t++) {
     if (t === home) continue;
     const m = marketOf(s, t, G.oil);
     if (!(m.volEma > 1)) continue;
     const fr = freightPerUnit(s, t, home);
     if (!(fr >= 0)) continue;
-    const landed = expectedGross(s, t, G.oil) + fr;
+    const landed = expectedGrossFor(s, t, G.oil, who) + fr;
     if (landed < best) best = landed;
   }
   return best;
@@ -789,7 +805,7 @@ export function traderOrders(s: SimState, books: Books): void {
     for (let d = 0; d < nT; d++) {
       const r = usableRoute(s, home, d);
       if (!r) continue;
-      const trip = tripCost(s, home, r, wage);
+      const trip = tripCost(s, home, r, wage, ref);
       const perTile = trip / (WAGON_CAPACITY * r.length);
       myFreight += perTile;
       myN++;
@@ -798,11 +814,12 @@ export function traderOrders(s: SimState, books: Books): void {
       const keep0 = r.days + 1;
       const items: Item[] = [];
       for (let g = 0; g < N_GOODS; g++) {
-        const pSell = destPrice(s, d, g, WAGON_CAPACITY);
+        const pSell = destPrice(s, d, g, WAGON_CAPACITY, ref);
         // What the good should cost at home: the market's reference, but never more than
         // TRADE_FAIR_MULT × what it costs to make there (firms.fairPrice). A home market whose
         // makers have stopped quotes a stale, drifting price; judged on it no carter would bid,
         // and without bids the makers would never learn that it pays to start again.
+        // (Merchandise: market prices — buyer-side targeted rules do not apply to resale.)
         const pBuy = Math.min(expectedGross(s, home, g), TRADE_FAIR_MULT * fairPrice(s, home, g));
         if (!(pSell > 0) || !(pBuy > 0)) continue;
         const keep = keepFactor(g, keep0);
@@ -839,7 +856,7 @@ export function traderOrders(s: SimState, books: Books): void {
     // cap, the emptier the store the more urgently it bids. With no trip worth making it only
     // keeps a minimal store, bidding below the market.
     if (fuelWant > fuelHave + 0.01 && cash > 0) {
-      const pOil = oilAnchor(s, home);
+      const pOil = oilAnchor(s, home, ref);
       const lack = clamp(1 - fuelHave / Math.max(1e-9, fuelWant), 0, 1);
       let lim = 0;
       if (opps.length) {
@@ -898,7 +915,7 @@ export function traderOrders(s: SimState, books: Books): void {
           const book = bookFor(books, home, it.good);
           for (const [pos, share] of BID_LADDER) {
             const price = it.pBuy + pos * (lim - it.pBuy);
-            item.orders.push(addBid(book, ref, price, bidQ * share, { tag: o.dest }));
+            item.orders.push(addBid(book, ref, price, bidQ * share, { tag: o.dest, resale: true }));
           }
           cash -= bidQ * lim;
         }
@@ -1028,7 +1045,7 @@ export function tradersDispatch(s: SimState, books: Books): void {
     f.inv[G.oil] = Math.max(0, f.inv[G.oil] - w * tf);
     bump(s, 'oil_burned', w * tf);
     const wage = carterWage(s, home, f);
-    const trip = tripCost(s, home, r, wage) * w;
+    const trip = tripCost(s, home, r, wage, FIRM_BASE + f.id) * w;
     const tripU = trip / Math.max(1e-9, load);
     for (let i = 0; i < t.items.length; i++) {
       const g = t.items[i].good;
@@ -1066,24 +1083,45 @@ export function tradersDispatch(s: SimState, books: Books): void {
  * shipment levies and quotas. Arrives in treasury.goods[to].
  */
 export function shipTreasuryGoods(s: SimState, from: TownId, to: TownId, good: GoodId, qty: number): ActionResult {
+  const r = sendTreasuryCargo(s, from, to, good, qty);
+  return r.ok ? { ok: true, message: r.message, id: r.id } : { ok: false, message: r.message };
+}
+
+/** Outcome of sendTreasuryCargo: the ActionResult plus what was loaded and the freight paid. */
+export interface CargoResult extends ActionResult {
+  qty: number; // units loaded (0 on failure)
+  paid: number; // ¤ freight paid to the trading house
+  days: number; // travel days (whole, ≥ 1)
+}
+
+/**
+ * shipTreasuryGoods with the details: loads min(qty, holdings) of the Treasury's `good` in
+ * `from` and sends it to `to`. `unitCost` (¤/unit, default 0) is what the goods cost the
+ * Treasury before carriage: the shipment's basis (landed cost per unit) is unitCost + freight
+ * per unit. `order` tags the cargo with a supply-route order id (Shipment.order, default −1).
+ * Fails (nothing moves, nothing is paid) without a usable road, a trading house in `from`, or —
+ * with auto-mint off — a Purse that covers the freight.
+ */
+export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: GoodId, qty: number, opts?: { unitCost?: number; order?: number }): CargoResult {
+  const no = (message: string): CargoResult => ({ ok: false, message, qty: 0, paid: 0, days: 0 });
   const nT = s.towns.length;
-  if (!(from >= 0 && from < nT) || !(to >= 0 && to < nT)) return { ok: false, message: 'Unknown town.' };
-  if (from === to) return { ok: false, message: 'Choose two different towns.' };
-  if (!(good >= 0 && good < N_GOODS)) return { ok: false, message: 'Unknown good.' };
-  if (!(qty > 0) || !Number.isFinite(qty)) return { ok: false, message: 'The quantity must be a positive number.' };
+  if (!(from >= 0 && from < nT) || !(to >= 0 && to < nT)) return no('Unknown town.');
+  if (from === to) return no('Choose two different towns.');
+  if (!(good >= 0 && good < N_GOODS)) return no('Unknown good.');
+  if (!(qty > 0) || !Number.isFinite(qty)) return no('The quantity must be a positive number.');
   const tg = s.treasury.goods[from];
   const have = tg ? Math.max(0, tg[good]) : 0;
   const q = Math.min(qty, have);
-  if (!(q > 1e-9)) return { ok: false, message: `The Treasury holds no ${GOODS[good].name.toLowerCase()} in ${s.towns[from].name}.` };
+  if (!(q > 1e-9)) return no(`The Treasury holds no ${GOODS[good].name.toLowerCase()} in ${s.towns[from].name}.`);
   const r = usableRoute(s, from, to);
-  if (!r) return { ok: false, message: `No wagon road links ${s.towns[from].name} and ${s.towns[to].name}.` };
+  if (!r) return no(`No wagon road links ${s.towns[from].name} and ${s.towns[to].name}.`);
   const f = traderOf(s, from);
-  if (!f) return { ok: false, message: `There is no trading house in ${s.towns[from].name} to carry the goods.` };
+  if (!f) return no(`There is no trading house in ${s.towns[from].name} to carry the goods.`);
   const tr = f.trade!;
   const wagons = Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9));
-  const fee = tripCost(s, from, r, carterWage(s, from, f)) * wagons * (1 + TREASURY_FREIGHT_PREMIUM);
+  const fee = tripCost(s, from, r, carterWage(s, from, f), FIRM_BASE + f.id) * wagons * (1 + TREASURY_FREIGHT_PREMIUM);
   const t = s.treasury;
-  if (!t.autoMint && t.purse < fee) return { ok: false, message: `The Purse cannot cover the freight (¤${Math.ceil(fee)}).` };
+  if (!t.autoMint && t.purse < fee) return no(`The Purse cannot cover the freight (¤${Math.ceil(fee)}).`);
   const paid = pay(s, STATE, FIRM_BASE + f.id, fee, 'freight');
   f.revenue += paid;
   // Use the house's own wagons, drivers and fuel where it has them free.
@@ -1094,7 +1132,9 @@ export function shipTreasuryGoods(s: SimState, from: TownId, to: TownId, good: G
   if (own > 0) f.inv[G.oil] = Math.max(0, f.inv[G.oil] - own * tf);
   tg[good] -= q;
   if (tg[good] < 1e-9) tg[good] = 0;
-  const sh = newShipment(s, STATE, from, to, good, q, paid / q, s.day + 0.5, s.day + 0.5 + r.days, wagons);
+  const unitCost = opts?.unitCost !== undefined && Number.isFinite(opts.unitCost) ? Math.max(0, opts.unitCost) : 0;
+  const sh = newShipment(s, STATE, from, to, good, q, unitCost + paid / q, s.day + 0.5, s.day + 0.5 + r.days, wagons);
+  if (opts?.order !== undefined && opts.order >= 0) sh.order = opts.order;
   bump(s, 'shipped_units', q);
   bump(s, 'freight_cost', paid);
   const days = Math.max(1, Math.ceil(r.days));
@@ -1102,6 +1142,9 @@ export function shipTreasuryGoods(s: SimState, from: TownId, to: TownId, good: G
     ok: true,
     message: `${fmtQty(q)} ${unitName(good, q)} of ${GOODS[good].name.toLowerCase()} leave ${s.towns[from].name} for ${s.towns[to].name}, arriving in about ${days} day${days > 1 ? 's' : ''}. Freight paid: ¤${Math.round(paid)}.`,
     id: sh.id,
+    qty: q,
+    paid,
+    days,
   };
 }
 

@@ -199,7 +199,29 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   takeHome: { label: 'take-home wage (employment-weighted)', fn: (s) => takeHomeWage(s) },
   takeHomeReal: { label: 'take-home wage ÷ CPI (what it buys)', fn: (s) => takeHomeWage(s) / Math.max(1e-9, L(s, 'cpi') / 100) },
   employed: { label: 'people employed', fn: (s) => L(s, 'employed') },
+  harborBread: { label: 'bread price at the harbour', fn: (s, c) => mkt(s, c.harbor, G.bread)?.ema ?? 0 },
+  farmBread: { label: 'bread price in the farm town', fn: (s, c) => mkt(s, c.farm, G.bread)?.ema ?? 0 },
+  routeSold: { label: 'supply route: units sold at the harbour/day', fn: (s) => s.policy.orders.reduce((a, o) => a + (o.route ? o.route.soldToday : 0), 0) },
+  coalTools: { label: 'tools held by coal mines', fn: (s) => sumFirms(s, 'coalmine', -1, (f) => f.tools + f.inv[G.tools]) },
+  coalWorkers: { label: 'coal miners employed', fn: (s) => sumFirms(s, 'coalmine', -1, (f) => f.workers.length) },
+  coalProd: { label: 'coal dug/day', fn: (s) => L(s, 'prod_' + G.coal) },
+  miningCoalTools: { label: 'tools held by the mining town’s coal mines', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.tools + f.inv[G.tools]) },
+  miningCoalOut: { label: 'the mining town’s coal mines’ output/day (EMA)', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.output) },
+  miningCoalSpend: { label: 'the mining town’s coal mines’ market spending ¤/day (their tools)', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.spent) },
+  toolsElsewhere: { label: 'tools price outside the mining town (mean)', fn: (s, c) => meanOver(s.towns.filter((t) => t.id !== c.mining).map((t) => mkt(s, t.id, G.tools)?.ema ?? 0)) },
+  giveSpend: { label: 'Treasury payments on levies ¤/day', fn: (s) => L(s, 'levyGive') },
 };
+
+/** Σ over the living, active firms of a trade (in a town, or −1 everywhere) of fn(firm). */
+function sumFirms(s: SimState, sector: string, town: number, fn: (f: SimState['firms'][number]) => number): number {
+  let x = 0;
+  for (const f of s.firms) if (f && f.alive && f.status === 'active' && f.sector === sector && (town < 0 || f.town === town)) x += fn(f);
+  return x;
+}
+
+function meanOver(a: readonly number[]): number {
+  return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+}
 
 function safe(f: () => number): number {
   try {
@@ -224,7 +246,7 @@ interface Arm {
   hook?: (g: Game, c: Ctx, d: number) => void;
 }
 
-type CheckKind = 'up' | 'down' | 'similar' | 'positive' | 'persistent';
+type CheckKind = 'up' | 'down' | 'notDown' | 'similar' | 'positive' | 'persistent';
 
 interface Check {
   label: string;
@@ -234,12 +256,14 @@ interface Check {
   arm?: string;
   /** Reference arm (default 'baseline'). */
   vs?: string;
-  /** Relative threshold (up/down: minimum |Δ|/ref; similar: maximum). Default 0.01. */
+  /** Relative threshold (up/down: minimum |Δ|/ref; similar: maximum; notDown: largest fall allowed). Default 0.01. */
   tol?: number;
   /** Absolute threshold on |Δ| for up/down (either this or tol must be met; used when the reference is ~0). */
   minAbs?: number;
   /** persistent: share of days the metric exceeds `level` (default 0.8 of days, level 0). */
   level?: number;
+  /** Evaluation window for this check only (default: the experiment's). */
+  window?: (days: number) => [number, number];
 }
 
 interface Experiment {
@@ -441,6 +465,92 @@ const EXPERIMENTS: Experiment[] = [
     ],
     show: ['takeHome', 'cpi', 'employed'],
   },
+  {
+    id: '11',
+    name: 'Supply route: bread from the farm town to the harbor at landed cost',
+    // The Treasury buys about the harbour's daily bread trade in the farm town (at up to 25 %
+    // over the going price there: headroom as prices drift through the year), carries it on its
+    // wagons and offers it at the harbour at what it cost to buy and carry: the harbour's bread
+    // price falls toward that landed cost. Judged over the whole run: the harbour has one bakery
+    // or none, which the Treasury's bread can crowd out and which may reopen later, so the last
+    // months alone depend on when that happens.
+    window: (d) => [30, d],
+    arms: [
+      {
+        name: 'supply route',
+        setup: (g, c) =>
+          act(
+            g,
+            {
+              type: 'placeOrder',
+              market: { kind: 'good', town: c.farm, good: G.bread },
+              side: 'buy',
+              price: Math.round(1.25 * c.price[c.farm][G.bread] * 100) / 100,
+              qty: Math.max(10, Math.round(c.vol[c.harbor][G.bread])),
+              route: { to: c.harbor, sell: 'cost' },
+            },
+            'supply route',
+          ),
+      },
+    ],
+    checks: [{ label: 'harbour bread price down (whole run)', metric: 'harborBread', kind: 'down', tol: 0.01 }],
+    show: ['farmBread', 'routeSold'],
+  },
+  {
+    id: '12',
+    name: 'Pay 40% of the price of tools bought by coal mines',
+    // A targeted sale rule: only the coal mines' own purchases of tools carry it. Cheaper tools
+    // lower the mines' costs, so they plan more output (more hands, and the tools to equip them).
+    arms: [
+      {
+        name: 'tools for coal mines',
+        setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'sale', unit: 'pct', dir: -1, rate: 0.4, payer: 'buyer', good: G.tools, sector: 'coalmine' }) }, 'targeted payment'),
+      },
+    ],
+    checks: [
+      { label: "coal mines' tools up", metric: 'coalTools', kind: 'up', tol: 0.01 },
+      { label: 'coal output up', metric: 'coalProd', kind: 'up', tol: 0.01 },
+      // Other towns' tools prices swing ±5 % from month to month in both arms (the trade is
+      // cyclical and toolworks open and close at different times), so this is judged over the
+      // whole run: the payment reaches only the mines' own purchases, it must not cheapen tools for others.
+      { label: 'tools price elsewhere not lower (whole run)', metric: 'toolsElsewhere', kind: 'notDown', tol: 0.02, window: (d) => [30, d] },
+    ],
+    show: ['coalWorkers', 'giveSpend'],
+  },
+  {
+    id: '13',
+    name: 'Hand 3 tools to every coal mine in the mining town',
+    // The Treasury buys the tools where they are made (the capital; the mining town's own tools
+    // market is too thin to fill the order without taking them from the mines), carries them to
+    // the mining town and hands 3 sets to every coal mine there the day they arrive.
+    // The mines already hold all the tools their hands can use (tools are complements to labour
+    // and no firm in this economy runs short of them), so the gift raises their stock of tools
+    // and displaces their own purchases for a while; it does not change what they dig — unlike
+    // experiment 12, which lowers the cost of every tool they use and so their marginal cost.
+    window: () => [2, 92],
+    arms: [
+      {
+        name: 'tools handed out',
+        setup: (g, c) => {
+          const mines = g.s.firms.filter((f) => f && f.alive && f.status === 'active' && f.sector === 'coalmine' && f.town === c.mining).length;
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.capital, good: G.tools }, side: 'buy', price: Math.round(1.5 * c.price[c.capital][G.tools] * 100) / 100, qty: 3 * Math.max(1, mines), once: true }, 'buy tools');
+        },
+        hook: (g, c, d) => {
+          const tg = g.s.treasury.goods;
+          if (d === 1 && tg[c.capital][G.tools] > 0) act(g, { type: 'moveGoods', from: c.capital, to: c.mining, good: G.tools, qty: tg[c.capital][G.tools] }, 'carry tools');
+          if (d >= 2 && tg[c.mining][G.tools] > 0.5 && !g.s.shipments.some((sh) => sh.owner === -1 && sh.to === c.mining && sh.good === G.tools))
+            act(g, { type: 'transfer', group: 'firms', town: c.mining, amount: 3, dir: 1, good: G.tools, sector: 'coalmine' }, 'hand out tools');
+        },
+      },
+    ],
+    checks: [
+      // The handout lands on day 2; the mines then skip buying until wear brings their stock back
+      // to what their hands can use (a few days for 3 sets each).
+      { label: "coal mines' tools up (days 2–5)", metric: 'miningCoalTools', kind: 'up', tol: 0.02, window: () => [2, 5] },
+      { label: 'their own tools purchases down (month)', metric: 'miningCoalSpend', kind: 'down', tol: 0.05, window: () => [2, 32] },
+      { label: 'coal output unchanged (±2 %: not short of tools)', metric: 'miningCoalOut', kind: 'similar', tol: 0.02 },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -495,8 +605,9 @@ function judge(exp: Experiment, check: Check, res: Results): Verdict {
   const refName = check.vs ?? 'baseline';
   const A = res.arms[armName]?.[check.metric];
   const B = res.arms[refName]?.[check.metric];
-  const val = windowMean(A, res.window);
-  const ref = windowMean(B, res.window);
+  const win = check.window ? check.window(res.days) : res.window;
+  const val = windowMean(A, win);
+  const ref = windowMean(B, win);
   const scale = Math.max(Math.abs(ref), 1e-9);
   const delta = (val - ref) / scale;
   // up/down: the move must beat the relative threshold, or the absolute one when given
@@ -511,6 +622,9 @@ function judge(exp: Experiment, check: Check, res: Results): Verdict {
     case 'down':
       pass = meets(ref - val);
       break;
+    case 'notDown':
+      pass = (val - ref) / scale >= -(check.tol ?? 0.01);
+      break;
     case 'similar':
       pass = Math.abs(val - ref) / Math.max(Math.abs(val), Math.abs(ref), 1e-9) <= (check.tol ?? 0.05);
       break;
@@ -522,8 +636,8 @@ function judge(exp: Experiment, check: Check, res: Results): Verdict {
       let n = 0;
       let hit = 0;
       if (A) {
-        const from = Math.max(0, res.window[0]);
-        const to = Math.min(A.length, res.window[1]);
+        const from = Math.max(0, win[0]);
+        const to = Math.min(A.length, win[1]);
         for (let i = from; i < to; i++) {
           n++;
           if (A[i] > lvl) hit++;

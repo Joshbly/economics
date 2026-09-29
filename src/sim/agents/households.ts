@@ -9,7 +9,9 @@
 //    on money held − expected inflation). Dearer money → bigger buffers → less spending.
 //  * prices & levies → demand: bids are placed in gross (levy-inclusive) prices, so a
 //    buyer-side sale levy shifts the demand curve down in base terms; bread and fish
-//    substitute through the CES food nest.
+//    substitute through the CES food nest. A sale rule aimed at a group of people
+//    (levies.isTargetedSale, e.g. a share of the price of bread paid for hungry
+//    households) rides on their own bids, and they plan at their own expected price.
 //  * income → consumption: spending tracks an EMA of disposable income (net wages,
 //    dividends, rent received, interest, Treasury payments, net of per-head and other
 //    stock levies — everything the paying modules book into person.earned).
@@ -22,10 +24,10 @@ import * as CFG from '../config';
 import * as CAL from '../calendar';
 import * as GOODS_M from '../goods';
 import * as LEDGER from '../ledger';
-import { addAsk, addBid, bookFor, expectedGross, type Books } from '../market/markets';
-import { matchLevies } from '../policy/levies';
+import { addAsk, addBid, bookFor, expectedGross, expectedGrossFor, type Books } from '../market/markets';
+import { matchLevies, peopleSaleRules, targetMatches } from '../policy/levies';
 import { rt } from '../runtime';
-import type { Book, Person, SimState } from '../types';
+import type { Book, Levy, Person, SimState } from '../types';
 import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { bufferTarget, foodIndex, goodsBudget } from './demandModel';
@@ -436,6 +438,22 @@ export function ladderInto(qty: number, pExp: number, maxSpend: number, good: nu
 // Scratch reused across people.
 const _ladder: number[] = [];
 const _plan: PlanScratch = newPlanScratch();
+const _ownPrices: number[] = new Array(N_GOODS).fill(1);
+const _peopleRules: Levy[][] = [];
+
+/**
+ * A person's own expected gross prices when a sale rule aimed at their group applies to them
+ * (levies.peopleSaleRules): the town row with those goods re-priced (markets.expectedGrossFor).
+ * Null when no rule names them (the common case).
+ */
+function ownPrices(s: SimState, p: Person, t: number, row: readonly number[], rules: readonly Levy[]): number[] | null {
+  let named = false;
+  for (let i = 0; i < rules.length && !named; i++) if (targetMatches(s, rules[i], personRef(p.id))) named = true;
+  if (!named) return null;
+  for (let g = 0; g < N_GOODS; g++) _ownPrices[g] = row[g];
+  for (const g of CONSUMER_GOODS) _ownPrices[g] = safePrice(expectedGrossFor(s, t, g, personRef(p.id)));
+  return _ownPrices;
+}
 
 /**
  * For each living person: the demandModel plan (planDemand semantics, see planInto)
@@ -464,14 +482,36 @@ export function householdOrders(s: SimState, books: Books): void {
   const coalComfort = heat + COAL_COMFORT_DAYS * heatAhead;
   const bid = addBid; // one binding read per call, not per order
   const day = s.day;
+  // Sale rules aimed at groups of people, per town (usually none).
+  let targeted = false;
+  _peopleRules.length = nT;
+  for (let t = 0; t < nT; t++) {
+    const r = _peopleRules[t] ?? (_peopleRules[t] = []);
+    r.length = 0;
+    if (s.policy.levies.length) peopleSaleRules(s, t, r);
+    if (r.length) targeted = true;
+  }
   for (let i = 0; i < s.people.length; i++) {
     const p = s.people[i];
     if (!p || !p.alive) continue;
     const t = p.town >= 0 && p.town < nT ? p.town : 0;
-    const prices = c.prices[t];
+    let prices = c.prices[t];
+    let fiI = c.fiIndex[t];
+    let fiB = c.fiBread[t];
+    let fiF = c.fiFish[t];
+    if (targeted && _peopleRules[t].length) {
+      const own = ownPrices(s, p, t, prices, _peopleRules[t]);
+      if (own) {
+        prices = own;
+        const fi = foodIndex(own[G.bread], own[G.fish]);
+        fiI = fi.index;
+        fiB = fi.shareBread;
+        fiF = fi.shareFish;
+      }
+    }
     const cash = Math.max(0, p.cash);
     const budget = Math.min(Math.max(0, p.budget), cash);
-    const plan = planInto(_plan, budget, cash, prices, p.pantry, heat, heatAhead, p.foodSat < HUNGRY_BELOW, c.fiIndex[t], c.fiBread[t], c.fiFish[t]);
+    const plan = planInto(_plan, budget, cash, prices, p.pantry, heat, heatAhead, p.foodSat < HUNGRY_BELOW, fiI, fiB, fiF);
     c.foodPlan[p.id] = clamp(fin(plan.foodPlan, FOOD_NEED), 0, FOOD_MAX);
     c.alePlan[p.id] = Math.max(0, fin(plan.alePlan));
     c.coalExtra[p.id] = Math.max(0, fin(plan.coalExtra));

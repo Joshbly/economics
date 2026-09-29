@@ -2,15 +2,24 @@
 // Lever VII — Transfer: a one-off lump sum handed to (or taken from) every
 // member of a group, in one town or all; or paid into / out of the Bank's own
 // capital. Shows the live recipient count and total; large sums ask first.
+//
+// In kind ("Goods"): hand out units of a good the Treasury holds in a town to
+// every member of a group there — people (into their pantries) or workshops,
+// optionally of one trade (into their stores). The tally compares the units
+// needed with the units held.
 // ============================================================================
-import { PLAYER_MAX_MONEY } from '../../../sim/config';
+import { PLAYER_MAX_MONEY, PLAYER_MAX_QTY } from '../../../sim/config';
+import { G, GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
 import { inGroup } from '../../../sim/policy/levies';
-import { STATE, type Group, type SimState, type TransferGroup } from '../../../sim/types';
-import { h, setText } from '../../dom';
+import { STATE, type Group, type PlayerAction, type Sector, type SimState, type TransferGroup } from '../../../sim/types';
+import { h, setText, show } from '../../dom';
 import { fmtInt, fmtPct } from '../../format';
 import { confirmDialog } from '../../modal';
-import { numberInput, segmented, selectInput, townOptions } from '../../widgets';
-import { chip, fin, fmtM, fmtMS, formEl, formFoot, msgLine, row, run, submitButton, townName, type Lever } from './common';
+import { numberInput, segmented, selectInput, townOptions, type Option } from '../../widgets';
+import { chip, dynRow, fin, fmtM, fmtMS, fmtQ, formEl, formFoot, goodName, hint, msgLine, row, run, setNumUnit, submitButton, townName, unitOf, unitsOf, type Lever } from './common';
+import { tradePlural } from './levyDefs';
+
+type Mode = 'money' | 'goods';
 
 const GROUPS: { value: TransferGroup; label: string; noun: string }[] = [
   { value: 'all', label: 'Everyone', noun: 'people' },
@@ -24,13 +33,21 @@ const GROUPS: { value: TransferGroup; label: string; noun: string }[] = [
   { value: 'bank', label: 'The Bank’s own capital', noun: 'the Bank' },
 ];
 
+/** Groups that can receive goods: people (their pantry) or workshops (their stores). */
+const GOODS_GROUPS: { value: TransferGroup; label: string }[] = [
+  ...GROUPS.filter((g) => g.value !== 'firms' && g.value !== 'bank').map((g) => ({ value: g.value, label: g.label })),
+  { value: 'firms', label: 'Workshops' },
+];
+
+const TRADES = (Object.keys(SECTORS) as Sector[]).filter((k) => k !== 'stateworks');
+
 interface Tally {
   n: number;
   /** For takes: Σ min(amount, balance) — what would actually be collected. */
   takeable: number;
 }
 
-function tally(s: SimState, group: TransferGroup, town: number, amount: number): Tally {
+function tally(s: SimState, group: TransferGroup, town: number, amount: number, sector: Sector | 'any' = 'any'): Tally {
   if (group === 'bank') return { n: 1, takeable: Math.min(amount, Math.max(0, fin(s.bank?.equity))) };
   let n = 0;
   let takeable = 0;
@@ -38,6 +55,7 @@ function tally(s: SimState, group: TransferGroup, town: number, amount: number):
     for (const f of s.firms) {
       if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.owner === STATE) continue;
       if (town >= 0 && f.town !== town) continue;
+      if (sector !== 'any' && f.sector !== sector) continue;
       n++;
       takeable += Math.min(amount, Math.max(0, fin(f.cash)));
     }
@@ -53,12 +71,33 @@ function tally(s: SimState, group: TransferGroup, town: number, amount: number):
   return { n, takeable };
 }
 
+/** The town holding the most of a good (or −1). */
+function bestTown(s: SimState, g: number): number {
+  let best = -1;
+  let q = 0.005;
+  for (let t = 0; t < s.towns.length; t++) {
+    const v = fin(s.treasury.goods[t]?.[g]);
+    if (v > q) {
+      q = v;
+      best = t;
+    }
+  }
+  return best;
+}
+
 export function transferLever(): Lever {
+  let mode: Mode = 'money';
   let dir: 1 | -1 = 1;
   let group: TransferGroup = 'unemployed';
   let town = -1;
+  // goods mode
+  let good = 8;
+  let gTown = 0;
+  let gGroup: TransferGroup = 'unemployed';
+  let sector: Sector | 'any' = 'any';
   let last: SimState | null = null;
   let key = '';
+  let optSig = '';
   let t: Tally = { n: 0, takeable: 0 };
   const msg = msgLine();
   const changed = () => {
@@ -66,6 +105,22 @@ export function transferLever(): Lever {
     paint();
   };
 
+  const modeSeg = segmented<Mode>({
+    options: [
+      { value: 'money', label: 'Money', title: 'A sum of ¤ to (or from) each member of a group' },
+      { value: 'goods', label: 'Goods', title: 'Hand out goods the Treasury holds in a town' },
+    ],
+    value: mode,
+    onChange: (v) => {
+      mode = v;
+      key = '';
+      if (mode === 'goods' && last) {
+        const b = bestTown(last, good);
+        if (b >= 0 && !(fin(last.treasury.goods[gTown]?.[good]) > 0.005)) gTown = b;
+      }
+      changed();
+    },
+  });
   const dirSeg = segmented<1 | -1>({
     options: [
       { value: 1, label: 'Give', title: 'Pay the sum to each recipient, from the Purse' },
@@ -79,12 +134,27 @@ export function transferLever(): Lever {
   const groupSel = selectInput<TransferGroup>({ options: GROUPS.map((g) => ({ value: g.value, label: g.label })), value: group, onChange: (v) => ((group = v), changed()) });
   const townSel = selectInput<number>({ options: [{ value: -1, label: 'All towns' }], value: town, onChange: (v) => ((town = v), changed()) });
 
+  // goods mode controls
+  const goodSel = selectInput<number>({ options: [{ value: good, label: '—' }], value: good, onChange: (v) => pickGood(v) });
+  const gTownSel = selectInput<number>({ options: [{ value: 0, label: '—' }], value: gTown, onChange: (v) => ((gTown = v), changed()) });
+  const units = numberInput({ value: 2, min: 0, max: PLAYER_MAX_QTY, unit: 'loaves', width: '130px', onChange: changed, title: 'Units handed to each recipient' });
+  const unitChips = h('div', { class: 'lv-chips' }, [1, 2, 5, 10, 25].map((v) => chip(String(v), () => (units.set(v), paint()))), chip('Share all', () => shareAll(), 'Divide everything held there equally'));
+  const gGroupSel = selectInput<TransferGroup>({ options: GOODS_GROUPS, value: gGroup, onChange: (v) => ((gGroup = v), changed()) });
+  const tradeSel = selectInput<Sector | 'any'>({
+    options: [{ value: 'any', label: 'Any trade' }, ...TRADES.map((k) => ({ value: k, label: SECTORS[k].name, group: SECTORS[k].producer ? 'Makes goods' : 'Services' }))],
+    value: sector,
+    onChange: (v) => ((sector = v), changed()),
+  });
+  const heldHint = hint();
+
   const vCount = h('span', { class: 'lv-big' });
   const vCountL = h('span', { class: 'lv-big-l' });
   const vTotal = h('span', { class: 'lv-big' });
   const vTotalL = h('span', { class: 'lv-big-l' });
   const vEach = h('span', { class: 'lv-big' });
   const vEachL = h('span', { class: 'lv-big-l' }, 'each');
+  const heldBar = h('i');
+  const heldTrack = h('span', { class: 'lv-tally-held' }, heldBar);
   const tallyBox = h(
     'div',
     { class: 'lv-tally' },
@@ -93,39 +163,109 @@ export function transferLever(): Lever {
     h('div', null, vEach, vEachL),
     h('div', { class: 'lv-tally-x' }, '='),
     h('div', null, vTotal, vTotalL),
+    heldTrack,
   );
 
   const preview = h('div', { class: 'lv-preview' });
   const go = submitButton('Give now');
-  const amountLab = h('span', null, 'Each');
-  const form = formEl(
-    () => void submit(),
-    row('Direction', dirSeg.el),
-    row(amountLab, amount.el, amountChips),
-    row('To', groupSel.el),
-    row('Where', townSel.el),
-    tallyBox,
-    formFoot(preview, msg, go),
-  );
+  const amountRow = dynRow('Each', amount.el, amountChips, units.el, unitChips);
+  const dirRow = row('Direction', dirSeg.el);
+  const goodsRow = row('Goods', goodSel.el);
+  const heldRow = row('From stores in', gTownSel.el, heldHint);
+  const toRow = row('To', groupSel.el);
+  const handRow = row('Hand to', gGroupSel.el);
+  const tradeRow = row('Trade', tradeSel.el);
+  const whereRow = row('Where', townSel.el);
+  const form = formEl(() => void submit(), row('Hand out', modeSeg.el), dirRow, goodsRow, heldRow, amountRow.el, toRow, handRow, tradeRow, whereRow, tallyBox, formFoot(preview, msg, go));
   const body = h('div', { class: 'lv-body-in' }, form);
+
+  function pickGood(v: number): void {
+    good = v;
+    const s = last;
+    if (s && !(fin(s.treasury.goods[gTown]?.[good]) > 0.005)) {
+      const b = bestTown(s, good);
+      if (b >= 0) gTown = b;
+    }
+    changed();
+  }
+
+  function shareAll(): void {
+    const s = last;
+    if (!s) return;
+    const held = fin(s.treasury.goods[gTown]?.[good]);
+    const n = tally(s, gGroup, gTown, 0, gGroup === 'firms' ? sector : 'any').n;
+    if (n > 0 && held > 0) units.set(Math.floor((held / n) * 100) / 100);
+    paint();
+  }
+
+  /** Good and town pickers list what the Treasury holds (held goods first). */
+  function syncGoodsOptions(s: SimState): void {
+    const tg = s.treasury.goods;
+    let sig = '';
+    const total: number[] = [];
+    for (let g = 0; g < N_GOODS; g++) {
+      let q = 0;
+      for (let k = 0; k < s.towns.length; k++) q += fin(tg[k]?.[g]);
+      total.push(q);
+      sig += Math.round(q * 10) + ',';
+    }
+    for (let k = 0; k < s.towns.length; k++) sig += Math.round(fin(tg[k]?.[good]) * 10) + ';';
+    sig += good;
+    if (sig === optSig) return;
+    optSig = sig;
+    const held: Option<number>[] = [];
+    const none: Option<number>[] = [];
+    for (let g = 0; g < N_GOODS; g++) {
+      const name = GOODS[g].name;
+      if (total[g] > 0.005) held.push({ value: g, label: `${name} — ${fmtQ(total[g])} held`, group: 'Held by the Treasury' });
+      else none.push({ value: g, label: name, group: 'None held' });
+    }
+    goodSel.setOptions([...held, ...none], good);
+    good = goodSel.value;
+    gTownSel.setOptions(
+      s.towns.map((x) => {
+        const q = fin(tg[x.id]?.[good]);
+        return { value: x.id, label: q > 0.005 ? `${x.name} · ${fmtQ(q)}` : x.name };
+      }),
+      gTown,
+    );
+    gTown = gTownSel.value;
+  }
 
   function paint(): void {
     const s = last;
     if (!s) return;
+    const goods = mode === 'goods';
+    show(dirRow, !goods);
+    show(goodsRow, goods);
+    show(heldRow, goods);
+    show(toRow, !goods);
+    show(handRow, goods);
+    show(tradeRow, goods ? gGroup === 'firms' : group === 'firms');
+    show(whereRow, !goods);
+    show(amount.el, !goods);
+    show(amountChips, !goods);
+    show(units.el, goods);
+    show(unitChips, goods);
+    show(heldTrack, goods);
+    if (goods) return paintGoods(s);
+
     townSel.setOptions(townOptions(s, 'All towns'), town);
     town = townSel.value;
     townSel.setDisabled(group === 'bank');
     const a = amount.value;
-    const k = `${group}:${town}:${a}:${s.day}`;
+    const msec = group === 'firms' ? sector : 'any';
+    const k = `m:${group}:${msec}:${town}:${a}:${s.day}`;
     if (k !== key) {
       key = k;
-      t = Number.isFinite(a) && a > 0 ? tally(s, group, group === 'bank' ? -1 : town, a) : tally(s, group, group === 'bank' ? -1 : town, 0);
+      t = tally(s, group, group === 'bank' ? -1 : town, Number.isFinite(a) && a > 0 ? a : 0, msec);
     }
-    const g = GROUPS.find((x) => x.value === group) ?? GROUPS[0];
+    const g0 = GROUPS.find((x) => x.value === group) ?? GROUPS[0];
+    const g = group === 'firms' && sector !== 'any' ? { ...g0, noun: tradePlural(sector) } : g0;
     const where = group !== 'bank' && town >= 0 ? ` in ${townName(s, town)}` : '';
     const purse = fin(s.treasury.purse);
     const total = dir === 1 ? (Number.isFinite(a) ? a * t.n : NaN) : t.takeable;
-    setText(amountLab, group === 'bank' ? 'Amount' : 'Each');
+    setText(amountRow.lab, group === 'bank' ? 'Amount' : 'Each');
     setText(vCount, group === 'bank' ? '1' : fmtInt(t.n));
     setText(vCountL, group === 'bank' ? 'the Bank' : t.n === 1 ? 'recipient' : 'recipients');
     const short = (x: number) => (Math.abs(x) >= 1000 ? fmtMS(x) : fmtM(x));
@@ -157,12 +297,70 @@ export function transferLever(): Lever {
     if (empty && a > 0 && t.n > 0) preview.append(h('span', { class: 'bad' }, ' The Purse is empty.'));
   }
 
+  function goodsNoun(n: number): string {
+    if (gGroup === 'firms') return sector === 'any' ? (n === 1 ? 'workshop' : 'workshops') : n === 1 ? (SECTORS[sector]?.name ?? 'workshop').toLowerCase() : tradePlural(sector);
+    return (GROUPS.find((x) => x.value === gGroup) ?? GROUPS[0]).noun;
+  }
+
+  function paintGoods(s: SimState): void {
+    syncGoodsOptions(s);
+    const u = unitsOf(good);
+    setNumUnit(units, u);
+    setText(amountRow.lab, 'Each');
+    const held = fin(s.treasury.goods[gTown]?.[good]);
+    const each = units.value;
+    const sec = gGroup === 'firms' ? sector : 'any';
+    const k = `g:${gGroup}:${sec}:${gTown}:${s.day}`;
+    if (k !== key) {
+      key = k;
+      t = tally(s, gGroup, gTown, 0, sec);
+    }
+    const need = Number.isFinite(each) && each > 0 ? each * t.n : NaN;
+    const forFirms = !GOODS[good]?.consumer ? ' Only workshops can use it.' : '';
+    setText(heldHint, held > 0.005 ? `${fmtQ(held)} ${u} held there.${forFirms}` : `None held in ${townName(s, gTown)} — buy some there with Trade, or move goods in.${forFirms}`);
+    heldHint.classList.toggle('warn', !(held > 0.005));
+    setText(vCount, fmtInt(t.n));
+    setText(vCountL, t.n === 1 ? 'recipient' : 'recipients');
+    setText(vEach, Number.isFinite(each) ? fmtQ(each) : '—');
+    setText(vEachL, `${each === 1 ? unitOf(good) : u} each`);
+    setText(vTotal, Number.isFinite(need) ? fmtQ(need) : '—');
+    vTotal.title = Number.isFinite(need) ? `${fmtQ(need)} ${u}` : '';
+    setText(vTotalL, `of ${fmtQ(held)} held`);
+    const f = held > 0 && Number.isFinite(need) ? Math.min(1, need / held) : 0;
+    heldBar.style.width = (f * 100).toFixed(1) + '%';
+    heldTrack.classList.toggle('over', Number.isFinite(need) && need > held + 1e-9);
+    heldTrack.title = Number.isFinite(need) && held > 0 ? `${fmtPct(Math.min(9.99, need / held))} of what is held there` : '';
+
+    const B = (x: string, cls?: string) => h('b', { class: cls ?? null }, x);
+    const bits: (string | Node)[] = [];
+    const who = goodsNoun(t.n);
+    const where = ` in ${townName(s, gTown)}`;
+    const noUse = gGroup !== 'firms' && !GOODS[good]?.consumer;
+    if (!(held > 0.005)) bits.push(`Nothing to hand out: no ${goodName(good).toLowerCase()} is held${where}.`);
+    else if (noUse) bits.push(h('span', { class: 'warn' }, `People have no use for ${goodName(good).toLowerCase()} at home — hand it to workshops instead.`));
+    else if (!(each > 0)) bits.push('Set how many each recipient gets.');
+    else if (t.n === 0) bits.push(`Nobody matches: there are no ${who}${where}.`);
+    else {
+      const into = gGroup === 'firms' ? 'into their stores' : 'into their pantries';
+      if (need <= held + 1e-9) bits.push('Hands ', B(`${fmtQ(each)} ${each === 1 ? unitOf(good) : u}`), ' to each of ', B(`${fmtInt(t.n)} ${who}`), where, ` (${fmtQ(need)} of the ${fmtQ(held)} held), ${into}.`);
+      else bits.push('Hands out all ', B(`${fmtQ(held)} ${u}`), ' held', where, ' to ', B(`${fmtInt(t.n)} ${who}`), ` — `, h('span', { class: 'warn' }, `${fmtQ(held / t.n)} each, not ${fmtQ(each)}`), `, ${into}.`);
+      if (gGroup === 'firms' && good === G.tools) bits.push(' Tools join each workshop’s tool stock.');
+      const p = s.markets[gTown * N_GOODS + good]?.price;
+      if (fin(p) > 0) bits.push(h('span', { class: 'muted' }, ` Worth ≈ ${fmtM(Math.min(need, held) * fin(p))} at today’s price there.`));
+    }
+    preview.replaceChildren(...bits);
+    setText(go, 'Hand out');
+    go.disabled = !(held > 0.005) || !(each > 0) || t.n === 0 || noUse;
+  }
+
   async function submit(): Promise<void> {
     const s = last;
     if (!s) return;
+    if (mode === 'goods') return submitGoods(s);
     const a = amount.value;
     if (!(a > 0)) return msg.err(amount.error ?? 'Set an amount.');
-    const g = GROUPS.find((x) => x.value === group) ?? GROUPS[0];
+    const g0 = GROUPS.find((x) => x.value === group) ?? GROUPS[0];
+    const g = group === 'firms' && sector !== 'any' ? { ...g0, noun: tradePlural(sector) } : g0;
     const money = fin(s.stats?.latest?.money);
     const purse = fin(s.treasury.purse);
     const want = dir === 1 ? a * t.n : t.takeable;
@@ -187,14 +385,28 @@ export function transferLever(): Lever {
       });
       if (!ok) return;
     }
-    run({ type: 'transfer', group, town: group === 'bank' ? -1 : town, amount: a, dir }, msg, dir === 1 ? '✓ Paid out.' : '✓ Collected.');
+    const act: Extract<PlayerAction, { type: 'transfer' }> = { type: 'transfer', group, town: group === 'bank' ? -1 : town, amount: a, dir };
+    if (group === 'firms' && sector !== 'any') act.sector = sector;
+    run(act, msg, dir === 1 ? '✓ Paid out.' : '✓ Collected.');
     key = '';
+  }
+
+  function submitGoods(s: SimState): void {
+    const each = units.value;
+    if (!(each > 0)) return msg.err(units.error ?? 'Set how many each recipient gets.');
+    const held = fin(s.treasury.goods[gTown]?.[good]);
+    if (!(held > 0.005)) return msg.err(`The Treasury holds no ${goodName(good).toLowerCase()} in ${townName(s, gTown)}.`);
+    const a: Extract<PlayerAction, { type: 'transfer' }> = { type: 'transfer', group: gGroup, town: gTown, amount: each, dir: 1, good };
+    if (gGroup === 'firms' && sector !== 'any') a.sector = sector;
+    run(a, msg, '✓ Handed out.');
+    key = '';
+    optSig = '';
   }
 
   return {
     id: 'transfer',
     title: 'Transfer',
-    tagline: 'A one-off sum to or from a group',
+    tagline: 'One-off sums or goods to a group',
     body,
     summary(s) {
       const L = s.stats?.latest ?? {};
@@ -208,11 +420,13 @@ export function transferLever(): Lever {
       last = s;
       paint();
     },
-    focus: () => amount.focus(),
+    focus: () => (mode === 'goods' ? units.focus() : amount.focus()),
     reset() {
       key = '';
+      optSig = '';
       last = null;
       town = -1;
+      gTown = 0;
     },
   };
 }

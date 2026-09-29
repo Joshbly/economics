@@ -19,8 +19,19 @@
 // Filters: a levy's town/good/toTown/sector/buildingKind must match the flow's
 // context when set. Group filters apply to `ctx.person` (the person paying or
 // receiving); flows without a person (firms, the bank...) match only the groups
-// 'all' and 'firms'. Sale and port levies are market-wide wedges, so they ignore
-// thresholds and groups.
+// 'all' and 'firms'. Port levies and untargeted sale levies are market-wide
+// wedges, so they ignore thresholds and groups.
+//
+// Targeted sale levies. A 'sale' rule with a trade (sector ≠ 'any') or a group
+// (≠ 'all') applies only to the orders of the traders it names: payer 'buyer' →
+// bids placed by firms of that trade, or by people in that group ('persons' =
+// every household, 'firms' = every firm); payer 'seller' → asks placed by firms
+// of that trade (or by any firm: group 'firms'). Such a rule is not part of the
+// book's wedge: markets.addBid/addAsk add it to the matching order's own extras
+// (Order.xPct/xUnit, signed like the wedge: + the trader owes the Treasury, − the
+// Treasury pays), the auction converts that order's limit with them and settlement
+// moves the money and credits the rule (attributeTargetedActual). Treasury orders
+// are exempt; foreign merchants, the Bank and the Treasury are never targeted.
 //
 // Per-rule accounting (levy.today/month/lastMonth/total) is signed:
 // + collected by the Treasury, − paid out by it. Every ¤ is also summed into
@@ -141,7 +152,7 @@ export function matchLevies(s: SimState, base: LevyBase, payer: LevyPayer | null
   return out;
 }
 
-/** Fill `out` with the combined 'sale' wedge of a goods market (allocation-free version of saleWedge). */
+/** Fill `out` with the combined market-wide 'sale' wedge of a goods market (untargeted rules only; allocation-free version of saleWedge). */
 export function saleWedgeInto(s: SimState, town: TownId, good: number, out: Wedge): Wedge {
   let bPct = 0;
   let bUnit = 0;
@@ -151,6 +162,7 @@ export function saleWedgeInto(s: SimState, town: TownId, good: number, out: Wedg
   for (const l of s.policy.levies) {
     if (l.base !== 'sale' || !levyActive(s, l)) continue;
     if (susp && l.dir < 0) continue;
+    if (isTargetedSale(l)) continue; // rides on the matching orders (targetedExtrasFrom)
     if (l.town >= 0 && l.town !== town) continue;
     if (l.good >= 0 && l.good !== good) continue;
     const r = l.dir * l.rate;
@@ -189,9 +201,153 @@ function saleRuleAmount(l: Levy, basePrice: number, qty: number): number {
 function saleRuleMatches(s: SimState, l: Levy, town: TownId, good: number): boolean {
   if (l.base !== 'sale' || !levyActive(s, l)) return false;
   if (s.treasury.givesSuspended && l.dir < 0) return false;
+  if (isTargetedSale(l)) return false; // credited by attributeTargetedActual
   if (l.town >= 0 && l.town !== town) return false;
   if (l.good >= 0 && l.good !== good) return false;
   return true;
+}
+
+// ---- targeted sale rules --------------------------------------------------------
+
+/** A 'sale' rule aimed at particular traders (a trade, or a group) rather than the whole market. */
+export function isTargetedSale(l: Levy): boolean {
+  return l.base === 'sale' && ((!!l.sector && l.sector !== 'any') || (!!l.group && l.group !== 'all'));
+}
+
+/** Is a targeted sale rule in force today (gives are off while the Purse cannot pay them)? */
+function targetedLive(s: SimState, l: Levy): boolean {
+  return isTargetedSale(l) && levyActive(s, l) && !(s.treasury.givesSuspended && l.dir < 0);
+}
+
+/** Is any targeted sale rule in force today? (Scans the rule list: cheap, and false in the common case.) */
+export function hasTargetedSale(s: SimState): boolean {
+  const ls = s.policy.levies;
+  for (let i = 0; i < ls.length; i++) if (ls[i].base === 'sale' && targetedLive(s, ls[i])) return true;
+  return false;
+}
+
+/**
+ * Does a targeted sale rule apply to orders placed by `ref`? Firms match by trade (and the
+ * group 'firms'); people match by group ('persons' = everyone). The Treasury, the Bank and
+ * foreign merchants never match.
+ */
+export function targetMatches(s: SimState, l: Levy, ref: Ref): boolean {
+  const sec = l.sector && l.sector !== 'any' ? l.sector : '';
+  const grp = l.group && l.group !== 'all' ? l.group : '';
+  if (ref >= FIRM_BASE) {
+    const f = s.firms[ref - FIRM_BASE];
+    if (!f) return false;
+    if (sec && f.sector !== sec) return false;
+    return !grp || grp === 'firms';
+  }
+  if (ref >= 0) {
+    if (sec || grp === 'firms') return false;
+    const p = s.people[ref];
+    return !!p && (!grp || inGroup(s, p, grp));
+  }
+  return false;
+}
+
+/**
+ * Append the targeted sale rules in force today for one side of a goods market (town, good)
+ * to `out` (payer 'buyer' → bids, 'seller' → asks). markets.openBooks keeps these per book.
+ */
+export function targetedSaleRules(s: SimState, town: TownId, good: number, payer: 'buyer' | 'seller', out: Levy[]): Levy[] {
+  for (const l of s.policy.levies) {
+    if (l.base !== 'sale' || l.payer !== payer || !targetedLive(s, l)) continue;
+    if (l.town >= 0 && l.town !== town) continue;
+    if (l.good >= 0 && l.good !== good) continue;
+    out.push(l);
+  }
+  return out;
+}
+
+/**
+ * Append the buyer-side targeted sale rules in force today in `town` (any good) that name
+ * people rather than firms (a group of people, or 'persons') to `out` — households.ts lets the
+ * people they name plan at their own expected prices.
+ */
+export function peopleSaleRules(s: SimState, town: TownId, out: Levy[]): Levy[] {
+  for (const l of s.policy.levies) {
+    if (l.base !== 'sale' || l.payer !== 'buyer' || !targetedLive(s, l)) continue;
+    if (l.sector && l.sector !== 'any') continue;
+    if (l.group === 'firms') continue;
+    if (l.town >= 0 && l.town !== town) continue;
+    out.push(l);
+  }
+  return out;
+}
+
+/** Signed per-order extras: fraction of the base price, and ¤ per unit (+ owed to the Treasury, − paid by it). */
+export interface Extras {
+  pct: number;
+  unit: number;
+}
+
+/** Would a targeted sale rule apply to a firm of trade `sector` (e.g. one that is only being planned)? */
+export function tradeMatches(l: Levy, sector: Sector): boolean {
+  if (l.sector && l.sector !== 'any' && l.sector !== sector) return false;
+  return !l.group || l.group === 'all' || l.group === 'firms';
+}
+
+/** Sum into `out` the extras that the rules of a precomputed list (targetedSaleRules) put on the orders of `who` (a trader's ref, or a trade). */
+export function targetedExtrasFrom(s: SimState, rules: readonly Levy[], who: Ref | Sector, out: Extras): Extras {
+  let pct = 0;
+  let unit = 0;
+  const trade = typeof who === 'string';
+  for (let i = 0; i < rules.length; i++) {
+    const l = rules[i];
+    if (trade ? !tradeMatches(l, who) : !targetMatches(s, l, who)) continue;
+    const r = l.dir * l.rate;
+    if (l.unit === 'pct') pct += r;
+    else if (l.unit === 'perUnit') unit += r;
+  }
+  out.pct = Number.isFinite(pct) ? pct : 0;
+  out.unit = Number.isFinite(unit) ? unit : 0;
+  return out;
+}
+
+const _tRules: Levy[] = [];
+
+/**
+ * The extras the targeted sale rules in force today put on the orders of `who` (a trader's
+ * ref, or a trade for a firm that is only planned) on one side of a goods market ({0, 0} when
+ * none apply). For planning: a firm's expected input price, a producer's expected net price,
+ * a household's expected price, an entrant's costings (markets.expectedGrossFor / expectedNetFor).
+ */
+export function targetedExtrasFor(s: SimState, town: TownId, good: number, payer: 'buyer' | 'seller', who: Ref | Sector, out: Extras = { pct: 0, unit: 0 }): Extras {
+  out.pct = 0;
+  out.unit = 0;
+  if (s.policy.levies.length === 0) return out;
+  _tRules.length = 0;
+  targetedSaleRules(s, town, good, payer, _tRules);
+  if (_tRules.length) targetedExtrasFrom(s, _tRules, who, out);
+  _tRules.length = 0;
+  return out;
+}
+
+/**
+ * Attribute ¤ that actually moved as targeted extras on `ref`'s orders (signed, + taken) for
+ * `qty` units at base price `basePrice` to the rules of `rules` that match `ref`, pro rata to
+ * their theoretical amounts (this absorbs wedge clamps and a Purse that could not pay in full).
+ */
+export function attributeTargetedActual(s: SimState, rules: readonly Levy[], ref: Ref, basePrice: number, qty: number, total: number): void {
+  if (!(qty > 0) || !total || !Number.isFinite(total)) return;
+  let th = 0;
+  let any = false;
+  for (let i = 0; i < rules.length; i++) {
+    const l = rules[i];
+    if (!targetMatches(s, l, ref)) continue;
+    any = true;
+    th += saleRuleAmount(l, basePrice, qty);
+  }
+  if (!any) return;
+  const k = Math.abs(th) > 1e-12 ? total / th : 0;
+  if (!k) return;
+  for (let i = 0; i < rules.length; i++) {
+    const l = rules[i];
+    if (targetMatches(s, l, ref)) noteRule(s, l, saleRuleAmount(l, basePrice, qty) * k);
+  }
 }
 
 /**
