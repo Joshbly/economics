@@ -11,7 +11,7 @@ import type { ActionResult, PlayerAction, SimState } from '../../../sim/types';
 import { h, setText, setTone, toggleClass, type Child } from '../../dom';
 import { DASH, fmtMoney, fmtMoneyShort, fmtQty, pluralize } from '../../format';
 import { act, type PrefillRequest } from '../../uiState';
-import { parseNumber } from '../../widgets';
+import { parseNumber, segmented } from '../../widgets';
 
 export type LeverId = 'mint' | 'trade' | 'levy' | 'limit' | 'window' | 'build' | 'transfer';
 export type Tone = 'good' | 'bad' | 'warn' | 'gold' | null;
@@ -398,4 +398,28 @@ export function bar(cls = ''): { el: HTMLElement; set(f: number): void } {
       fill.style.width = (v * 100).toFixed(1) + '%';
     },
   };
+}
+
+/**
+ * When in the day an order trades: all day (a third of the day's quantity at each market session,
+ * what is left carried to the next) or in one session only (0 opening, 1 midday, 2 close).
+ */
+export function sessionSeg(onChange: (v: number) => void): { el: HTMLElement; get value(): number; set(v: number): void } {
+  const seg = segmented<number>({
+    options: [
+      { value: -1, label: 'All day', title: 'Spread over the day’s three market sessions, like everyone’s orders: what one session leaves goes to the next' },
+      { value: 0, label: 'Opening', title: 'All of it at the opening market (morning)' },
+      { value: 1, label: 'Midday', title: 'All of it at the midday market' },
+      { value: 2, label: 'Close', title: 'All of it at the closing market (evening)' },
+    ],
+    value: -1,
+    size: 'sm',
+    onChange,
+  });
+  return seg;
+}
+
+/** "at the opening" / "at midday" / "at the close" / "" for an order's session. */
+export function sessionWords(session: number | undefined): string {
+  return session === 0 ? 'at the opening' : session === 1 ? 'at midday' : session === 2 ? 'at the close' : '';
 }

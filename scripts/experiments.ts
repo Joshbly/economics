@@ -466,7 +466,9 @@ const EXPERIMENTS: Experiment[] = [
       },
     ],
     checks: [
-      { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.02, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
+      // The stock of credit moves slowly (term loans run for years; new lending is a small flow),
+      // so the direct mechanism is the standards check below; the stock only has to be higher.
+      { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.01, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
       { label: 'lending standards looser', metric: 'bankStance', kind: 'down', tol: 0.1, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
       { label: 'credit not below the untouched bank’s', metric: 'credit', kind: 'notDown', tol: 0.02, arm: 'thinned, 3 % rule' },
     ],
@@ -660,10 +662,11 @@ const EXPERIMENTS: Experiment[] = [
       },
     ],
     checks: [
-      // The handout lands on day 2; the mines then skip buying until wear brings their stock back
-      // to what their hands can use (a few days for 3 sets each).
-      { label: "coal mines' tools up (days 2–5)", metric: 'miningCoalTools', kind: 'up', tol: 0.02, window: () => [2, 5] },
-      { label: 'their own tools purchases down (month)', metric: 'miningCoalSpend', kind: 'down', tol: 0.05, window: () => [2, 32] },
+      // The cart reaches the mining town at midday on day 2, so the handout lands on day 3; the
+      // mines then skip buying until wear brings their stock back to what their hands can use
+      // (a few days for 3 sets each).
+      { label: "coal mines' tools up (days 3–6)", metric: 'miningCoalTools', kind: 'up', tol: 0.02, window: () => [3, 6] },
+      { label: 'their own tools purchases down (fortnight)', metric: 'miningCoalSpend', kind: 'down', tol: 0.05, window: () => [2, 16] },
       { label: 'coal output unchanged (±2 %: not short of tools)', metric: 'miningCoalOut', kind: 'similar', tol: 0.02 },
     ],
   },

@@ -66,6 +66,7 @@ import { debtOf, quoteRate, requestLoan } from './bank';
 import { fairPrice } from './firms';
 
 const {
+  SESSION_TIMES,
   WAGON_CAPACITY,
   OIL_PER_TILE,
   TOOLS_PER_WAGON,
@@ -330,9 +331,12 @@ export function tradersBeginDay(s: SimState): void {
   // ---- deliveries ----
   const list = s.shipments;
   let k = 0;
+  // Traders' cargo due today lands in the morning; the Treasury's lands by the market session it
+  // reaches in time for (the opening's now, the rest before midday and the close: deliverTreasuryDue).
+  const openAt = s.day + SESSION_TIMES[0];
   for (let i = 0; i < list.length; i++) {
     const sh = list[i];
-    if (sh.arrive <= s.day + 1) deliver(s, sh);
+    if (sh.owner === STATE ? sh.arrive <= openAt + 1e-9 : sh.arrive <= s.day + 1) deliver(s, sh);
     else list[k++] = sh;
   }
   list.length = k;
@@ -370,6 +374,22 @@ export function tradersBeginDay(s: SimState): void {
     if (f.status !== 'active') continue;
     planFleet(s, f, tr, c);
   }
+}
+
+/** The Treasury's cargo that has arrived by `until` (a day's fraction: a market session) lands now. */
+export function deliverTreasuryDue(s: SimState, until: number): void {
+  const list = s.shipments;
+  let k = 0;
+  let any = false;
+  for (let i = 0; i < list.length; i++) {
+    const sh = list[i];
+    if (sh.owner === STATE && sh.arrive <= until + 1e-9) {
+      deliver(s, sh);
+      any = true;
+    } else list[k++] = sh;
+  }
+  list.length = k;
+  if (any) syncRouteTransit(s);
 }
 
 /** A closed trader's goods in other towns pass to the Treasury (goods are never destroyed silently). */
@@ -1291,7 +1311,7 @@ export interface CargoResult extends ActionResult {
  * Fails (nothing moves, nothing is paid) without a usable road, a trading house in `from`, or —
  * with auto-mint off — a Purse that covers the freight.
  */
-export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: GoodId, qty: number, opts?: { unitCost?: number; order?: number }): CargoResult {
+export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: GoodId, qty: number, opts?: { unitCost?: number; order?: number; depart?: number }): CargoResult {
   const no = (message: string): CargoResult => ({ ok: false, message, qty: 0, paid: 0, days: 0 });
   const nT = s.towns.length;
   if (!(from >= 0 && from < nT) || !(to >= 0 && to < nT)) return no('Unknown town.');
@@ -1306,6 +1326,8 @@ export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: G
   if (!r) return no(`No wagon road links ${s.towns[from].name} and ${s.towns[to].name}.`);
   const unitCost = opts?.unitCost !== undefined && Number.isFinite(opts.unitCost) ? Math.max(0, opts.unitCost) : 0;
   const order = opts?.order !== undefined && opts.order >= 0 ? opts.order : -1;
+  // Treasury wagons leave at noon (or after a later market session: opts.depart).
+  const dep = opts?.depart !== undefined && opts.depart >= s.day + 0.5 && opts.depart < s.day + 1 ? opts.depart : s.day + 0.5;
   const days = Math.max(1, Math.ceil(r.days));
   const A = s.towns[from].name;
   const B = s.towns[to].name;
@@ -1321,7 +1343,7 @@ export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: G
     onLine = Math.min(q, lo.room);
     tg[good] -= onLine;
     if (tg[good] < 1e-9) tg[good] = 0;
-    const sh = newShipment(s, STATE, from, to, good, onLine, unitCost + costPerUnit(s, lo.line), s.day + 0.5, s.day + 0.5 + r.days, onLine / WAGON_CAPACITY);
+    const sh = newShipment(s, STATE, from, to, good, onLine, unitCost + costPerUnit(s, lo.line), dep, dep + r.days, onLine / WAGON_CAPACITY);
     sh.line = lo.line.id;
     sh.order = order;
     firstId = sh.id;
@@ -1351,7 +1373,7 @@ export function sendTreasuryCargo(s: SimState, from: TownId, to: TownId, good: G
   if (own > 0) f.inv[G.oil] = Math.max(0, f.inv[G.oil] - own * tf);
   tg[good] -= rest;
   if (tg[good] < 1e-9) tg[good] = 0;
-  const sh = newShipment(s, STATE, from, to, good, rest, unitCost + paid / rest, s.day + 0.5, s.day + 0.5 + r.days, wagons);
+  const sh = newShipment(s, STATE, from, to, good, rest, unitCost + paid / rest, dep, dep + r.days, wagons);
   sh.order = order;
   bump(s, 'shipped_units', rest);
   bump(s, 'freight_cost', paid);

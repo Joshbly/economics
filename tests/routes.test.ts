@@ -10,7 +10,7 @@ import { Game } from '../src/sim/game';
 import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, mint, reconcileBank } from '../src/sim/ledger';
 import { addAsk, addBid, bookFor, clearAll, marketOf, openBooks, type Books } from '../src/sim/market/markets';
-import { dispatch, playerAfterClear, playerOrders, policyBeginDay } from '../src/sim/policy/player';
+import { dispatch, playerAfterClear, playerOrders, policyBeginDay, playerAfterSession, playerBeforeSession } from '../src/sim/policy/player';
 import { heldAtOrigin } from '../src/sim/policy/routes';
 import { rt, type Route } from '../src/sim/runtime';
 import { deserialize, serialize } from '../src/sim/save';
@@ -76,7 +76,8 @@ function marketDay(s: SimState, orders?: (books: Books) => void, spoil = false):
   const books = openBooks(s);
   orders?.(books);
   playerOrders(s, books);
-  clearAll(s, books);
+  // the engine's three market sessions, with the Treasury's steps between them
+  clearAll(s, books, { before: (k) => playerBeforeSession(s, books, k), after: (k) => playerAfterSession(s, k) });
   tradersDispatch(s, books);
   playerAfterClear(s, books);
   if (spoil) spoilage(s);
@@ -128,12 +129,12 @@ describe('supply routes — buy, carry, sell', () => {
     const { s, trader, bakery } = world();
     s.treasury.autoMint = true;
     bakery.inv[G.bread] = 60;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost', dispatch: 'daily', sellMargin: 0.1 } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, session: 0, route: { to: 1, sell: 'cost', dispatch: 'daily', sellMargin: 0.1 } }).id!; // bought at the opening
     const o = route(s, id);
     const cash0 = trader.cash;
     const purse0 = s.treasury.purse;
     const minted0 = s.treasury.minted;
-    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60));
+    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60, { session: 0 }));
     const p0 = marketOf(s, 0, G.bread).price;
     expect(o.filled).toBeCloseTo(60);
     expect(o.value).toBeCloseTo(60 * p0);
@@ -158,13 +159,16 @@ describe('supply routes — buy, carry, sell', () => {
     marketDay(s); // on the road
     expect(o.route!.inTransit).toBeCloseTo(60);
     expect(o.route!.waiting).toBe(0);
-    // arrives (depart day 0.5 + 2 days): waiting at landed cost, offered at landed × 1.1
+    // arrives (depart day 0.5 + 2 days): it lands before the midday session and waits at landed
+    // cost, offered at landed × 1.1 in the sessions that follow
     marketDay(s, () => {
-      expect(o.route!.waiting).toBeCloseTo(60);
-      expect(o.route!.inTransit).toBe(0);
-      expect(o.route!.landed).toBeCloseTo(p0 + fee / 60, 6);
-      expect(s.treasury.goods[1][G.bread]).toBeCloseTo(60);
+      expect(o.route!.inTransit).toBeCloseTo(60); // still on the road this morning
+      expect(o.route!.waiting).toBe(0);
     });
+    expect(o.route!.waiting).toBeCloseTo(60);
+    expect(o.route!.inTransit).toBe(0);
+    expect(o.route!.landed).toBeCloseTo(p0 + fee / 60, 6);
+    expect(s.treasury.goods[1][G.bread]).toBeCloseTo(60);
     // nobody bought: the ask was there (the curve's Treasury orders show it) and the stock waits
     const st = marketOf(s, 1, G.bread).curve!.state;
     expect(st[0]).toBe(1);
@@ -243,9 +247,9 @@ describe('supply routes — buy, carry, sell', () => {
     const { s, bakery } = world();
     s.treasury.autoMint = true;
     bakery.inv[G.bread] = 40;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 40, once: true, route: { to: 1, sell: 'market' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 40, once: true, session: 0, route: { to: 1, sell: 'market' } }).id!;
     const o = route(s, id);
-    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 40));
+    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 40, { session: 0 }));
     // a once-order ships everything at once (the buying is over), then pauses
     expect(o.route!.shippedTotal).toBeCloseTo(40);
     expect(o.enabled).toBe(false);
@@ -269,9 +273,9 @@ describe('supply routes — buy, carry, sell', () => {
     s.treasury.autoMint = false;
     bakery.inv[G.bread] = 100;
     mint(s, 300 + 1); // the bread (100 at ¤3) and a coin: not the freight
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 3, qty: 100, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 3, qty: 100, session: 0, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
     const o = route(s, id);
-    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 100), true);
+    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 100, { session: 0 }), true);
     expect(o.filled).toBeCloseTo(100);
     expect(s.shipments.length).toBe(0);
     expect(o.route!.shippedTotal).toBe(0);
@@ -292,11 +296,11 @@ describe('supply routes — buy, carry, sell', () => {
     const { s, bakery } = world();
     s.treasury.autoMint = true;
     bakery.inv[G.bread] = 120;
-    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
+    const id = dispatch(s, { type: 'placeOrder', market: breadIn(0), side: 'buy', price: 4, qty: 60, session: 0, route: { to: 1, sell: 'cost', dispatch: 'daily' } }).id!;
     const o = route(s, id);
-    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60));
+    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60, { session: 0 }));
     marketDay(s);
-    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60)); // first cargo lands, a second leaves
+    marketDay(s, (b) => addAsk(bookFor(b, 0, G.bread), FIRM_BASE + bakery.id, 3, 60, { session: 0 })); // first cargo lands, a second leaves
     expect(o.route!.waiting).toBeCloseTo(60);
     expect(o.route!.inTransit).toBeCloseTo(60);
     const r = dispatch(s, { type: 'cancelOrder', id });

@@ -2,7 +2,7 @@
 // Built from record factories; routes are injected into the runtime cache so the test
 // does not depend on map generation.
 import { beforeEach, describe, expect, it } from 'vitest';
-import { freightPerUnit, shipTreasuryGoods, traderOrders, tradersBeginDay, tradersDispatch } from '../src/sim/agents/traders';
+import { deliverTreasuryDue, freightPerUnit, shipTreasuryGoods, traderOrders, tradersBeginDay, tradersDispatch } from '../src/sim/agents/traders';
 import { OIL_PER_TILE, TOOLS_IDLE_WEAR_DAY, TOOLS_PER_WAGON, WAGON_CAPACITY, WAGON_WEAR_DAY } from '../src/sim/config';
 import { newFirm, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
@@ -272,6 +272,7 @@ describe('Treasury cargo', () => {
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
     s.day += 2;
     tradersBeginDay(s);
+    deliverTreasuryDue(s, s.day + 1); // Treasury cargo lands by the market session it reaches in time for
     expect(s.treasury.goods[1][G.bread]).toBeCloseTo(50, 8);
 
     expect(shipTreasuryGoods(s, 0, 1, G.bread, 10).ok).toBe(false); // nothing left

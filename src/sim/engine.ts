@@ -8,7 +8,7 @@ import type { SimState } from './types';
 import { isMonthStart } from './calendar';
 
 import { openBooks, clearAll } from './market/markets';
-import { policyBeginDay, playerOrders, playerAfterClear } from './policy/player';
+import { policyBeginDay, playerOrders, playerAfterClear, playerBeforeSession, playerAfterSession } from './policy/player';
 import { spoilRoutes } from './policy/routes';
 import { stockLevies, levyMonthRollover } from './policy/levies';
 import { householdsBeginDay, householdOrders, householdPortfolioOrders, householdsConsume } from './agents/households';
@@ -52,7 +52,9 @@ export function stepDay(s: SimState): void {
   foreignOrders(s, books);
   bankOrders(s, books);
   playerOrders(s, books);
-  clearAll(s, books);
+  // three market sessions — opening, midday, close — with the Treasury's cargo landing, its
+  // fills credited and its wagons leaving between them
+  clearAll(s, books, { before: (k) => playerBeforeSession(s, books, k), after: (k) => playerAfterSession(s, k) });
   tradersDispatch(s, books);
   playerAfterClear(s, books);
 

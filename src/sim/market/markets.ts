@@ -31,6 +31,8 @@ import {
   CURVE_POINTS,
   MARKET_EMA_INDICATIVE,
   MARKET_EMA_TRADED,
+  MARKET_SESSIONS,
+  SESSION_RELEASE,
   MARKET_HIST_DAYS,
   MARKET_VOL_EMA,
   PRICE_MIN,
@@ -70,6 +72,8 @@ export interface Books {
 }
 
 export interface OrderOpts {
+  /** Trade only in this session (0 opening, 1 midday, 2 close); default: spread over the day. */
+  session?: number;
   exempt?: boolean; // Treasury orders
   xPct?: number; // per-order extra levy (fraction of base) — e.g. port duties
   xUnit?: number; // per-order extra levy (¤/unit)
@@ -230,6 +234,9 @@ export function netStateOrders(books: Books): number {
       const n = Math.min(bids[i].qty, asks[j].qty);
       bids[i].qty -= n;
       asks[j].qty -= n;
+      // what cancelled is done for the day (a session's release is a share of what is left)
+      if (bids[i].left !== undefined) bids[i].left = Math.max(0, (bids[i].left as number) - n);
+      if (asks[j].left !== undefined) asks[j].left = Math.max(0, (asks[j].left as number) - n);
       total += n;
       if (bids[i].qty <= 1e-12) {
         bids[i].qty = 0;
@@ -267,6 +274,7 @@ function addOrder(book: Book, side: 0 | 1, ref: Ref, limit: number, qty: number,
   o.xPct = !national && opts?.xPct && Number.isFinite(opts.xPct) ? opts.xPct : 0;
   o.xUnit = !national && opts?.xUnit && Number.isFinite(opts.xUnit) ? opts.xUnit : 0;
   o.tag = opts?.tag ?? -1;
+  o.session = opts?.session !== undefined && opts.session >= 0 ? opts.session : -1;
   o.base = 0;
   o.filled = 0;
   o.price = 0;
@@ -729,50 +737,147 @@ function r4(x: number): number {
   return Math.round(x * 1e4) / 1e4;
 }
 
-const _ownQty: number[] = [];
+/** One market's tally over the day's sessions. */
+interface DayTally {
+  ref: number;
+  vol: number;
+  val: number;
+  sess: number[];
+  sessVol: number[];
+  shortage: number;
+  surplus: number;
+  bestBid: number;
+  bestAsk: number;
+  bound: ClearResult['bound'];
+}
 
-function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
-  const ref = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : m.price > 0 && Number.isFinite(m.price) ? m.price : 1;
+interface DayMarket {
+  book: Book;
+  m: MarketState;
+  kind: Kind;
+  t: DayTally;
+}
+
+const _day: DayMarket[] = [];
+
+function dayMarkets(s: SimState, books: Books): DayMarket[] {
+  _day.length = 0;
+  const n = Math.min(books.goods.length, s.markets.length);
+  const push = (book: Book | undefined, m: MarketState | undefined, kind: Kind) => {
+    if (!book || !m) return;
+    const ref = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : m.price > 0 && Number.isFinite(m.price) ? m.price : 1;
+    _day.push({ book, m, kind, t: { ref, vol: 0, val: 0, sess: [], sessVol: [], shortage: 0, surplus: 0, bestBid: -1, bestAsk: -1, bound: 'none' } });
+  };
+  for (let i = 0; i < n; i++) push(books.goods[i], s.markets[i], K_GOODS);
+  push(books.iou, s.iouMarket, K_IOU);
+  push(books.gold, s.goldMarket, K_GOLD);
+  return _day;
+}
+
+/** What each order puts into session k: its share of what is still to trade (or all of it in its own session). */
+function release(book: Book, k: number): boolean {
+  let any = false;
+  const last = MARKET_SESSIONS - 1;
+  const share = SESSION_RELEASE[k] ?? 1;
+  for (const side of [book.bids, book.asks]) {
+    for (let i = 0; i < side.length; i++) {
+      const o = side[i];
+      const left = o.left ?? 0;
+      const own = o.session ?? -1;
+      const q = !(left > 1e-12) ? 0 : own >= 0 ? (own === k || (own > last && k === last) ? left : 0) : k >= last ? left : left * share;
+      o.qty = q;
+      o.released = q;
+      o.filled = 0; // this session's fills (the auction is skipped when nothing is released)
+      o.paid = 0;
+      if (q > 0) any = true;
+    }
+  }
+  return any;
+}
+
+/** Clear one market's session: auction, settlement, the day's tally. */
+function clearSession(s: SimState, d: DayMarket, k: number, any: boolean): void {
+  const { book, kind, t } = d;
   let r: ClearResult;
   let vol = 0;
   let undelivered = 0;
-  let pOwn = NaN;
-  let ownTraded = false;
-  const hasOrders = book.bids.length > 0 || book.asks.length > 0;
-  if (!hasOrders) {
+  if (!any) {
     // Nobody came: the reference price stands, within the day's legal bounds (a limit on daily moves too).
-    let p0 = ref;
+    let p0 = t.ref;
     if (book.ceiling >= 0 && p0 > book.ceiling) p0 = book.ceiling;
     if (book.floor >= 0 && p0 < book.floor) p0 = book.floor;
     r = EMPTY_RESULT;
     r.price = p0;
+    r.demandAtPrice = 0;
+    r.supplyAtPrice = 0;
+    r.bestBid = -1;
+    r.bestAsk = -1;
+    r.bound = 'none';
   } else {
-    // The market's own price first: the same book cleared without the Treasury's orders.
-    const so = (book as PooledBook).stateOrders;
-    if (so && so.length) {
-      let any = false;
-      for (let i = 0; i < so.length; i++) {
-        _ownQty[i] = so[i].qty;
-        if (so[i].qty > 0) any = true;
-        so[i].qty = 0;
-      }
-      if (any) {
-        const rx = clearBook(book, ref);
-        pOwn = rx.price > 0 && Number.isFinite(rx.price) ? rx.price : NaN;
-        ownTraded = rx.volume > 0;
-      }
-      for (let i = 0; i < so.length; i++) so[i].qty = _ownQty[i];
-    }
-    r = clearBook(book, ref); // leaves every fill at 0 when nothing trades
+    r = clearBook(book, t.ref); // leaves every fill at 0 when nothing trades
     if (r.volume > 0) {
       const out = settle(s, book, r.price, kind);
       vol = out.volume;
       undelivered = out.undelivered;
     }
   }
-  const p = r.price > 0 && Number.isFinite(r.price) ? r.price : ref;
+  const p = r.price > 0 && Number.isFinite(r.price) ? r.price : t.ref;
+  t.sess[k] = p;
+  t.sessVol[k] = vol;
+  if (vol > 1e-9) {
+    t.vol += vol;
+    t.val += p * vol;
+  }
+  // What is left unmet / unsold is what the last session (which releases everything left) reports.
+  t.shortage = Math.max(0, r.demandAtPrice - vol);
+  t.surplus = Math.max(0, r.supplyAtPrice - undelivered - vol);
+  t.bestBid = r.bestBid;
+  t.bestAsk = r.bestAsk;
+  if (r.bound !== 'none') t.bound = r.bound;
+  for (const side of [book.bids, book.asks]) {
+    for (let i = 0; i < side.length; i++) {
+      const o = side[i];
+      const f = o.filled > 0 ? o.filled : 0;
+      o.filledDay = (o.filledDay ?? 0) + f;
+      o.paidDay = (o.paidDay ?? 0) + (o.paid > 0 ? o.paid : 0);
+      o.left = Math.max(0, (o.left ?? 0) - f);
+    }
+  }
+}
+
+const _ownQty: number[] = [];
+
+/** After the last session: the day's price (volume-weighted over the sessions), smoothed prices, the market's own price, history, curve. */
+function finalizeDay(s: SimState, d: DayMarket): void {
+  const { book, m, kind, t } = d;
+  const last = t.sess.length ? t.sess[t.sess.length - 1] : t.ref;
+  const traded = t.vol > 1e-9;
+  const p = traded ? t.val / t.vol : last;
+  const hasOrders = book.bids.length > 0 || book.asks.length > 0;
+  // the day's book as placed (for the market's own price and the curve)
+  for (const side of [book.bids, book.asks]) for (let i = 0; i < side.length; i++) side[i].qty = side[i].dayQty ?? side[i].qty;
+  let pOwn = NaN;
+  let ownTraded = false;
+  if (hasOrders) {
+    const so = (book as PooledBook).stateOrders;
+    let anyState = false;
+    if (so && so.length) {
+      for (let i = 0; i < so.length; i++) {
+        _ownQty[i] = so[i].qty;
+        if (so[i].qty > 0) anyState = true;
+        so[i].qty = 0;
+      }
+      if (anyState) {
+        // The market's own price: the day's book cleared without the Treasury's orders.
+        const rx = clearBook(book, t.ref);
+        pOwn = rx.price > 0 && Number.isFinite(rx.price) ? rx.price : NaN;
+        ownTraded = rx.volume > 0;
+      }
+      for (let i = 0; i < so.length; i++) so[i].qty = _ownQty[i];
+    }
+    clearBook(book, t.ref); // converts every limit of the day's book to base terms for the curve (no money moves)
+  }
   const w = book.wedge;
-  const traded = vol > 1e-9;
   m.price = p;
   if (kind === K_GOODS) {
     const g = p * (1 + w.bPct) + w.bUnit;
@@ -784,40 +889,50 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
     m.net = p;
   }
   const base = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : p;
-  // own price: without the Treasury (the actual price on days it has no orders here)
   const hadState = Number.isFinite(pOwn);
   const own = hadState ? pOwn : p;
   const ob = (m.ownEma ?? 0) > 0 && Number.isFinite(m.ownEma) ? (m.ownEma as number) : base;
   m.own = own;
   m.ownEma = Math.max(PRICE_MIN, ob + ((hadState ? ownTraded : traded) ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (own - ob));
   m.ema = Math.max(PRICE_MIN, base + (traded ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (p - base));
-  m.volume = vol;
-  m.volEma = (Number.isFinite(m.volEma) ? m.volEma : 0) + MARKET_VOL_EMA * (vol - (Number.isFinite(m.volEma) ? m.volEma : 0));
+  m.volume = t.vol;
+  m.volEma = (Number.isFinite(m.volEma) ? m.volEma : 0) + MARKET_VOL_EMA * (t.vol - (Number.isFinite(m.volEma) ? m.volEma : 0));
   m.traded = traded;
-  m.shortage = Math.max(0, r.demandAtPrice - vol);
-  m.surplus = Math.max(0, r.supplyAtPrice - undelivered - vol);
-  m.bestBid = r.bestBid;
-  m.bestAsk = r.bestAsk;
+  m.shortage = t.shortage;
+  m.surplus = t.surplus;
+  m.bestBid = t.bestBid;
+  m.bestAsk = t.bestAsk;
+  m.sess = t.sess.map(r4);
+  m.sessVol = t.sessVol.map(r4);
   pushCapped(m.hist, p, MARKET_HIST_DAYS);
-  pushCapped(m.volHist, vol, MARKET_HIST_DAYS);
-  snapshot(m, book, p, vol, hasOrders);
+  pushCapped(m.volHist, t.vol, MARKET_HIST_DAYS);
+  snapshot(m, book, p, t.vol, hasOrders);
+  // the day's fills stay on the orders for the evening (traders' dispatch, Treasury bookkeeping)
+  for (const side of [book.bids, book.asks]) {
+    for (let i = 0; i < side.length; i++) {
+      const o = side[i];
+      o.filled = o.filledDay ?? o.filled;
+      o.paid = o.paidDay ?? o.paid;
+      o.price = p;
+    }
+  }
 
   const acc = s.stats.acc;
   if (kind === K_GOODS) {
     const good = book.good;
-    if (vol > 0) {
-      addAcc(acc, K_VOL[good], vol);
-      addAcc(acc, K_VAL[good], p * vol);
+    if (traded) {
+      addAcc(acc, K_VOL[good], t.vol);
+      addAcc(acc, K_VAL[good], t.val);
     }
     if (m.shortage > 0) addAcc(acc, K_SHORT[good], m.shortage);
-  } else if (vol > 0) {
+  } else if (traded) {
     const tag = kind === K_IOU ? 'iou' : 'gold';
-    addAcc(acc, 'vol_' + tag, vol);
-    addAcc(acc, 'val_' + tag, p * vol);
+    addAcc(acc, 'vol_' + tag, t.vol);
+    addAcc(acc, 'val_' + tag, t.val);
   }
-  if (r.bound !== 'none') {
+  if (t.bound !== 'none') {
     const pb = book as PooledBook;
-    noteBinding(s, r.bound === 'ceiling' ? (pb.ceilKind ?? 'priceMax') : (pb.floorKind ?? 'priceMin'), book.good, book.town);
+    noteBinding(s, t.bound === 'ceiling' ? (pb.ceilKind ?? 'priceMax') : (pb.floorKind ?? 'priceMin'), book.good, book.town);
   }
 }
 
@@ -860,14 +975,45 @@ const EMPTY_RESULT: ClearResult = {
  *    plus levy_take / levy_give / levyb_<base> from the levy legs.
  *    foreign.importsQty/exportsQty/importValue/exportValue are incremented here too.
  */
-export function clearAll(s: SimState, books: Books): void {
-  const n = Math.min(books.goods.length, s.markets.length);
-  for (let i = 0; i < n; i++) {
-    const m = s.markets[i];
-    if (m) clearOne(s, books.goods[i], m, K_GOODS);
+/** Between-session hooks (the Treasury's: cargo landing, its orders' fills, its wagons leaving). */
+export interface SessionHooks {
+  /** Before session k (0 = the opening) is released. */
+  before?(k: number): void;
+  /** After session k has settled (orders' `filled` / `paid` are that session's). */
+  after?(k: number): void;
+}
+
+/**
+ * The day's market: every book clears MARKET_SESSIONS times (opening, midday, close). Each
+ * session releases SESSION_RELEASE of what every order still has to trade (orders aimed at one
+ * session: all of it there, nothing elsewhere); the Treasury's own crossing orders cancel
+ * before each session (netStateOrders); fills settle as each session clears (money and goods
+ * move then). After the close each market records the day: volume-weighted price, smoothed
+ * prices, its own price without the Treasury, history, the day's curve — and every order is left
+ * holding its whole day (qty, filled, paid) for the evening.
+ */
+export function clearAll(s: SimState, books: Books, hooks?: SessionHooks): void {
+  const day = dayMarkets(s, books);
+  for (const d of day) {
+    for (const side of [d.book.bids, d.book.asks]) {
+      for (let i = 0; i < side.length; i++) {
+        const o = side[i];
+        o.dayQty = o.qty;
+        o.left = o.qty;
+        o.filledDay = 0;
+        o.paidDay = 0;
+      }
+    }
   }
-  if (books.iou) clearOne(s, books.iou, s.iouMarket, K_IOU);
-  if (books.gold) clearOne(s, books.gold, s.goldMarket, K_GOLD);
+  const anyIn: boolean[] = [];
+  for (let k = 0; k < MARKET_SESSIONS; k++) {
+    hooks?.before?.(k);
+    for (let i = 0; i < day.length; i++) anyIn[i] = release(day[i].book, k);
+    netStateOrders(books);
+    for (let i = 0; i < day.length; i++) clearSession(s, day[i], k, anyIn[i]);
+    hooks?.after?.(k);
+  }
+  for (const d of day) finalizeDay(s, d);
 }
 
 const VOID_MARKET: MarketState = {

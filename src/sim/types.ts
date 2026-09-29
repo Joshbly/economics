@@ -461,6 +461,9 @@ export interface MarketState {
    */
   own?: number;
   ownEma?: number;
+  /** Today's sessions (opening, midday, close): price and volume of each. */
+  sess?: number[];
+  sessVol?: number[];
 }
 
 /** Transient order (lives only during one day's market phase). */
@@ -478,9 +481,20 @@ export interface Order {
   tag: number;
   // ---- set by the auction ----
   base: number; // limit converted to base-price terms
-  filled: number; // units executed
+  filled: number; // units executed (during a session: in that session; after the day: in all)
   price: number; // base price of execution
   paid: number; // ¤ actually paid (buyer, gross) or received (seller, net)
+  // ---- the day's three sessions (markets.clearAll) ----
+  /** The day's quantity as placed (qty is each session's release while they run). */
+  dayQty?: number;
+  /** Still to trade today. */
+  left?: number;
+  /** Released in the current session (before the Treasury's own crossing orders cancelled). */
+  released?: number;
+  filledDay?: number;
+  paidDay?: number;
+  /** Trade only in this session (0 opening, 1 midday, 2 close); absent/−1 = spread over the day. */
+  session?: number;
 }
 
 export interface Book {
@@ -656,6 +670,11 @@ export interface PlayerOrder {
   /** Units of today's order cancelled against the Treasury's own opposite order in the same market (it never trades with itself). */
   nettedToday?: number;
   /**
+   * When in the day it trades: 0 the opening, 1 midday, 2 the close — all of the day's quantity in
+   * that session, none elsewhere. Absent: spread over the day's three sessions like everyone's.
+   */
+  session?: number;
+  /**
    * Labour orders only. 'projects': each morning the number of people employed is re-set to
    * what the Treasury's building projects in the town can use (construction.treasuryCrewWanted),
    * never more than `qty`; as projects finish the crew is let go. Absent: a fixed number (`qty`).
@@ -786,6 +805,8 @@ export type PlayerAction =
       band?: number;
       /** 'follow' orders: 'patient' (default) or 'eager' (see PlayerOrder.pace). */
       pace?: OrderPace;
+      /** Trade in one market session only (0 opening, 1 midday, 2 close); default: all day. */
+      session?: number;
       /** Labour orders: staff the town's Treasury projects automatically (`qty` = the most to employ). */
       staff?: 'projects';
     }
@@ -793,6 +814,8 @@ export type PlayerAction =
       type: 'updateOrder';
       id: number;
       patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until' | 'priceMode' | 'band' | 'pace'>> & {
+        /** Market session to trade in (0 opening, 1 midday, 2 close), or −1 for all day. */
+        session?: number;
         /** Labour orders: 'projects' = staff the town's Treasury projects automatically; 'fixed' = a set number. */
         staff?: 'projects' | 'fixed';
         /** Supply routes only: change how goods are offered at the destination. */

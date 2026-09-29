@@ -4,7 +4,7 @@
 // Reads ui.game.s (read-only). Menu commands are supplied by the app shell.
 // ============================================================================
 import { SEASONS, seasonOf } from '../sim/calendar';
-import { DAYS_PER_YEAR } from '../sim/config';
+import { DAYS_PER_YEAR, SESSION_TIMES } from '../sim/config';
 import type { SimState } from '../sim/types';
 import { h, listen, setText, setTone, toggleClass } from './dom';
 import { fmtDayLong, fmtIndex, fmtInt, fmtMoney, fmtMoneyShort, fmtPct, fmtPctSigned, fmtPrice, fmtPts, fmtSigned } from './format';
@@ -418,6 +418,11 @@ export function createTopbar(actions: TopbarActions): Topbar {
     paintSpeed();
     dayFill.style.width = Math.round(Math.max(0, Math.min(1, ui.dayFrac)) * 100) + '%';
     if (!s) return;
+    // the markets meet three times a day: name the session the clock is near
+    const f = ui.dayFrac;
+    const sessName = Math.abs(f - SESSION_TIMES[0]) < 0.06 ? 'opening market' : Math.abs(f - SESSION_TIMES[1]) < 0.06 ? 'midday market' : Math.abs(f - SESSION_TIMES[2]) < 0.06 ? 'closing market' : '';
+    const seasonText = SEASONS[seasonOf(s.day)] + (sessName ? ' · ' + sessName : '');
+    if (seasonLab.textContent !== seasonText) setText(seasonLab, seasonText);
     const name = s.settings?.realmName || 'The Realm';
     if (name !== lastRealm) {
       lastRealm = name;
@@ -428,7 +433,6 @@ export function createTopbar(actions: TopbarActions): Topbar {
     lastDay = s.day;
     setText(dateMain, fmtDayLong(s.day));
     const season = seasonOf(s.day);
-    setText(seasonLab, SEASONS[season]);
     seasonDot.className = 'season-dot season-' + season;
     for (const x of inds) {
       let r: IndReading;

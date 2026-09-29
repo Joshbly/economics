@@ -30,6 +30,8 @@ import {
   row,
   run,
   safe,
+  sessionSeg,
+  sessionWords,
   setNumUnit,
   subhead,
   submitButton,
@@ -174,6 +176,13 @@ export function tradeLever(): Lever {
     },
   });
   const paceRow = dynRow('Bidding', paceSeg.el);
+  let when = -1; // market session: −1 all day, 0 opening, 1 midday, 2 close
+  const whenSeg = sessionSeg((v) => {
+    when = v;
+    edited();
+  });
+  const whenHint = hint();
+  const whenRow = dynRow('When', whenSeg.el, whenHint);
   const priceRow = dynRow('Price limit', price.el, pctChips);
   const priceHint = hint();
   priceRow.ctl.appendChild(priceHint);
@@ -211,6 +220,7 @@ export function tradeLever(): Lever {
     paceRow.el,
     priceRow.el,
     qtyRow.el,
+    whenRow.el,
     durRow,
     totalRow,
     formFoot(preview, msg, place),
@@ -473,6 +483,13 @@ export function tradeLever(): Lever {
     const sign = side === 'buy' ? '+' : '−';
     const banded = canFollow && pmode !== 'fixed' && pmode !== 'any';
     show(paceRow.el, banded);
+    show(whenRow.el, kind !== 'labor');
+    setText(
+      whenHint,
+      when < 0
+        ? 'Every market meets three times a day. All day spreads the order over the opening, midday and the close, like everyone’s.'
+        : `Only ${sessionWords(when)}: the whole day’s quantity goes into that session — where sellers and buyers bring a third of their day.`,
+    );
     const pb = paceSeg.el.querySelectorAll('button');
     if (pb.length === 2) {
       setText(pb[0], side === 'buy' ? 'As low as it can' : 'As high as it can');
@@ -567,6 +584,7 @@ export function tradeLever(): Lever {
         priceMode: kind === 'labor' || pmode === 'fixed' ? 'fixed' : pmode === 'any' ? 'any' : 'follow',
         band: pmode === 'fixed' || pmode === 'any' ? undefined : bandOf(pmode),
         pace: kind === 'labor' || pmode === 'fixed' || pmode === 'any' ? undefined : pace,
+        session: kind === 'labor' || when < 0 ? undefined : when,
       },
       msg,
       '✓ Order placed — it is listed under In force.',

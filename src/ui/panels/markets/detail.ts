@@ -452,7 +452,7 @@ export function createDetail(hooks: DetailHooks): Detail {
     reading.hidden = realm;
     if (realm) {
       setText(auctionSub, '');
-      setText(auctionNote, 'Each town clears its own auction at midday. Pick a town above to see the bids and asks behind its price.');
+      setText(auctionNote, 'Each town’s market meets three times a day — the opening, midday and the close. Pick a town above to see the bids and asks behind its price.');
       auctionNote.hidden = false;
       return;
     }
@@ -460,7 +460,13 @@ export function createDetail(hooks: DetailHooks): Detail {
     const c = m?.curve ?? null;
     const unit = unitOf(good);
     curve.set(c, { unit, reference: m && m.ema > 0 ? m.ema : undefined });
-    setText(auctionSub, c ? `${Math.floor(c.bids.length / 2)} bid steps · ${Math.floor(c.asks.length / 2)} ask steps` : '');
+    const ss = m?.sess;
+    const sv = m?.sessVol;
+    const sessText =
+      ss && ss.length === 3
+        ? ` · today: opening ${fmtPrice(ss[0])}${sv ? ` (${fmtQty(sv[0])})` : ''}, midday ${fmtPrice(ss[1])}${sv ? ` (${fmtQty(sv[1])})` : ''}, close ${fmtPrice(ss[2])}${sv ? ` (${fmtQty(sv[2])})` : ''}`
+        : '';
+    setText(auctionSub, (c ? `${Math.floor(c.bids.length / 2)} bid steps · ${Math.floor(c.asks.length / 2)} ask steps` : '') + sessText);
     replace(reading, icon('info', 15), h('span', null, readCurve(c, m, unit)));
   }
 

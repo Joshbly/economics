@@ -318,7 +318,7 @@ function routeRow(o: PlayerOrder, state: () => SimState | null): RouteRow {
     offerChip('any price', 'Offer them for whatever the destination auction pays', { sell: 'market' }),
     h('span', { class: 'lv-rt-offer-k' }, 'Wagons:'),
     h('button', { class: 'chip lv-chip', type: 'button', title: 'Wait for a nearly full wagon (or as long as the goods keep): low freight per unit', onClick: () => run({ type: 'updateOrder', id, patch: { route: { dispatch: 'full' } } }, null) }, 'full'),
-    h('button', { class: 'chip lv-chip', type: 'button', title: 'Rush: send whatever was bought every day — and what is held now, tonight', onClick: () => run({ type: 'updateOrder', id, patch: { route: { dispatch: 'daily' } } }, null) }, 'every day'),
+    h('button', { class: 'chip lv-chip', type: 'button', title: 'Rush: send what each market session bought as soon as it closes — and what is held now, after the next one', onClick: () => run({ type: 'updateOrder', id, patch: { route: { dispatch: 'daily' } } }, null) }, 'right away'),
   );
   const el = h(
     'div',

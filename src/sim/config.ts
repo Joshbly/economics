@@ -690,6 +690,17 @@ export const IOU_PAR = 100;
 // ---- Markets & the player's primitives (market/*, policy/*) -------------------
 // -- added by market-policy engineer --
 /** Market reference price EMA: speed when the market traded today / when only an indicative price exists. */
+/**
+ * Market sessions a day: every market clears at the opening, at midday and at the close. The
+ * orders placed for the day are released a share at a time (SESSION_RELEASE of what is still to
+ * trade), so a day left alone clears at one price three times; what the sessions add is what
+ * happens between them (Treasury orders aimed at one session, cargo landing, Treasury wagons
+ * leaving). SESSION_TIMES: when each session is held (fraction of the day).
+ */
+export const MARKET_SESSIONS = 3;
+export const SESSION_TIMES = [0.3, 0.5, 0.7];
+export const SESSION_RELEASE = [1 / 3, 1 / 2, 1];
+
 export const MARKET_EMA_TRADED = 0.15;
 export const MARKET_EMA_INDICATIVE = 0.03;
 /** A one-sided book (bids but no asks, or asks but no bids) quotes an indicative price at most this share above/below the reference. */

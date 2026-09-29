@@ -20,7 +20,7 @@ import type { OrderRoute, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, show, toggleClass } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { goodOptions, numberInput, segmented, selectInput, swatch, townOptions } from '../../widgets';
-import { chip, fin, fmtM, fmtQ, formEl, formFoot, goodName, hint, msgLine, niceRound, optNumber, run, safe, setNumUnit, submitButton, townName, unitOf, unitsOf } from './common';
+import { chip, fin, fmtM, fmtQ, formEl, formFoot, goodName, hint, msgLine, niceRound, optNumber, run, safe, sessionSeg, setNumUnit, submitButton, townName, unitOf, unitsOf } from './common';
 
 export type SellMode = OrderRoute['sell'];
 type Dur = 'once' | 'days' | 'standing';
@@ -207,6 +207,8 @@ export function routeComposer(): RouteComposer {
     onChange: (v) => ((bmode = v), edited()),
   });
   let bpace: 'patient' | 'eager' = 'patient';
+  let bwhen = -1; // market session to buy in (−1 all day)
+  const buyWhen = sessionSeg((v) => ((bwhen = v), edited()));
   const buyPaceSeg = segmented<'patient' | 'eager'>({
     options: [
       { value: 'patient', label: 'As low as it can', title: 'Start at the going price; step up towards the limit only on days the purchase falls short' },
@@ -224,6 +226,7 @@ export function routeComposer(): RouteComposer {
     h('div', { class: 'lv-step-line' }, goodSel.el, h('span', { class: 'lv-w' }, 'in'), fromSel.el),
     h('div', { class: 'lv-step-line' }, buyModeSeg.el),
     h('div', { class: 'lv-step-line' }, buyPaceSeg.el),
+    h('div', { class: 'lv-step-line' }, buyWhen.el),
     h('div', { class: 'lv-step-line' }, upTo, price.el, followText, h('span', { class: 'lv-nowrap' }, h('span', { class: 'lv-w' }, '×'), qty.el)),
     buyChips,
     buyHint,
@@ -243,7 +246,7 @@ export function routeComposer(): RouteComposer {
   const dispatchSeg = segmented<'full' | 'daily'>({
     options: [
       { value: 'full', label: 'Full wagons', title: 'Purchases wait for a nearly full wagon — or until they have waited as long as they keep — so freight per unit stays low' },
-      { value: 'daily', label: 'Every day', title: 'Rush: whatever was bought leaves each day — quicker, dearer per unit when loads are small' },
+      { value: 'daily', label: 'Right away', title: 'Rush: whatever was bought leaves after each market session — quickest, dearer per unit when loads are small' },
     ],
     value: dispatch,
     size: 'sm',
@@ -504,7 +507,7 @@ export function routeComposer(): RouteComposer {
     }
     show(fillRow, hl.ok && q > 0 && hl.perUnit > hl.perUnitFull * 1.02);
     carryHint.title = hl.ok
-      ? `Paid from the Purse to ${townName(s, from)}’s trading house for every wagon: its carters’ wages, fuel and wagon wear for the round trip, plus ${fmtPct(TREASURY_FREIGHT_PREMIUM)}. A part-filled wagon costs as much as a full one: with Full wagons, purchases wait in ${townName(s, from)} until a wagon is ${fmtPct(ROUTE_FULL_SHARE)} full or they have waited ${plural(routeHoldDays(good), 'day')} (as long as ${goodName(good).toLowerCase()} keeps); a Treasury freight line on the road takes them at once. Every day sends them daily.`
+      ? `Paid from the Purse to ${townName(s, from)}’s trading house for every wagon: its carters’ wages, fuel and wagon wear for the round trip, plus ${fmtPct(TREASURY_FREIGHT_PREMIUM)}. A part-filled wagon costs as much as a full one: with Full wagons, purchases wait in ${townName(s, from)} until a wagon is ${fmtPct(ROUTE_FULL_SHARE)} full or they have waited ${plural(routeHoldDays(good), 'day')} (as long as ${goodName(good).toLowerCase()} keeps); a Treasury freight line on the road takes them at once. Right away sends what each market session bought as soon as it closes (wagons leave at noon or after a later session).`
       : '';
     // ③ offer hint
     if (mode === 'market') setText(wMarket, `Everything that arrives is offered in ${townName(s, to)}’s auction at any price. When buyers are few, a large delivery sells for little.`);
@@ -581,6 +584,7 @@ export function routeComposer(): RouteComposer {
         priceMode: bmode === 'fixed' ? 'fixed' : bmode === 'any' ? 'any' : 'follow',
         band: bmode === 'fixed' || bmode === 'any' ? undefined : bandOf(bmode),
         pace: bmode === 'fixed' || bmode === 'any' ? undefined : bpace,
+        session: bwhen < 0 ? undefined : bwhen,
       },
       msg,
       '✓ Route started — follow it under Stores & wagons below.',

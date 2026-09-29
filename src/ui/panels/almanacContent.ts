@@ -57,7 +57,9 @@ Everything else is up to you to discover.`,
     sections: [
       {
         title: 'The daily auction',
-        body: `Every town holds one market for each good, every day, at midday. Buyers bring bids ("I will pay up to ¤5.10 for 3 loaves"), sellers bring asks ("I will sell 40 loaves for at least ¤4.20"). The market finds the single price at which the most goods change hands, and everyone who trades pays or receives that same price.
+        body: `Every town holds a market for each good three times a day — at the **opening**, at **midday** and at the **close**. Buyers bring bids ("I will pay up to ¤5.10 for 3 loaves"), sellers bring asks ("I will sell 40 loaves for at least ¤4.20"). Each session finds the single price at which the most goods change hands, and everyone who trades in it pays or receives that same price.
+
+People and workshops decide in the morning what they want for the day and bring a third of it to each session; whatever one session leaves (unsold, or not bought) goes to the next. Left alone, the three sessions clear at the same price. What makes them differ is what happens between them: your orders aimed at one session, wagons that arrive during the day, goods you bought in the morning and sell in the evening. The day's price is the average of the three, weighed by what each traded.
 
 If more people want to buy at that price than there are goods, the highest bidders are served first. People who needed bread most (because their pantry is empty) bid highest.
 
@@ -91,7 +93,7 @@ Price lines and daily moves can also be set for the IOU and gold markets.`,
       },
       {
         title: 'Your orders in the market',
-        body: `Your orders are part of the same auction. A large order to buy pushes the price up for everyone; a large order to sell pushes it down. An order to buy an unlimited quantity at a set price means the price can never fall below it while your Purse lasts. An order to sell unlimited quantities at a set price caps it — while your stores last.
+        body: `Your orders are part of the same auction. An order can trade **all day** (a third at each session, like everyone's) or in one session only — all of its day at the opening, at midday or at the close. You never trade with yourself: your own buy and sell orders that would meet in a session cancel first, and only the difference goes to market; a purchase at the opening and a sale at the close are two trades. A large order to buy pushes the price up for everyone; a large order to sell pushes it down. An order to buy an unlimited quantity at a set price means the price can never fall below it while your Purse lasts. An order to sell unlimited quantities at a set price caps it — while your stores last.
 
 Everyone who trades in a market on a day pays the same price — the day's auction price. Your limit is only the most you will pay (or the least you will take); a large order moves the day's price itself, because it takes supply that others would have bought.
 

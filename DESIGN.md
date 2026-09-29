@@ -594,7 +594,16 @@ openBooks           create all order books (with levy wedges and limits)
   traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
   playerOrders (incl. supply routes' asks at their destinations and the freight
   lines' bids for tools and oil)
-clearAll            auctions + settlement (money via ledger, goods moved)
+clearAll            three market sessions (MARKET_SESSIONS; SESSION_TIMES 0.3 / 0.5 / 0.7): each
+                    releases SESSION_RELEASE (⅓, ½, all) of what every order still has to trade (an
+                    order aimed at one session — PlayerOrder.session — all of it there), the
+                    Treasury's crossing orders cancel (netStateOrders), auction + settlement (money
+                    via ledger, goods moved); between sessions (hooks) Treasury cargo due by then
+                    lands (traders.deliverTreasuryDue), supply routes offer what now waits, the
+                    Treasury's sell orders offer what it holds now, fills are credited and route
+                    wagons leave (Right away: after each session; departures ≥ noon). After the
+                    close each market records the day (volume-weighted price, EMA, own price,
+                    history, curve with the day's quantities); orders keep the day's totals.
 tradersDispatch     filled purchases → shipments (loads on a freight line pay its fare)
 playerAfterClear    Treasury order bookkeeping; supply routes: credit sales, load the purchases;
                     freight lines: purchases into their stores, today's loads leave, accounts

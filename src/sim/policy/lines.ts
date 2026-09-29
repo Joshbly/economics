@@ -355,7 +355,8 @@ function scratch(s: SimState): LineScratch {
   return c;
 }
 
-const departsToday = (s: SimState, depart: number) => Math.abs(depart - (s.day + 0.5)) < 1e-6;
+// Cargo leaves at noon or after a later market session (never before 0.5 of the day).
+const departsToday = (s: SimState, depart: number) => depart >= s.day + 0.5 - 1e-6 && depart < s.day + 1;
 
 /** Units loaded onto the line today so far, [a→b, b→a] (cargo leaving today, from the shipments). */
 function loadedToday(s: SimState, L: FreightLine): [number, number] {
