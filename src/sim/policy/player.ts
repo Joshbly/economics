@@ -21,6 +21,8 @@ import {
   PLAYER_MAX_WORKERS,
   PLAYER_MIN_RATE,
   PRICE_MIN,
+  IOU_SELL_FLOOR_MIN_SHARE,
+  SELL_FLOOR_WARN_SHARE,
 } from '../config';
 import { dateLabel } from '../calendar';
 import { GOODS, N_GOODS, SECTORS } from '../goods';
@@ -922,10 +924,6 @@ function lowerFirst(t: string): string {
 
 // Sell-floor guards (local to the order checks). A sell order clears at whatever the bids
 // reach down to its floor, so a ¤0 floor with a large quantity sells at PRICE_MIN.
-/** A new-IOU floor must be at least this share of today's IOU price. */
-const IOU_SELL_FLOOR_MIN_SHARE = 0.1;
-/** Warn when a sell floor is below this share of today's price. */
-const SELL_FLOOR_WARN_SHARE = 0.5;
 
 /** Today's reference price of a Treasury order's market (0 if none known). */
 function orderRefPrice(s: SimState, m: OrderMarket): number {
@@ -1151,6 +1149,7 @@ function countRecipients(s: SimState, group: TransferGroup, town: TownId): numbe
 export function executeTransfer(s: SimState, group: TransferGroup, town: TownId, amount: number, dir: 1 | -1): number {
   if (!(amount > 0) || !Number.isFinite(amount)) return 0;
   if (group === 'bank') {
+    // Stats count Bank transfers from the 'recap'/'transfer' flows (stats.ts), not here.
     if (dir === 1) return pay(s, STATE, BANK, amount, 'recap');
     // A seizure takes at most the Bank's own capital (and reserves): the ledger lets the Bank
     // pay any sum, which would sink its capital below zero and bail in every depositor.

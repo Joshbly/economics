@@ -862,3 +862,9 @@ export const STATS_INFL_MIN_SPAN = 10;
 export const STATS_SIG_DIGITS = 6;
 /** Wealth share reported as `top10` (the richest this share of households). */
 export const STATS_TOP_SHARE = 0.1;
+
+// ---- Player order sanity (policy/player.ts) ---------------------------------
+/** A new-IOU floor must be at least this share of today's IOU price. */
+export const IOU_SELL_FLOOR_MIN_SHARE = 0.1;
+/** Warn when a sell floor is below this share of today's price. */
+export const SELL_FLOOR_WARN_SHARE = 0.5;
