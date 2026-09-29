@@ -36,7 +36,7 @@ note explains the premise the first time; reopen it from the menu (☰ →
 Welcome & controls). The **Almanac** tab explains how everything works.
 
 Controls: <kbd>Space</kbd> pause / resume · <kbd>1</kbd>–<kbd>5</kbd> speed
-(<kbd>0</kbd> pauses) · drag or two-finger scroll to pan · pinch or
+(<kbd>0</kbd> pauses) · drag or two-finger scroll to pan · pinch,
 mouse wheel or <kbd>+</kbd>/<kbd>−</kbd> to zoom · click anything to inspect it ·
 <kbd>Esc</kbd> to close or cancel · <kbd>[</kbd> <kbd>]</kbd> to switch tabs ·
 <kbd>?</kbd> Almanac · <kbd>⌘S</kbd> save · <kbd>`</kbd> frame-rate overlay.
