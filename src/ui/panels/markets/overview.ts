@@ -17,6 +17,8 @@ import { drawSparkline, goodColor, segmented, T, tipKV, tipNote, tipTitle } from
 import { attachSideTip } from './sidetip';
 import {
   badgeOf,
+  balanceAt,
+  balanceWords,
   fin,
   GOLD_GOOD,
   iouYield,
@@ -133,8 +135,8 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     { class: 'mk-legend' },
     h('span', { class: 'mk-lg' }, h('span', { class: 'mk-up' }, '▲'), h('span', { class: 'mk-dn' }, '▼'), ' 30-day change'),
     h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-vol' }, '178'), ' traded today'),
-    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-cell' }, h('span', { class: 'mk-badge mk-badge-shortage' })), ' buyers went short'),
-    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-cell' }, h('span', { class: 'mk-badge mk-badge-surplus' })), ' left unsold'),
+    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-cell' }, h('span', { class: 'mk-badge mk-badge-shortage' })), ' buyers went short (14 days)'),
+    h('span', { class: 'mk-lg' }, h('span', { class: 'mk-lg-cell' }, h('span', { class: 'mk-badge mk-badge-surplus' })), ' left unsold (14 days)'),
     h('span', { class: 'mk-lg mk-lg-dim' }, h('span', { class: 'mk-lg-idle' }, '¤4.20'), ' no trade today'),
   );
   const el = h(
@@ -293,8 +295,12 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
     const ch = relChange(hist, CHANGE_DAYS);
     out.push(tipKV('30-day change', Number.isFinite(ch) ? (ch >= 0 ? '+' : '−') + fmtPct(Math.abs(ch)) : DASH));
     out.push(tipKV('Traded today', `${fmtQty(vol)} ${fin(vol) === 1 ? u : us}`));
-    if (fin(sh) > 0.05) out.push(tipKV('Demand unmet', `${fmtQty(sh)} ${us}`, 'warn'));
-    if (fin(su) > 0.05) out.push(tipKV('Left unsold', `${fmtQty(su)} ${us}`));
+    if (fin(sh) > 0.05) out.push(tipKV('Demand unmet today', `${fmtQty(sh)} ${us}`, 'warn'));
+    if (fin(su) > 0.05) out.push(tipKV('Left unsold today', `${fmtQty(su)} ${us}`));
+    if (c.good >= 0 && c.good < N_GOODS) {
+      const b = balanceAt(s, c.town, c.good);
+      out.push(tipKV(`Last ${b.days} days`, balanceWords(b, us), badgeOf(b.volume, b.shortage, b.surplus) === 'shortage' ? 'warn' : undefined));
+    }
     if (c.town >= 0) {
       if (fin(bid) > 0) out.push(tipKV('Best bid', fmtPrice(bid)));
       if (fin(ask) > 0) out.push(tipKV('Best ask', fmtPrice(ask)));
@@ -351,14 +357,15 @@ export function createOverview(onPick: (town: number, good: number) => void): Ov
         price = mode === 'gross' ? n.gross : n.price;
         traded = n.traded;
         vol = n.volume;
-        badge = badgeOf(n.volume, n.shortage, n.surplus);
+        badge = c.good < N_GOODS ? badgeOf(n.balance.volume, n.balance.shortage, n.balance.surplus) : badgeOf(n.volume, n.shortage, n.surplus);
         hist = n.hist;
       } else {
         const m = marketAt(s, c.town, c.good);
         price = m ? (mode === 'gross' ? fin(m.gross, m.price) : m.price) : NaN;
         traded = !!m?.traded;
         vol = fin(m?.volume);
-        badge = m ? badgeOf(m.volume, m.shortage, m.surplus) : null;
+        const b = m && c.good < N_GOODS ? balanceAt(s, c.town, c.good) : null;
+        badge = b ? badgeOf(b.volume, b.shortage, b.surplus) : m ? badgeOf(m.volume, m.shortage, m.surplus) : null;
         hist = m?.hist ?? [];
       }
       setText(c.price, fmtCellPrice(price));

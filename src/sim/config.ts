@@ -908,6 +908,8 @@ export const EVENT_POP_STEP = 100;
 // ---- Stats / history ---------------------------------------------------------
 export const STATS_DAILY_CAP = 1440;
 export const MARKET_HIST_DAYS = 360;
+/** Shortage and surplus are also kept for this many days, for a steadier view than one day's (markets.recentBalance). */
+export const MARKET_BALANCE_DAYS = 14;
 export const NEWS_CAP = 300;
 // -- added by stats engineer --
 /** Inflation is measured between trailing means of this many daily CPI values (damps auction noise). */

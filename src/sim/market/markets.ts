@@ -34,6 +34,7 @@ import {
   MARKET_SESSIONS,
   SESSION_RELEASE,
   MARKET_HIST_DAYS,
+  MARKET_BALANCE_DAYS,
   MARKET_VOL_EMA,
   PRICE_MIN,
   WEDGE_BPCT_MIN,
@@ -249,6 +250,40 @@ export function netStateOrders(books: Books): number {
     }
   }
   return total;
+}
+
+/** A market's shortage and surplus over its last MARKET_BALANCE_DAYS days (units a day), and the volume over the same days. */
+export interface Balance {
+  days: number; // days averaged (fewer early in a game)
+  shortage: number; // demand left unmet a day
+  surplus: number; // supply left unsold a day
+  volume: number; // traded a day
+  /** Signed: + short (unmet ÷ what buyers wanted), − surplus (unsold ÷ what sellers offered); 0 balanced. */
+  net: number;
+}
+
+export function recentBalance(m: Pick<MarketState, 'shortHist' | 'surplusHist' | 'volHist' | 'shortage' | 'surplus' | 'volume'> | undefined | null): Balance {
+  if (!m) return { days: 0, shortage: 0, surplus: 0, volume: 0, net: 0 };
+  const sh = m.shortHist ?? [];
+  const su = m.surplusHist ?? [];
+  const n = Math.min(sh.length, su.length);
+  if (n === 0) return withNet(1, Math.max(0, m.shortage), Math.max(0, m.surplus), Math.max(0, m.volume));
+  const vh = m.volHist ?? [];
+  let a = 0;
+  let b = 0;
+  let v = 0;
+  for (let i = 0; i < n; i++) {
+    a += Math.max(0, sh[sh.length - 1 - i]);
+    b += Math.max(0, su[su.length - 1 - i]);
+    const x = vh[vh.length - 1 - i];
+    v += x > 0 && Number.isFinite(x) ? x : 0;
+  }
+  return withNet(n, a / n, b / n, v / n);
+}
+
+function withNet(days: number, shortage: number, surplus: number, volume: number): Balance {
+  const net = shortage >= surplus ? (shortage > 0 ? (shortage - surplus) / (volume + shortage) : 0) : -(surplus - shortage) / (volume + surplus);
+  return { days, shortage, surplus, volume, net: Number.isFinite(net) ? net : 0 };
 }
 
 export function bookFor(books: Books, town: TownId, good: number): Book {
@@ -900,6 +935,8 @@ function finalizeDay(s: SimState, d: DayMarket): void {
   m.traded = traded;
   m.shortage = t.shortage;
   m.surplus = t.surplus;
+  pushCapped((m.shortHist ??= []), t.shortage, MARKET_BALANCE_DAYS);
+  pushCapped((m.surplusHist ??= []), t.surplus, MARKET_BALANCE_DAYS);
   m.bestBid = t.bestBid;
   m.bestAsk = t.bestAsk;
   m.sess = t.sess.map(r4);

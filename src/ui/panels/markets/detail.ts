@@ -44,6 +44,8 @@ import {
 } from '../../widgets';
 import {
   badgeOf,
+  balanceAt,
+  balanceWords,
   fin,
   GOLD_GOOD,
   goodLabel,
@@ -162,8 +164,8 @@ export function createDetail(hooks: DetailHooks): Detail {
       net: kpi({ label: 'Sellers get', size: 'sm', format: px, hint: 'What sellers kept per unit, after levies charged to sellers (or plus any payment the Treasury makes to them).' }),
       ch: kpi({ label: '30 days', size: 'sm', format: (v) => fmtPctSigned(v), hint: 'How far the base price has moved over the last 30 days.' }),
       vol: kpi({ label: 'Traded', size: 'sm', format: qty, hint: 'Units that changed hands in today’s auction (and the 30-day average).' }),
-      short: kpi({ label: 'Unmet', size: 'sm', format: qty, good: 'down', hint: 'Units buyers bid for at the clearing price but could not get — rationed away by a legal maximum, or bids at the clearing price that were only partly filled.' }),
-      surplus: kpi({ label: 'Unsold', size: 'sm', format: qty, good: 'down', hint: 'Units sellers offered at the clearing price that found no buyer.' }),
+      short: kpi({ label: 'Unmet today', size: 'sm', format: qty, good: 'down', hint: 'Units buyers bid for at the clearing price but could not get — rationed away by a legal maximum, or bids at the clearing price that were only partly filled. Below it: the average a day over the last 14 days (people who go short one day restock the next, so one day swings).' }),
+      surplus: kpi({ label: 'Unsold today', size: 'sm', format: qty, good: 'down', hint: 'Units sellers offered at the clearing price that found no buyer. Below it: the average a day over the last 14 days.' }),
       bid: kpi({ label: 'Best bid', size: 'sm', format: px, hint: 'The highest price any buyer offered today, and the lowest any seller asked. When the bid is below the ask, nothing trades.' }),
     },
     realm: {
@@ -172,8 +174,8 @@ export function createDetail(hooks: DetailHooks): Detail {
       net: kpi({ label: 'Sellers get', size: 'sm', format: px, hint: 'Weighted average of what sellers kept per unit.' }),
       ch: kpi({ label: '30 days', size: 'sm', format: (v) => fmtPctSigned(v), hint: 'How far the weighted price has moved in 30 days.' }),
       vol: kpi({ label: 'Traded', size: 'sm', format: qty, hint: 'Units traded today in every town together (and the 30-day average).' }),
-      short: kpi({ label: 'Unmet', size: 'sm', format: qty, good: 'down', hint: 'Demand rationed away in every town together.' }),
-      surplus: kpi({ label: 'Unsold', size: 'sm', format: qty, good: 'down', hint: 'Supply left unsold in every town together.' }),
+      short: kpi({ label: 'Unmet today', size: 'sm', format: qty, good: 'down', hint: 'Demand rationed away in every town together (below: the average a day over the last 14 days).' }),
+      surplus: kpi({ label: 'Unsold today', size: 'sm', format: qty, good: 'down', hint: 'Supply left unsold in every town together (below: the average a day over the last 14 days).' }),
       made: kpi({ label: 'Made today', size: 'sm', format: qty, hint: 'Units produced in the whole realm today.' }),
     },
     iou: {
@@ -312,17 +314,28 @@ export function createDetail(hooks: DetailHooks): Detail {
     const m = marketAt(s, town, good);
     const list: HTMLElement[] = [];
     const chip = (text: string, tone?: string, tip?: string) => h('span', { class: 'chip' + (tone ? ' ' + tone : ''), title: tip ?? null }, text);
+    // the day's shortage or surplus, and the last 14 days' next to it (steadier: one day swings)
+    const fortnight = (bal: ReturnType<typeof balanceAt>) => {
+      const f = badgeOf(bal.volume, bal.shortage, bal.surplus);
+      const pct = fmtPct(Math.abs(bal.net));
+      const tip = `Over the last ${bal.days} day${bal.days === 1 ? '' : 's'}: ${balanceWords(bal, 'units')}. One day’s figure swings — people who went short restock the next day — so this is the steadier view.`;
+      if (f === 'shortage') return chip(`${bal.days} days: short ${pct}`, 'warn', tip);
+      if (f === 'surplus') return chip(`${bal.days} days: ${pct} unsold`, undefined, tip);
+      return chip(`${bal.days} days: balanced`, 'good', tip);
+    };
     if (mode === 'realm') {
       const n = nationalGood(s, good);
       const b = badgeOf(n.volume, n.shortage, n.surplus);
-      if (b === 'shortage') list.push(chip('Buyers went short', 'warn'));
-      if (b === 'surplus') list.push(chip('Unsold stock'));
+      if (b === 'shortage') list.push(chip('Buyers went short today', 'warn'));
+      if (b === 'surplus') list.push(chip('Unsold stock today'));
+      if (isGood(good)) list.push(fortnight(n.balance));
       list.push(chip(`${s.towns.length} town auctions`));
     } else if (m) {
       if (!m.traded) list.push(chip('No trade today', undefined, 'Bids and asks did not meet today; the price shown is indicative.'));
       const b = badgeOf(m.volume, m.shortage, m.surplus);
-      if (b === 'shortage') list.push(chip('Buyers went short', 'warn', `${fmtQty(m.shortage)} units of demand went unmet today.`));
-      if (b === 'surplus') list.push(chip('Unsold stock', undefined, `${fmtQty(m.surplus)} units offered found no buyer today.`));
+      if (b === 'shortage') list.push(chip('Buyers went short today', 'warn', `${fmtQty(m.shortage)} units of demand went unmet today.`));
+      if (b === 'surplus') list.push(chip('Unsold stock today', undefined, `${fmtQty(m.surplus)} units offered found no buyer today.`));
+      if (isGood(good)) list.push(fortnight(balanceAt(s, town, good)));
       const c = m.curve;
       if (c && c.ceiling > 0) list.push(chip('Max price ' + fmtPrice(c.ceiling), 'warn', 'A legal maximum price applies here today: a fixed limit, or as far as the price may rise from yesterday’s.'));
       if (c && c.floor > 0) list.push(chip('Min price ' + fmtPrice(c.floor), 'warn', 'A legal minimum price applies here today: a fixed limit, or as far as the price may fall from yesterday’s.'));
@@ -358,8 +371,9 @@ export function createDetail(hooks: DetailHooks): Detail {
     const h30 = m.hist?.length ? m.hist[Math.max(0, m.hist.length - 31)] : NaN;
     T0.ch.set(ch, { sub: Number.isFinite(h30) ? 'from ' + fmtPrice(h30) : undefined, tone: null });
     T0.vol.set(m.volume, { sub: `avg ${fmtQty(meanLast(m.volHist, 30))}` });
-    T0.short.set(m.shortage, { tone: badgeOf(m.volume, m.shortage, 0) === 'shortage' ? 'warn' : null, sub: shareOf(m.shortage, m.volume + m.shortage, 'of bids') });
-    T0.surplus.set(m.surplus, { sub: shareOf(m.surplus, m.volume + m.surplus, 'of asks') });
+    const b14 = balanceAt(s, town, good);
+    T0.short.set(m.shortage, { tone: badgeOf(m.volume, m.shortage, 0) === 'shortage' ? 'warn' : null, sub: `${b14.days}d avg ${fmtQty(b14.shortage)}` });
+    T0.surplus.set(m.surplus, { sub: `${b14.days}d avg ${fmtQty(b14.surplus)}` });
     T0.bid.set(m.bestBid > 0 ? m.bestBid : NaN, { sub: m.bestAsk > 0 ? 'ask ' + fmtPrice(m.bestAsk) : 'no asks' });
   }
 
@@ -371,8 +385,8 @@ export function createDetail(hooks: DetailHooks): Detail {
     R.net.set(n.net, { sub: wedgeSub(n.net, n.price) });
     R.ch.set(relChange(n.hist, 30));
     R.vol.set(n.volume, { sub: `avg ${fmtQty(meanLast(n.volHist, 30))}` });
-    R.short.set(n.shortage, { tone: badgeOf(n.volume, n.shortage, 0) === 'shortage' ? 'warn' : null, sub: shareOf(n.shortage, n.volume + n.shortage, 'of bids') });
-    R.surplus.set(n.surplus, { sub: shareOf(n.surplus, n.volume + n.surplus, 'of asks') });
+    R.short.set(n.shortage, { tone: badgeOf(n.volume, n.shortage, 0) === 'shortage' ? 'warn' : null, sub: `${n.balance.days}d avg ${fmtQty(n.balance.shortage)}` });
+    R.surplus.set(n.surplus, { sub: `${n.balance.days}d avg ${fmtQty(n.balance.surplus)}` });
     const made = fin(s.stats?.latest?.['prod_' + good], NaN);
     const imp = fin(s.stats?.latest?.['imp_' + good]);
     R.made.set(made, { sub: imp > 0.05 ? `+${fmtQty(imp)} by sea` : `avg ${fmtQty(meanLast(s.stats?.daily?.['prod_' + good], 30))}` });

@@ -448,6 +448,9 @@ export interface MarketState {
   volEma: number;
   shortage: number; // today: demand rationed away at the clearing price (units)
   surplus: number; // today: supply left unsold at the clearing price
+  /** The last MARKET_BALANCE_DAYS days' shortage and surplus (markets.recentBalance averages them). */
+  shortHist?: number[];
+  surplusHist?: number[];
   traded: boolean; // true if volume > 0 today
   bestBid: number;
   bestAsk: number;

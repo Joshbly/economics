@@ -6,6 +6,8 @@
 import { IOU_COUPON } from '../../../sim/config';
 import { GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
 import { GOLD_GOOD, IOU_GOOD, type MarketState, type SimState } from '../../../sim/types';
+import { recentBalance, type Balance } from '../../../sim/market/markets';
+import { fmtPct, fmtQty } from '../../format';
 
 export { GOLD_GOOD, IOU_GOOD, IOU_COUPON };
 
@@ -73,6 +75,8 @@ export interface NationalGood {
   volume: number;
   shortage: number;
   surplus: number;
+  /** Shortage and surplus over the last MARKET_BALANCE_DAYS days, every town together. */
+  balance: Balance;
   /** Volume-weighted daily base price history (current weights), oldest first. */
   hist: number[];
   volHist: number[];
@@ -91,6 +95,7 @@ export function nationalGood(s: SimState, g: number): NationalGood {
   let surplus = 0;
   let traded = false;
   let len = 0;
+  const bal = { days: 0, shortage: 0, surplus: 0, volume: 0 };
   for (let t = 0; t < s.towns.length; t++) {
     const m = marketAt(s, t, g);
     if (!m) continue;
@@ -104,6 +109,11 @@ export function nationalGood(s: SimState, g: number): NationalGood {
     volume += Math.max(0, fin(m.volume));
     shortage += Math.max(0, fin(m.shortage));
     surplus += Math.max(0, fin(m.surplus));
+    const b = recentBalance(m);
+    bal.days = Math.max(bal.days, b.days);
+    bal.shortage += b.shortage;
+    bal.surplus += b.surplus;
+    bal.volume += b.volume;
     traded = traded || !!m.traded;
     len = Math.max(len, m.hist?.length ?? 0);
   }
@@ -135,10 +145,30 @@ export function nationalGood(s: SimState, g: number): NationalGood {
     volume,
     shortage,
     surplus,
+    balance: { ...bal, net: netBalance(bal.shortage, bal.surplus, bal.volume) },
     hist,
     volHist,
     traded,
   };
+}
+
+/** Signed balance share: + unmet ÷ what buyers wanted, − unsold ÷ what sellers offered. */
+function netBalance(shortage: number, surplus: number, volume: number): number {
+  const x = shortage >= surplus ? (shortage > 0 ? (shortage - surplus) / (volume + shortage) : 0) : -(surplus - shortage) / (volume + surplus);
+  return Number.isFinite(x) ? x : 0;
+}
+
+/** The 14-day balance of a town's market (town ≥ 0) or of every town together (town −1). */
+export function balanceAt(s: SimState, town: number, g: number): Balance {
+  return town >= 0 ? recentBalance(marketAt(s, town, g) ?? undefined) : nationalGood(s, g).balance;
+}
+
+/** "short 4.8 a day (5 % of demand)" / "12 unsold a day (7 % of supply)" / "balanced". */
+export function balanceWords(b: Balance, units: string): string {
+  const flag = badgeOf(b.volume, b.shortage, b.surplus);
+  if (flag === 'shortage') return `short ${fmtQty(b.shortage)} ${units} a day (${fmtPct(Math.abs(b.net))} of demand)`;
+  if (flag === 'surplus') return `${fmtQty(b.surplus)} ${units} unsold a day (${fmtPct(Math.abs(b.net))} of supply)`;
+  return 'balanced';
 }
 
 export type Badge = 'shortage' | 'surplus' | null;

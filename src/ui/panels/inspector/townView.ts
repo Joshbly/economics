@@ -3,6 +3,7 @@
 // ============================================================================
 import { ALL_SECTORS, GOODS, N_GOODS } from '../../../sim/goods';
 import { STATE, type SimState } from '../../../sim/types';
+import { recentBalance } from '../../../sim/market/markets';
 import { h } from '../../dom';
 import { fmtIndex, fmtInt, fmtMoneyShort, fmtPct, fmtPrice, fmtQty } from '../../format';
 import { focusMarket, prefill } from '../../uiState';
@@ -42,6 +43,10 @@ export function marketTable(): { el: HTMLElement; update(s: SimState, town: numb
           note = `surplus ${fmtQty(sur)}`;
           tone = 'warn';
         }
+        // next to today's: the last 14 days (a day's figure swings)
+        const b14 = recentBalance(m);
+        const pct = Math.round(Math.abs(b14.net) * 100);
+        if (b14.days > 1 && pct >= 5) note += `${note ? ' · ' : ''}${b14.days}d ${b14.net > 0 ? 'short' : 'unsold'} ${pct}%`;
         rows.push({
           key: g,
           cells: [GOODS[g].name, fmtPrice(m.gross || m.price), fmtQty(vol), note || '—'],
