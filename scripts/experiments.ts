@@ -216,6 +216,8 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   miningCoalSpend: { label: 'the mining town’s coal mines’ market spending ¤/day (their tools)', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.spent) },
   toolsElsewhere: { label: 'tools price outside the mining town (mean)', fn: (s, c) => meanOver(s.towns.filter((t) => t.id !== c.mining).map((t) => mkt(s, t.id, G.tools)?.ema ?? 0)) },
   giveSpend: { label: 'Treasury payments on levies ¤/day', fn: (s) => L(s, 'levyGive') },
+  loansNew: { label: 'new bank lending ¤/day', fn: (s) => L(s, 'loansNew') },
+  newLoanRate: { label: 'rate on loans made in the last 90 days (and credit lines)', fn: (s) => recentLoanRate(s) },
   hhBreadRel: { label: 'bread price households pay ÷ CPI (mean of towns)', fn: (s) => meanOver(hhBreadPaid(s)) / Math.max(1e-9, L(s, 'cpi') / 100) },
   hhBreadSpread: { label: 'bread price households pay: spread across towns (max−min ÷ mean)', fn: (s) => spread(hhBreadPaid(s)) },
   lineUnits: { label: 'freight line: units carried/day', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.carriedToday, 0) },
@@ -239,6 +241,18 @@ function hhBreadPaid(s: SimState): number[] {
 function spread(a: readonly number[]): number {
   const m = meanOver(a);
   return m > 0 ? (Math.max(...a) - Math.min(...a)) / m : 0;
+}
+
+/** Principal-weighted rate of the loans made in the last 90 days plus the floating credit lines (the base rate if none). */
+function recentLoanRate(s: SimState): number {
+  let p = 0;
+  let r = 0;
+  for (const l of s.loans) {
+    if (!l.active || !(l.principal > 0) || (l.fixed !== false && l.start < s.day - 90)) continue;
+    p += l.principal;
+    r += l.principal * l.rate;
+  }
+  return p > 0 ? r / p : s.bank.baseRate;
 }
 
 /** Σ over the living, active firms of a trade (in a town, or −1 everywhere) of fn(firm). */
@@ -471,10 +485,14 @@ const EXPERIMENTS: Experiment[] = [
       },
     ],
     checks: [
-      { label: 'loan rates up', metric: 'loanRate', kind: 'up', tol: 0.1 },
-      { label: 'credit down', metric: 'credit', kind: 'down', tol: 0.01 },
+      // Term loans already made keep their agreed rates: the floor reaches credit lines and new loans.
+      { label: 'rates on new loans up', metric: 'newLoanRate', kind: 'up', tol: 0.1 },
+      // Dearer new credit: workshops invest less (they judge tools and new workshops against the
+      // rate they would borrow at). The stock of credit moves only as the long fixed-rate loans
+      // are repaid — far slower than this year-long run.
+      { label: 'investment down', metric: 'inv', kind: 'down', tol: 0.05 },
     ],
-    show: ['inv', 'money'],
+    show: ['credit', 'loansNew', 'money'],
   },
   {
     id: '6',

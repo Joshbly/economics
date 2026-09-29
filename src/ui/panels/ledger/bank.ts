@@ -75,7 +75,7 @@ export function createBankView(): LedgerView {
   const tiles = {
     cap: kpi({ label: 'Capital ratio', format: (v) => fmtPct(v, 1), good: 'up', hint: `The Bank’s own capital (equity) as a share of its loans. Below its minimum — the standing ${fmtPct(BANK_MIN_CAPITAL, 0)}, or a Limit in its place (never below ${fmtPct(BANK_OWN_MIN_CAPITAL, 0)}) — it must refuse new loans; below zero it has failed.` }),
     res: kpi({ label: 'Reserves', format: fmtMoneyShort, hint: 'Money the Bank keeps with the Treasury. When it holds less than the requirement it borrows the rest at the window.' }),
-    loanRate: kpi({ label: 'Loan rate', format: fmtRate, hint: 'Average annual rate on the Bank’s loans, weighted by size.' }),
+    loanRate: kpi({ label: 'Loan rate', format: fmtRate, hint: 'Average annual rate on the Bank’s loans, weighted by size. Term loans keep the rate agreed when they were made (refinanced if rates fall a point or more below it); credit lines float with the base rate.' }),
     depRate: kpi({ label: 'Deposit rate', format: fmtRate, hint: 'Annual rate the Bank pays on every deposit (every private balance of money).' }),
   };
 
@@ -139,12 +139,18 @@ export function createBankView(): LedgerView {
     // live aggregates (the balance sheet must balance today, not yesterday)
     let loans = 0;
     let wRate = 0;
+    let fixedP = 0;
+    let fixedR = 0;
     const by = new Map<number, Borrower>();
     for (const ln of s.loans ?? []) {
       if (!ln || !ln.active) continue;
       const p = Math.max(0, fin(ln.principal));
       loans += p;
       wRate += p * fin(ln.rate);
+      if (ln.fixed !== false) {
+        fixedP += p;
+        fixedR += p * fin(ln.rate);
+      }
       let e = by.get(ln.borrower);
       if (!e) {
         const isFirm = ln.borrower >= FIRM_BASE;
@@ -265,6 +271,8 @@ export function createBankView(): LedgerView {
         ['Treasury charges at the window', fmtRate(t?.lendRate), 'gold'],
         ['Bank’s base rate', fmtRate(b.baseRate)],
         ['Average loan rate', fmtRate(avgLoan)],
+        ['At a fixed rate', loans > 0 ? `${fmtPct(fixedP / loans, 0)} of loans, averaging ${fmtRate(fixedP > 0 ? fixedR / fixedP : NaN)}` : '—'],
+        ['New loans and credit lines', `base ${fmtRate(b.baseRate)} + each borrower’s risk margin`],
         ['Paid on deposits', fmtRate(b.depositRate)],
         ['Interest on loans, a year', fmtMoneyShort(wRate)],
       ]),

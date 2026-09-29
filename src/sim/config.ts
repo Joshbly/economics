@@ -572,6 +572,10 @@ export const BANK_DIVIDEND_SHARE = 0.5;
 export const BANK_FAIL_GRACE_DAYS = 30;
 export const LOAN_DEFAULT_OVERDUE_DAYS = 60;
 export const WORKING_LOAN_TERM = 360;
+/** Loan purposes whose rate floats daily with the base rate (credit lines); every other purpose is fixed when made. */
+export const LOAN_FLOATING_PURPOSES: readonly string[] = ['working'];
+/** A fixed-rate borrower in good standing refinances when the day's rate for its loan is at least this much lower (annual). */
+export const LOAN_REFI_GAP = 0.01;
 export const INVEST_LOAN_TERM = 1440;
 export const STARTUP_LOAN_TERM = 2880;
 export const HOUSE_LOAN_TERM = 7200;

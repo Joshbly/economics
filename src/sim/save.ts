@@ -8,7 +8,7 @@
 // bank balance-sheet drift. Problems are reported in plain words.
 // Runtime caches (runtime.ts) are never saved; modules rebuild them on demand.
 // ============================================================================
-import { SIM_VERSION } from './config';
+import { LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { G, N_GOODS } from './goods';
 import { checkLedger, deposits, reconcileBank } from './ledger';
 import type { SimState } from './types';
@@ -319,6 +319,8 @@ function fillDefaults(s: SimState): void {
   }
   fillRoutes(s);
   fillLines(s);
+  // Loans from before fixed rates: term credit keeps the rate it carries now; credit lines float.
+  for (const ln of s.loans) if (ln && typeof ln.fixed !== 'boolean') ln.fixed = !LOAN_FLOATING_PURPOSES.includes(ln.purpose);
   const set = s.settings;
   if (typeof set.events !== 'boolean') set.events = true;
   if (typeof set.scenario !== 'string') set.scenario = 'founding';

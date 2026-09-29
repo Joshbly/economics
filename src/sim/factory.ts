@@ -4,7 +4,7 @@
 // construction, bank…) must use these and then set what they need.
 // If you add a field to types.ts, initialise it here.
 // ============================================================================
-import { INIT_GOLD_PRICE, INIT_LEND_RATE, INIT_RESERVE_RATE, IOU_PAR, SIM_VERSION } from './config';
+import { INIT_GOLD_PRICE, INIT_LEND_RATE, INIT_RESERVE_RATE, IOU_PAR, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { emptyGoods, N_GOODS, SECTORS } from './goods';
 import { seedRng } from './rng';
 import type {
@@ -171,6 +171,7 @@ export function newLoan(s: SimState, borrower: Ref, principal: number, spread: n
     term,
     left: term,
     purpose,
+    fixed: !LOAN_FLOATING_PURPOSES.includes(purpose),
     overdue: 0,
     start: s.day,
     active: true,

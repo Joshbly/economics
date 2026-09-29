@@ -175,7 +175,9 @@ When you pay someone, their deposit grows and so do the bank's reserves. When yo
       },
       {
         title: 'Lending creates money',
-        body: `When the bank lends, it simply adds to the borrower's deposit — new money appears. When the loan is repaid, that money disappears again. How much the bank lends depends on what it pays for money (your window rates), on how safe borrowers look, on its own capital, and on how many loans have recently gone bad.`,
+        body: `When the bank lends, it simply adds to the borrower's deposit — new money appears. When the loan is repaid, that money disappears again. How much the bank lends depends on what it pays for money (your window rates), on how safe borrowers look, on its own capital, and on how many loans have recently gone bad.
+
+Loans for workshops, houses and new ventures are made at a fixed rate: what the bank charged on the day it lent, for the life of the loan. When your window rates rise, only new loans, credit lines and deposits feel it at once — the old loans keep their rates, so the bank earns the old rates while paying depositors the new one. When rates fall a point or more below what a borrower pays, a borrower in good standing refinances at the new terms. Workshops' short credit lines float: they follow the bank's base rate day by day.`,
       },
       {
         title: "The bank's capital and its rates",

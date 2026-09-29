@@ -183,7 +183,7 @@ export function windowLever(): Lever {
     const changed = Math.abs(rr - fin(s.treasury.reserveRate)) > 1e-9 || Math.abs(effLend - fin(s.treasury.lendRate)) > 1e-9;
     const B = (t: string) => h('b', null, t);
     if (changed)
-      preview.replaceChildren('Pay ', B(fmtRate(rr)), ' a year on reserves and charge ', B(fmtRate(effLend)), ' at the window. The Bank reprices from tomorrow.');
+      preview.replaceChildren('Pay ', B(fmtRate(rr)), ' a year on reserves and charge ', B(fmtRate(effLend)), ' at the window. From tomorrow the Bank prices new loans, credit lines and deposits on it; term loans already made keep their agreed rate, though their borrowers refinance if the new terms are a point or more lower.');
     else preview.replaceChildren('These are the rates in force. Move either one to see the change.');
     apply.disabled = !changed || !rrIn.valid || !lrIn.valid;
     reset.disabled = !dirty;

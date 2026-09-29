@@ -267,7 +267,7 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
         .filter((ln) => ln && ln.active && ln.borrower === ref)
         .map((ln) => ({
           key: ln.id,
-          cells: [PURPOSE[ln.purpose] ?? ln.purpose, fmtMoneyShort(ln.principal), fmtRate(ln.rate), fmtDuration(ln.left), ln.overdue > 0 ? `${ln.overdue} d` : '—'],
+          cells: [PURPOSE[ln.purpose] ?? ln.purpose, fmtMoneyShort(ln.principal), `${fmtRate(ln.rate)} ${ln.fixed === false ? 'floating' : 'fixed'}`, fmtDuration(ln.left), ln.overdue > 0 ? `${ln.overdue} d` : '—'],
           tones: [undefined, undefined, undefined, undefined, ln.overdue > 0 ? 'bad' : undefined],
         })),
     );

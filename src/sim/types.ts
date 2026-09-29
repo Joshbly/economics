@@ -308,8 +308,14 @@ export interface Loan {
   id: number;
   borrower: Ref;
   principal: number; // outstanding ¤
-  spread: number; // over the bank's base rate (annual)
+  spread: number; // over the bank's base rate (annual), set when the loan is made
   rate: number; // current annual rate
+  /**
+   * true: the rate agreed when the loan was made holds for its life (term credit — invest,
+   * startup, house, project); the borrower refinances at the day's terms if they fall at least
+   * LOAN_REFI_GAP below it. false: it floats daily at base rate + spread (working credit).
+   */
+  fixed: boolean;
   term: number; // total days
   left: number; // days left
   purpose: LoanPurpose;

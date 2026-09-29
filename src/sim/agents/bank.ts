@@ -12,9 +12,13 @@
 //  * Lending creates deposits (money creation); repayment destroys them.
 //  * The bank's marginal funding cost is the Treasury's reserve rate while it has
 //    spare reserves and slides to the window rate as it comes to rely on window
-//    borrowing (or falls short of a reserve requirement). Loan rates float daily at
-//    funding + base spread + each loan's own risk spread, so the window rates reach
-//    every borrower — the interest-rate channel.
+//    borrowing (or falls short of a reserve requirement). A loan is priced at funding +
+//    base spread + its own risk spread when it is made. Working credit (credit lines)
+//    then floats daily with the base rate; term credit (invest, startup, house, project)
+//    keeps its agreed rate for life, refinanced at the day's terms only when they fall
+//    LOAN_REFI_GAP below it. So a rate rise reaches new loans and credit lines at once and
+//    the fixed book only as it turns over — while deposits reprice daily, squeezing the
+//    bank's margin — and a cut reaches fixed borrowers too, through refinancing.
 //  * Lending standards (debt-service coverage, leverage, the bank's own capital)
 //    tighten after losses and with thin capital and loosen only slowly: credit is
 //    pro-cyclical. A legal ceiling on loan rates does not make risky credit cheap —
@@ -60,6 +64,8 @@ const {
   DAYS_PER_YEAR,
   BANK_BASE_SPREAD,
   BANK_DEPOSIT_SPREAD,
+  LOAN_FLOATING_PURPOSES,
+  LOAN_REFI_GAP,
   BANK_MIN_CAPITAL,
   BANK_OWN_MIN_CAPITAL,
   BANK_RISK_PREMIUM,
@@ -432,6 +438,8 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
   let repaid = 0;
   let capped = false;
   let raised = false;
+  let refis = 0;
+  let refiPrincipal = 0;
   for (const ln of s.loans) {
     if (!ln.active) continue;
     const who = ln.borrower;
@@ -449,8 +457,21 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
       ln.active = false;
       continue;
     }
-    const r = rateFor(base, fin(ln.spread), cap, floor);
-    if (cap >= 0 || floor >= 0) {
+    // Today's terms for this borrower: base rate + its own spread, within any legal bounds.
+    const offer = rateFor(base, fin(ln.spread), cap, floor);
+    let r = offer;
+    if (ln.fixed ?? !LOAN_FLOATING_PURPOSES.includes(ln.purpose)) {
+      // A fixed-rate loan keeps the rate agreed when it was made (later rules and rate changes do
+      // not reach it) — unless the day's terms have fallen far enough below it that a borrower in
+      // good standing refinances at them.
+      const locked = ln.rate > 0 && Number.isFinite(ln.rate) ? ln.rate : offer;
+      r = locked;
+      if (ln.overdue === 0 && offer < locked - LOAN_REFI_GAP) {
+        r = offer;
+        refis++;
+        refiPrincipal += ln.principal;
+      }
+    } else if (cap >= 0 || floor >= 0) {
       const free = base + fin(ln.spread);
       if (cap >= 0 && free > cap + 1e-12) capped = true;
       else if (floor >= 0 && free < floor - 1e-12) raised = true;
@@ -483,6 +504,10 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
   b.interestIn += interestIn;
   bump(s, 'interest_loans', interestIn);
   bump(s, 'loans_repaid', repaid);
+  if (refis) {
+    bump(s, 'loans_refi', refis);
+    bump(s, 'loans_refi_amt', refiPrincipal);
+  }
   if (capped) noteBinding(s, 'rateMax', -1, -1);
   if (raised) noteBinding(s, 'rateMin', -1, -1);
 }

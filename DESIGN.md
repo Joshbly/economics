@@ -313,11 +313,17 @@ One commercial bank (owned by a wealthy person). Balance sheet:
 `equity = assets − liabilities` (tracked explicitly and reconciled).
 
 * Funding cost = Treasury reserve rate if reserves ≥ requirement, else the
-  window lending rate. Loan rate = funding cost + base spread + risk premium
-  (leverage-based), floating daily, raised to any rate floor Limit (`rateMin`)
-  and capped by any rate ceiling Limit (`rateMax`; then risky loans are rationed
-  instead; a floor above the ceiling is cut to it). Deposit rate ≈ reserve rate
-  − 1 % (floored near 0).
+  window lending rate. A loan's rate when made = funding cost + base spread + risk
+  premium (leverage-based), raised to any rate floor Limit (`rateMin`) and capped by
+  any rate ceiling Limit (`rateMax`; then risky loans are rationed instead; a floor
+  above the ceiling is cut to it). Working credit (credit lines, LOAN_FLOATING_PURPOSES)
+  then floats daily at those terms; term credit (invest, startup, house, project:
+  `Loan.fixed`) keeps its agreed rate for life — later Window changes and rate Limits
+  do not reach it — except that a borrower in good standing refinances at the day's
+  terms when they fall LOAN_REFI_GAP (1 pt) below its rate. So a rise reaches new
+  loans and credit lines at once and the fixed book only as it turns over, while
+  deposits reprice daily (the bank's margin is squeezed); a cut reaches fixed
+  borrowers too, through refinancing. Deposit rate ≈ reserve rate − 1 % (floored near 0).
 * Lending standards: debt-service coverage, leverage, capital ratio ≥ the capital
   rule in force (`bank.minCapital`): the realm's standing rule BANK_MIN_CAPITAL
   (8 %) — or, while a `capitalMin` Limit is in force, the Limit in its place,
@@ -660,12 +666,13 @@ Layout (dark, native-feeling on macOS, system font, tabular numerals):
   --warmup`): after the warm-up, unemployment mean 3–10 % and never above 20 %,
   every producer sector operating, CPI within ×0.7–×1.5, population ≥ 95 % of
   start with hunger < 5 %, carters ≲ 10 % of employment.
-* Limits beyond fixed price lines (experiments 15–17): 15. bread's price may
+* Limits beyond fixed price lines (experiments 16–18): 16. bread's price may
   move at most 2 % a day → day-to-day bread price moves smaller, none above
-  2 %, shortages at the bound; 16. the bank's capital thinned (the Treasury takes
+  2 %, shortages at the bound; 17. the bank's capital thinned (the Treasury takes
   60 % of it) — a 3 % capital rule in place of the standing 8 % → looser
-  standards and more credit than under the standing rule; 17. a floor under loan
-  rates 3 points above today's → loan rates up, credit down.
+  standards and more credit than under the standing rule; 18. a floor under loan
+  rates 3 points above today's → rates on new loans and credit lines up,
+  investment down (fixed-rate term loans already made keep their rates).
 * Founding calibration (`world/init.ts`) is built to be close to the model's own
   steady state: prices include spoilage and BASE_MARKUP over marginal cost, route
   loads and part-load freight follow the traders' own dispatch history, founding

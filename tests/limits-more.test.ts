@@ -137,34 +137,41 @@ describe('capital rule: a Limit replaces the standing 8 %', () => {
 });
 
 describe('loan-rate floor (rateMin)', () => {
-  it('raises every loan’s rate to the floor; a cap below it wins', () => {
+  it('raises credit lines and new loans to the floor, not fixed-rate loans already made; a cap below it wins', () => {
     const s = world();
     const f = firm(s, 400, 30);
     thinBank(s, 0.2);
     mint(s, 1e5);
-    const ln = s.loans[0];
+    const house = s.loans[0]; // a fixed-rate mortgage at 5 %
+    // a working credit line (floats with the base rate), made before the floor
+    requestLoan(s, { borrower: FIRM_BASE + f.id, amount: 300, term: 30, purpose: 'working', project: -1 });
+    bankEndDay(s);
+    const line = loansOf(s, FIRM_BASE + f.id)[0];
+    expect(line.fixed).toBe(false);
     s.day++;
     bankBeginDay(s);
-    const free = ln.rate;
-    expect(free).toBeLessThan(0.08);
+    expect(line.rate).toBeLessThan(0.08);
     const fl = limit(s, { kind: 'rateMin', value: 0.09 });
     expect(minLoanRate(s)).toBeCloseTo(0.09, 12);
     s.day++;
     bankBeginDay(s);
-    expect(ln.rate).toBeCloseTo(0.09, 12);
+    expect(line.rate).toBeCloseTo(0.09, 12);
+    expect(house.rate).toBeCloseTo(0.05, 12); // the contract rate holds
     expect(fl.binding).toBe(1);
     // quotes and new loans are priced at the floor or above
     expect(quoteRate(s, FIRM_BASE + f.id, 300)).toBeGreaterThanOrEqual(0.09 - 1e-12);
-    requestLoan(s, { borrower: FIRM_BASE + f.id, amount: 300, term: 30, purpose: 'working', project: -1 });
+    requestLoan(s, { borrower: FIRM_BASE + f.id, amount: 300, term: 30, purpose: 'invest', project: -1 });
     bankEndDay(s);
     const mine = loansOf(s, FIRM_BASE + f.id);
-    expect(mine.length).toBe(1);
-    expect(mine[0].rate).toBeGreaterThanOrEqual(0.09 - 1e-12);
-    // a lower cap wins over the floor
+    expect(mine.length).toBe(2);
+    expect(mine[1].rate).toBeGreaterThanOrEqual(0.09 - 1e-12);
+    // a lower cap wins over the floor (for the floating line; the fixed loans keep their rates,
+    // and the new one is not a point above the capped terms, so it does not refinance)
     limit(s, { kind: 'rateMax', value: 0.07 });
     s.day++;
     bankBeginDay(s);
-    expect(ln.rate).toBeCloseTo(0.07, 12);
+    expect(line.rate).toBeCloseTo(0.07, 12);
+    expect(house.rate).toBeCloseTo(0.05, 12);
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
   });
 });

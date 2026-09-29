@@ -1674,7 +1674,9 @@ export function createWorld(opts: WorldOptions): SimState {
     const rate = s.bank.baseRate + spread + BANK_STANCE_SPREAD * BANK_STANCE_BASE;
     const principal = Math.round(desiredFirmDebt(capital, Math.max(0, f.profit), rate, left));
     if (principal < 200) continue;
-    const loan = newLoan(s, firmRef(f.id), principal, spread, rate, INIT_LOAN_TERM, 'invest');
+    // The debt is sized at the founding terms with the bank's usual stance margin; the loan's own
+    // (fixed) rate is base + its risk spread — what the bank charges it from the first day.
+    const loan = newLoan(s, firmRef(f.id), principal, spread, s.bank.baseRate + spread, INIT_LOAN_TERM, 'invest');
     loan.left = left;
     loan.start = 0;
   }
