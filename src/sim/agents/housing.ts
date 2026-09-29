@@ -28,6 +28,7 @@ import type { Building, Firm, Person, Ref, SimState, TownId } from '../types';
 import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { commuteTiles, hasLevyBase, workX, workY } from './labor';
+import { creditAppetite, quoteRate, requestLoan } from './bank';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -232,6 +233,11 @@ function payRent(s: SimState, p: Person, b: Building, levies: boolean): boolean 
  * clamped by rent Limits. Updates building.vacantDays, town.homeless/vacantSlots.
  */
 export function housingStep(s: SimState): void {
+  housingDay(s);
+  landlordFinance(s);
+}
+
+function housingDay(s: SimState): void {
   const c = cache(s);
   const people = s.people;
   const nT = s.towns.length;
@@ -438,4 +444,78 @@ function clampRent(s: SimState, rent: number, bd: { min: number; max: number } |
     if (bd.min >= 0 && r < bd.min) r = bd.min;
   }
   return r;
+}
+
+// ---------------------------------------------------------------------------
+// Landlords' mortgages
+// ---------------------------------------------------------------------------
+
+/**
+ * The mortgage a landlord carries on houses of book value `value` that bring in `rentDay` ¤/day,
+ * at loan rate `rate`: HOUSE_DEBT_LTV of the value × bank.creditAppetite (more when money is
+ * cheaper, less when dearer), nothing once the rate reaches the rent yield; interest + amortisation over `term` days within HOUSE_DEBT_MAX_SERVICE of the rent.
+ * Shared by world/init (the founding mortgages) and landlordFinance (the steady state).
+ */
+export function desiredHouseDebt(value: number, rentDay: number, rate: number, term: number): number {
+  if (!(value > 0) || !(rentDay > 0)) return 0;
+  const { HOUSE_DEBT_LTV, HOUSE_DEBT_MAX_SERVICE, DAYS_PER_YEAR } = CFG;
+  const r = Math.max(0, fin(rate));
+  if ((rentDay * DAYS_PER_YEAR) / value <= r) return 0; // nobody borrows against houses at more than they yield
+  const m = creditAppetite(r);
+  const cap = (HOUSE_DEBT_MAX_SERVICE * rentDay) / (1 / Math.max(1, term) + r / DAYS_PER_YEAR);
+  return Math.max(0, Math.min(HOUSE_DEBT_LTV * m * value, cap));
+}
+
+/**
+ * Each landlord reviews their mortgage once a month (staggered by id): on the houses' book value
+ * and the rent they bring in, at the rate the bank would charge them.
+ * Below HOUSE_DEBT_TOPUP of the desired debt they borrow the rest (a 'house' loan against the
+ * houses they own — mortgages roll over as they amortise, so the credit stock keeps pace with the
+ * housing stock); above HOUSE_DEBT_PAYDOWN of it they pay down (≤ HOUSE_DEBT_PAYDOWN_MONTH of the
+ * debt a month) with cash beyond HOUSE_DEBT_KEEP_DAYS of income. Dearer money → less mortgage credit, cheaper → more.
+ */
+function landlordFinance(s: SimState): void {
+  const { DAYS_PER_MONTH, HOUSE_DEBT_TOPUP, HOUSE_DEBT_PAYDOWN, HOUSE_DEBT_KEEP_DAYS, HOUSE_DEBT_PAYDOWN_MONTH, HOUSE_LOAN_TERM, BANK_MIN_LOAN } = CFG;
+  if (s.bank.failed) return;
+  const slot = s.day % DAYS_PER_MONTH;
+  for (const p of s.people) {
+    if (!p || !p.alive || !p.houses.length || p.id % DAYS_PER_MONTH !== slot) continue;
+    let value = 0;
+    let rentIn = 0;
+    for (const hid of p.houses) {
+      const b = s.buildings[hid];
+      if (!b || b.status !== 'active') continue;
+      value += Math.max(0, fin(b.cost));
+      for (const rid of b.residents) if (rid !== p.id) rentIn += Math.max(0, fin(b.rent));
+    }
+    if (!(value > 0)) continue;
+    const ref = personRef(p.id);
+    let debt = 0;
+    for (const ln of s.loans) if (ln.active && ln.borrower === ref && ln.purpose === 'house') debt += ln.principal;
+    const r = quoteRate(s, ref, 0);
+    if (r < 0 && !(debt > 0)) continue;
+    const want = r < 0 ? debt : desiredHouseDebt(value, rentIn, r, HOUSE_LOAN_TERM);
+    if (debt < HOUSE_DEBT_TOPUP * want) {
+      const amount = want - debt;
+      if (amount >= Math.max(BANK_MIN_LOAN, 0.02 * value) && quoteRate(s, ref, amount) >= 0) {
+        requestLoan(s, { borrower: ref, amount, term: HOUSE_LOAN_TERM, purpose: 'house', project: -1 });
+      }
+    } else if (debt > HOUSE_DEBT_PAYDOWN * want) {
+      let room = Math.min(debt - want, HOUSE_DEBT_PAYDOWN_MONTH * debt, Math.max(0, p.cash) - HOUSE_DEBT_KEEP_DAYS * Math.max(0, fin(p.income)));
+      if (!(room > 1)) continue;
+      for (const ln of s.loans) {
+        if (!(room > 0.01)) break;
+        if (!ln.active || ln.borrower !== ref || ln.purpose !== 'house' || !(ln.principal > 0)) continue;
+        const a = LEDGER.repayPrincipal(s, ref, Math.min(room, ln.principal));
+        ln.principal -= a;
+        room -= a;
+        s.stats.acc.loans_prepaid = (s.stats.acc.loans_prepaid || 0) + a;
+        if (ln.principal <= 1e-6) {
+          if (ln.principal > 0) LEDGER.writeOff(s, ln.principal);
+          ln.principal = 0;
+          ln.active = false;
+        }
+      }
+    }
+  }
 }

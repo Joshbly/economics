@@ -65,7 +65,7 @@
 // ============================================================================
 import * as CFG from '../config';
 import * as GOODS_M from '../goods';
-import { deposits } from '../ledger';
+import { deposits, mint } from '../ledger';
 import { steadyStateDemand } from '../agents/demandModel';
 import { netWage, wageCtx } from '../agents/labor';
 import { basePrices as foundingPrices } from '../agents/production';
@@ -783,6 +783,19 @@ export function rebaseStats(s: SimState): void {
   // The player's story starts now: drop what happened during the silent warm-up
   // (keep items from the founding day, e.g. the world's welcome message).
   s.news = s.news.filter((n) => n.day <= 0);
+  // … and with the Purse the realm was founded with: the warm-up's interest on reserves (and
+  // anything else it paid) is minted back, and the Treasury's books start clean.
+  const t = s.treasury;
+  const topUp = CFG.INIT_PURSE - fin(t.purse);
+  if (topUp > 0) mint(s, topUp);
+  t.minted = 0;
+  t.burned = 0;
+  t.flows = {};
+  t.flowsMonth = {};
+  t.flowsLastMonth = {};
+  t.givesSuspended = false;
+  delete st.acc.minted;
+  delete st.acc.burned;
 }
 
 /** Make sure the base period exists (a state built without initStats). */

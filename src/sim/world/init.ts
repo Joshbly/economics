@@ -45,8 +45,9 @@
 //  7. Money: households hold the cash of their shopping phase at the stationary point of
 //     the household rules (scaled to their income, small spread); firms
 //     INIT_FIRM_CASH_DAYS of costs; loans (principal only: the historical proceeds paid
-//     for the capital stock and now sit in deposits across the realm) for INIT_LOAN_SHARE
-//     of producers, sized to their profit; bank reserves so that equity ≈
+//     for the capital stock and now sit in deposits across the realm): every producer's and
+//     landlord's long debt at its steady-state level (firms.desiredFirmDebt,
+//     housing.desiredHouseDebt), sized to profit / rent; bank reserves so that equity ≈
 //     max(INIT_BANK_EQUITY_MIN, INIT_BANK_EQUITY_RATIO × loans), then ledger.reconcileBank;
 //     Treasury purse, gold and rates; foreign coin ≈ INIT_FOREIGN_COIN_DAYS of port trade.
 //  8. Stocks: firms at their own inventory targets (+ the seasonal carry: it is early
@@ -101,9 +102,6 @@ import {
   INIT_HOUSING_VACANCY,
   INIT_LEND_RATE,
   INIT_LOAN_LEFT_MIN,
-  INIT_LOAN_MAX_SERVICE,
-  INIT_LOAN_SHARE,
-  INIT_LOAN_TO_CAPITAL,
   INIT_MAX_LEVEL,
   INIT_OWNER_CASH_DAYS,
   INIT_PURSE,
@@ -130,6 +128,10 @@ import {
   OWNER_SHARE,
   SHIP_CAP_SHARE,
   INIT_LOAN_TERM,
+  BANK_PERSON_PREMIUM,
+  FIRM_DEBT_LEV,
+  BANK_STANCE_SPREAD,
+  BANK_STANCE_BASE,
   TOOLS_BUFFER_DAYS,
   TOOLS_IDLE_WEAR_DAY,
   TOOLS_PER_WAGON,
@@ -149,6 +151,8 @@ import { bufferTarget, foodIndex, goodsBudget, steadyStateDemand } from '../agen
 import { basePrices, materialCostPerUnit, materialsValue, tfp, toolCostPerUnit, unitVariableCost } from '../agents/production';
 import { heatAheadMean, healthTarget, ladderInto, newPlanScratch, planInto, rungSets } from '../agents/households';
 import { commuteTiles } from '../agents/labor';
+import { desiredHouseDebt } from '../agents/housing';
+import { desiredFirmDebt } from '../agents/firms';
 import { invalidateRoutes, rt } from '../runtime';
 import { lognormal, rand, randRange, shuffle, type RngHolder } from '../rng';
 import { news } from '../stats/events';
@@ -1659,25 +1663,46 @@ export function createWorld(opts: WorldOptions): SimState {
 
   // ---- loans --------------------------------------------------------------------------------------------
   const producers = firmPlan.map((fp) => fp.firm).filter((f) => SECTORS[f.sector].producer);
-  const nLoans = Math.round(producers.length * INIT_LOAN_SHARE);
-  const borrowers = shuffle(R, producers.slice()).slice(0, nLoans);
-  for (const f of borrowers) {
+  // Every producer carries the long debt firms keep in the steady state (firms.desiredFirmDebt at
+  // the founding rates; its service within reach of expected profit): a mortgage on the workshop.
+  for (const f of producers) {
     const b = s.buildings[f.building];
     const capital = (b ? b.cost : 0) + f.tools * P[f.town][G.tools];
     const left = Math.round(INIT_LOAN_TERM * randRange(R, INIT_LOAN_LEFT_MIN, 1));
-    const lev = INIT_LOAN_TO_CAPITAL * randRange(R, 0.6, 1);
+    const lev = FIRM_DEBT_LEV;
     const spread = round4(BANK_RISK_PREMIUM * lev * lev);
-    const rate = s.bank.baseRate + spread;
-    let principal = lev * capital;
-    // Keep debt service within reach of expected profit.
-    const service = (pr: number) => pr / left + (pr * rate) / DAYS_PER_YEAR;
-    const cap = INIT_LOAN_MAX_SERVICE * Math.max(0, f.profit);
-    if (service(principal) > cap) principal = cap / (1 / left + rate / DAYS_PER_YEAR);
-    principal = Math.round(principal);
+    const rate = s.bank.baseRate + spread + BANK_STANCE_SPREAD * BANK_STANCE_BASE;
+    const principal = Math.round(desiredFirmDebt(capital, Math.max(0, f.profit), rate, left));
     if (principal < 200) continue;
     const loan = newLoan(s, firmRef(f.id), principal, spread, rate, INIT_LOAN_TERM, 'invest');
     loan.left = left;
     loan.start = 0;
+  }
+
+  // Landlords' houses carry mortgages at the level landlords keep in the steady state
+  // (housing.desiredHouseDebt at the founding rates): one long mortgage per landlord. The
+  // interest is part of the landlord's steady outgoings (their income is net of it).
+  for (const p of s.people) {
+    if (!p.houses.length) continue;
+    let value = 0;
+    let rentIn = 0;
+    for (const hid of p.houses) {
+      const b = s.buildings[hid];
+      if (!b || b.status !== 'active') continue;
+      value += Math.max(0, b.cost);
+      for (const rid of b.residents) if (rid !== p.id) rentIn += b.rent;
+    }
+    if (!(value > 0) || !(rentIn > 0)) continue;
+    const left = Math.round(INIT_LOAN_TERM * randRange(R, INIT_LOAN_LEFT_MIN, 1));
+    const lev = 0.1;
+    const spread = round4(BANK_PERSON_PREMIUM + BANK_RISK_PREMIUM * lev * lev + BANK_STANCE_SPREAD * BANK_STANCE_BASE);
+    const rate = s.bank.baseRate + spread;
+    const principal = Math.round(desiredHouseDebt(value, rentIn, rate, left));
+    if (principal < 200) continue;
+    const loan = newLoan(s, personRef(p.id), principal, spread, rate, INIT_LOAN_TERM, 'house');
+    loan.left = left;
+    loan.start = 0;
+    p.income = round4(Math.max(0, p.income - (principal * rate) / DAYS_PER_YEAR));
   }
 
   // ---- foreign ---------------------------------------------------------------------------------------------

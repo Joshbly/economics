@@ -1162,3 +1162,23 @@ button.kpi:hover, .kpi.has-hint:hover { border-color: var(--line-2); }
   .ind { padding: 0 14px; }
   .ind-val { font-size: 14px; }
 }
+
+/* ---------- welcome (first run) ------------------------------------------------ */
+.welcome { display: flex; flex-direction: column; gap: 9px; font-size: 13px; line-height: 1.45; }
+.welcome p { margin: 0; }
+.welcome-lead { color: var(--ink-0); }
+.welcome-lead b { color: var(--gold); font-weight: 600; }
+.welcome-h { margin-top: 4px; font: 600 11px/1.2 var(--font); letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); }
+.welcome-prims { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.welcome-prims li { display: flex; align-items: flex-start; gap: 9px; color: var(--ink-1); }
+.welcome-prims b { color: var(--ink-0); font-weight: 600; }
+.welcome-glyph { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; margin-top: -2px; border-radius: 6px; background: var(--bg-3); border: 1px solid var(--line-1); color: var(--gold); }
+.welcome-note { color: var(--ink-1); }
+.welcome-note b { color: var(--ink-0); }
+.welcome-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+.welcome-key { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.welcome-k { flex: none; min-width: 78px; color: var(--ink-2); white-space: nowrap; }
+.welcome-kd { color: var(--ink-1); font-size: 12.5px; line-height: 1.4; }
+.welcome kbd { margin: 0 1px; }
+.welcome-menu { display: inline-block; padding: 0 4px; border: 1px solid var(--line-2); border-radius: 4px; font-size: 11px; line-height: 16px; color: var(--ink-1); }
+.welcome-modal .modal-body { max-height: calc(100vh - 190px); }

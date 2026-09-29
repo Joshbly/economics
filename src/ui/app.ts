@@ -37,6 +37,7 @@ import { emit, initUi, on, select, setPlacing, setSpeed, setTab, toast, togglePa
 import { button, field, numberInput, selectInput, textInput } from './widgets/controls';
 import { icon } from './widgets/icons';
 import { createNewsTicker, type NewsTicker } from './widgets/ticker';
+import { maybeShowWelcome, showWelcome } from './welcome';
 
 // ---------------------------------------------------------------------------
 // Persistence (localStorage, gzip-compressed when the browser supports it)
@@ -541,6 +542,9 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
     help() {
       setTab('almanac');
     },
+    welcome() {
+      showWelcome();
+    },
   };
 
   async function foundInPlace(o: FoundOptions): Promise<void> {
@@ -831,6 +835,24 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
   // ---- go ----------------------------------------------------------------------------------
   const loop: GameLoop = createLoop({ onMapError: (e) => mapNote('The map stopped drawing: ' + errText(e)) });
   loop.setMapView(mapView);
+  // Read-only handle for scripted checks (scripts/qa) and curious players' consoles.
+  (window as unknown as Record<string, unknown>).__realm = {
+    get ui() {
+      return ui;
+    },
+    get s() {
+      return ui.game.s;
+    },
+    get perf() {
+      return loop.perf;
+    },
+    get map() {
+      return mapView;
+    },
+    setSpeed,
+    setTab,
+    select,
+  };
   showTab(ui.tab);
   paintPlacing();
   topbar.update(true);
@@ -838,6 +860,9 @@ export function mountShell(root: HTMLElement, game: Game, how: 'new' | 'loaded' 
   loop.start();
   if (how === 'new') autosave('founded');
   if (how !== 'preview') {
-    setTimeout(() => toast(how === 'new' ? 'The realm is yours. Press Space to start the clock.' : 'Welcome back. Press Space to resume.', 'info'), 600);
+    const hello = () => toast(how === 'new' ? 'The realm is yours. Press Space to start the clock.' : 'Welcome back. Press Space to resume.', 'info');
+    setTimeout(() => {
+      if (!maybeShowWelcome(() => setTimeout(hello, 250))) hello();
+    }, 450);
   }
 }

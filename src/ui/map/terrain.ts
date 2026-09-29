@@ -79,6 +79,17 @@ function chunkTiles(L: number): number {
   return Math.max(1, Math.min(32, Math.floor(CHUNK_PX / L)));
 }
 
+/**
+ * Free a dropped chunk's pixels now. WebKit keeps a canvas backing store until
+ * garbage collection and caps the total canvas memory per page, so chunks that
+ * are merely dereferenced can blank the map in Safari after a lot of zooming.
+ */
+function release(ch: Chunk | undefined): void {
+  if (!ch) return;
+  ch.canvas.width = 0;
+  ch.canvas.height = 0;
+}
+
 function newCanvas(w: number, h: number): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.ceil(w));
@@ -190,13 +201,17 @@ export function createTerrainLayer(): TerrainLayer {
       // the level on screen keeps its old picture until the new one is ready; the coarsest
       // level is the universal fallback, so it is kept (stale) too; other levels are dropped
       if (ch.L === lastL || ch.L === LODS[0]) ch.stale = true;
-      else cache.delete(key);
+      else {
+        cache.delete(key);
+        release(ch);
+      }
     }
   }
 
   function reset(s: SimState): void {
     S = s;
     F = null;
+    for (const ch of cache.values()) release(ch);
     cache.clear();
     queue.length = 0;
     queued.clear();
@@ -241,7 +256,11 @@ export function createTerrainLayer(): TerrainLayer {
     if (cache.size <= CHUNK_CACHE_MAX) return;
     const arr = [...cache.values()].filter((c) => c.L !== LODS[0]).sort((a, b) => a.used - b.used);
     let k = 0;
-    while (cache.size > CHUNK_CACHE_MAX && k < arr.length) cache.delete(arr[k++].key);
+    while (cache.size > CHUNK_CACHE_MAX && k < arr.length) {
+      const ch = arr[k++];
+      cache.delete(ch.key);
+      release(ch);
+    }
   }
 
   function getScratch(w: number, h: number): CanvasRenderingContext2D {
@@ -296,6 +315,8 @@ export function createTerrainLayer(): TerrainLayer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const key = L + ':' + cx + ':' + cy;
     const ch: Chunk = { key, L, cx, cy, canvas, tx0, ty0, tw, th, used: frame, stale: false };
+    const old = cache.get(key);
+    if (old && old.canvas !== canvas) release(old);
     cache.set(key, ch);
     evict();
     const ms = performance.now() - t0;
@@ -402,7 +423,7 @@ export function createTerrainLayer(): TerrainLayer {
     const dy0 = Math.round(oy + ch.ty0 * k);
     const dx1 = Math.round(ox + (ch.tx0 + ch.tw) * k);
     const dy1 = Math.round(oy + (ch.ty0 + ch.th) * k);
-    if (dx1 <= dx0 || dy1 <= dy0) return;
+    if (dx1 <= dx0 || dy1 <= dy0 || !ch.canvas.width) return; // released chunks are 0×0
     ctx.drawImage(ch.canvas, dx0, dy0, dx1 - dx0, dy1 - dy0);
   }
 

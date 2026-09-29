@@ -27,13 +27,26 @@ charge 15 % at the window? Try it.
 
 ## Play on a Mac
 
-**Double-click `EconSim.html`.** It opens in Safari (or your default browser)
-and runs entirely offline — no install, no server. Your realm autosaves in the
-browser every month; use the menu to save/export/import.
+**Double-click `EconSim.html`.** It opens in Safari (or your default browser;
+if another app grabs it, right-click → Open With → Safari) and runs entirely
+offline — no install, no server. Safari 15.4 or newer, or any current Chrome,
+Firefox or Edge, will do. The first year is simulated while you watch the
+progress bar (a few seconds); then the realm is yours, paused. A short welcome
+note explains the premise the first time; reopen it from the menu (☰ →
+Welcome & controls). The **Almanac** tab explains how everything works.
 
-Controls: <kbd>Space</kbd> pause · <kbd>1</kbd>–<kbd>5</kbd> speed ·
-drag / two-finger scroll to pan · pinch or <kbd>+</kbd>/<kbd>−</kbd> to zoom ·
-click anything to inspect it · <kbd>Esc</kbd> to cancel.
+Controls: <kbd>Space</kbd> pause / resume · <kbd>1</kbd>–<kbd>5</kbd> speed
+(<kbd>0</kbd> pauses) · drag or two-finger scroll to pan · pinch or
+<kbd>+</kbd>/<kbd>−</kbd> to zoom · click anything to inspect it ·
+<kbd>Esc</kbd> to close or cancel · <kbd>[</kbd> <kbd>]</kbd> to switch tabs ·
+<kbd>?</kbd> Almanac · <kbd>⌘S</kbd> save · <kbd>`</kbd> frame-rate overlay.
+
+Saving: the realm autosaves in this browser every month and when you close
+the tab; **Save** keeps a second copy you can return to with **Load saved
+realm**. Saves live in the browser's storage for this file, so a private
+window keeps nothing and clearing website data erases them — use **Export to
+file…** to keep a realm as a `.json` file, and **Import from file…** to open
+it again (in any browser, on any machine).
 
 ## Develop
 
@@ -47,6 +60,8 @@ npm test             # unit + smoke tests
 npm run typecheck
 npm run sim -- --years 10 --seed 3     # headless run, prints indicators
 npm run experiments                    # policy experiments vs a baseline
+node scripts/qa/levers.mjs             # drive the built game in Chromium (also
+                                       # interact, crawl, prefill, persist, sizes, perf)
 ```
 
 `DESIGN.md` is the full specification of the economic model: goods and

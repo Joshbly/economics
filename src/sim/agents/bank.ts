@@ -110,6 +110,7 @@ const {
   BASE_RENT_SHARE,
   INIT_BANK_EQUITY_MIN,
   WORKING_LOAN_TERM,
+  BANK_RESERVE_PAY_DAYS,
 } = CFG;
 
 /** The most requests kept in the daily queue (protects against a runaway requester). */
@@ -303,6 +304,15 @@ function assetsOf(s: SimState, r: Ref): number {
   return p ? assetsOfPerson(s, p) : 0;
 }
 
+/**
+ * Borrowers' appetite for long debt against capital already in place, as a multiple of their normal
+ * leverage: 1 at a loan rate of CREDIT_RATE_REF, less when dearer (0 at REF + SCALE), more when
+ * cheaper (≤ CREDIT_MAX_MULT). Landlords (housing.ts) and firms (firms.ts) size their debt with it.
+ */
+export function creditAppetite(rate: number): number {
+  return clamp(1 + (CFG.CREDIT_RATE_REF - Math.max(0, fin(rate))) / CFG.CREDIT_RATE_SCALE, 0, CFG.CREDIT_MAX_MULT);
+}
+
 /** Typical leverage assumed when a caller asks for a quote without a borrower. */
 const TYPICAL_LEVERAGE = 0.4;
 
@@ -345,8 +355,17 @@ export function quoteRate(s: SimState, borrower: Ref, extraDebt: number): number
 function setRates(s: SimState, dep: number): void {
   const b = s.bank;
   const t = s.treasury;
-  const rr = fin(t.reserveRate);
-  const lr = fin(t.lendRate, rr);
+  const rr0 = fin(t.reserveRate);
+  const lr = fin(t.lendRate, rr0);
+  // The bank prices deposits and loans on what its reserves actually earn. Reserve interest comes
+  // out of the Purse: with auto-mint off and less than BANK_RESERVE_PAY_DAYS of it left there,
+  // reserves earn proportionally less (nothing once the Purse is dry), and the bank does not go on
+  // paying depositors interest it never receives (which would bleed its capital and choke credit).
+  let rr = rr0;
+  if (rr0 > 0 && !t.autoMint) {
+    const due = (BANK_RESERVE_PAY_DAYS * Math.max(0, b.reserves) * rr0) / DAYS_PER_YEAR;
+    if (due > 0) rr = rr0 * clamp(Math.max(0, fin(t.purse)) / due, 0, 1);
+  }
   const req = reserveRatio(s) * Math.max(0, dep);
   const short = Math.max(0, req - b.reserves);
   // How much the bank relies on the window at the margin (0 = spare reserves, 1 = fully).
@@ -835,7 +854,8 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
   } else if (p) {
     cf = BANK_INCOME_DEBT_SHARE * Math.max(0, fin(p.income));
   }
-  const yieldNew = asset ? projectYield(s, req) : 0;
+  // (a mortgage against houses already built finances no new capital: judged on the borrower's own income)
+  const yieldNew = asset && !(req.purpose === 'house' && req.project < 0) ? projectYield(s, req) : 0;
   const dscrNeed = BANK_DSCR * (1 + BANK_STANCE_DSCR * stance);
   const maxLev = BANK_MAX_LEVERAGE * (1 - BANK_STANCE_LEVERAGE * stance);
   const premium = (p ? BANK_PERSON_PREMIUM : 0) + (req.purpose === 'startup' ? BANK_STARTUP_PREMIUM : 0) + BANK_STANCE_SPREAD * stance;

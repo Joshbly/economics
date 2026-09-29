@@ -155,6 +155,14 @@ export function settleFinancing(s: SimState): void {
     }
     const age = s.day - p.created;
     if ((age >= 1 && !pending.has(p.id)) || age > FINANCING_WAIT_DAYS) {
+      // Refused: an owner who can pay for the whole works goes ahead on their own means.
+      const b = s.firms[p.builder];
+      const need = projectTotal(s, p.kind, p.town, p.sector);
+      if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner) >= need) {
+        p.prepaid = fin(p.prepaid) + pay(s, p.owner, firmRef(b.id), need, 'asset');
+        p.loanWanted = 0;
+        continue;
+      }
       const what = p.kind === 'house' ? 'new houses' : p.sector ? `a ${SECTORS[p.sector as Sector]?.name ?? 'workshop'}` : 'a building';
       const tn = s.towns[p.town]?.name ?? 'town';
       cancelProject(s, p.id);
@@ -352,21 +360,25 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   const owner = spec.owner;
   const free = investableCash(s, owner);
   if (!(total > 0)) return false;
-  let loan = 0;
-  if (free < total) {
-    let equity = ENTRY_OWNER_EQUITY * total;
-    if (free < equity) return false;
+  // Pecking order: an investor finances the bank's share of the works with a loan while the loan
+  // is cheap enough for the venture (return ≥ this borrower's rate + hurdle) and keeps their own
+  // cash for other ventures; when credit is refused or too dear, one who can pay for the whole
+  // works does so. So new capital creates credit while money is cheap, and much less when dear.
+  let equity = ENTRY_OWNER_EQUITY * total;
+  if (free < equity) return false;
+  let loan = total - equity;
+  let q = quoteRate(s, owner, loan);
+  while (q < 0 && equity < free - 1e-6) {
+    equity = Math.min(free, equity + 0.1 * total);
     loan = total - equity;
-    let q = quoteRate(s, owner, loan);
-    while (q < 0 && equity < free - 1e-6) {
-      equity = Math.min(free, equity + 0.1 * total);
-      loan = total - equity;
-      q = loan > 1 ? quoteRate(s, owner, loan) : 0;
-    }
-    if (q < 0) return false;
-    if (loan > 1 && roc < q + hurdle) return false; // this borrower's money is too dear
-    if (loan <= 1) loan = 0;
+    q = loan > 1 ? quoteRate(s, owner, loan) : 0;
   }
+  const debtOk = q >= 0 && (loan <= 1 || roc >= q + hurdle);
+  if (!debtOk) {
+    if (free < total) return false; // this borrower's money is too dear (or refused)
+    loan = 0;
+  }
+  if (loan <= 1) loan = 0;
   const r = startProject(s, spec);
   if (typeof r === 'string') return false;
   const { purpose, term } = financing(spec.kind, owner);

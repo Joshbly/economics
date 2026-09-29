@@ -66,6 +66,12 @@ import {
   CASH_TARGET_DAYS,
   DAYS_PER_MONTH,
   DAYS_PER_YEAR,
+  FIRM_DEBT_LEV,
+  FIRM_DEBT_MAX_SERVICE,
+  FIRM_DEBT_TOPUP,
+  FIRM_DEBT_TERM,
+  BANK_YOUNG_FIRM_DAYS,
+  BANK_MIN_LOAN,
   DEMAND_SLACK,
   DISTRESS_ASK_SHIFT,
   DISTRESS_BANKRUPT_DAYS,
@@ -103,6 +109,8 @@ import {
   PERISH_CLEAR_K,
   PERISH_CLEAR_MIN,
   PREPAY_CASH_DAYS,
+  LOAN_PREPAY_RATE_REF,
+  LOAN_PREPAY_MAX_SHARE,
   PRICE_EXP_EMA,
   PRICE_PLAN_DAYS,
   PROFIT_EMA,
@@ -145,12 +153,12 @@ import { chargeLevy, wageLevyRates } from '../policy/levies';
 import { wageBounds } from '../policy/limits';
 import { rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
-import type { Book, Firm, MarketState, Person, Ref, Sector, SimState, TownId } from '../types';
+import type { Book, Firm, Loan, MarketState, Person, Ref, Sector, SimState, TownId } from '../types';
 import { STATE } from '../types';
 import { clamp, ema, fin } from '../util';
 import { siteMultiplier as layoutSiteMultiplier } from '../world/layout';
 import { firmName } from '../world/names';
-import { requestLoan } from './bank';
+import { creditAppetite, quoteRate, requestLoan } from './bank';
 import { cancelProject } from './construction';
 import { fire, hasLevyBase } from './labor';
 import {
@@ -1464,9 +1472,77 @@ function cashReserve(s: SimState, f: Firm, costDay: number): number {
  * to their owners, and a steady stream keeps owners' spending steady — retained cash would
  * be a leak out of circulation, and a monthly lump would make owners' demand saw-toothed.
  */
-function payOutExcess(s: SimState, f: Firm, costDay: number): void {
+function payOutExcess(s: SimState, f: Firm, costDay: number, debt: number): void {
   const excess = f.cash - cashReserve(s, f, costDay);
-  if (excess > 1 && (f.profit > 0 || excess > CASH_TARGET_DAYS * costDay)) payDividend(s, f, DIVIDEND_SHARE * excess);
+  if (!(excess > 1 && (f.profit > 0 || excess > CASH_TARGET_DAYS * costDay))) return;
+  let out = DIVIDEND_SHARE * excess;
+  // Pecking order: when credit is dear (the bank's base rate above LOAN_PREPAY_RATE_REF) a firm
+  // puts a share of its spare cash into paying down its loans before paying its owner (at most
+  // LOAN_PREPAY_MAX_SHARE). Dear money thus shrinks the credit stock, not only new lending.
+  if (debt > 0) {
+    const share = clamp((fin(s.bank.baseRate) - LOAN_PREPAY_RATE_REF) / LOAN_PREPAY_RATE_REF, 0, LOAN_PREPAY_MAX_SHARE);
+    if (share > 0) out -= repayEarly(s, f, share * out);
+  }
+  if (out > 0.01) payDividend(s, f, out);
+}
+
+/**
+ * The long debt a firm carries on capital worth `capital` (building + tools) with a profit of
+ * `profitDay` ¤/day before interest, at loan rate `rate`: FIRM_DEBT_LEV of the capital ×
+ * bank.creditAppetite, its interest + amortisation over `term` days within FIRM_DEBT_MAX_SERVICE
+ * of the profit. Shared by world/init (the founding loans) and the firms' monthly review.
+ */
+export function desiredFirmDebt(capital: number, profitDay: number, rate: number, term: number): number {
+  if (!(capital > 0) || !(profitDay > 0)) return 0;
+  const r = Math.max(0, fin(rate));
+  const cap = (FIRM_DEBT_MAX_SERVICE * profitDay) / (1 / Math.max(1, term) + r / DAYS_PER_YEAR);
+  return Math.max(0, Math.min(FIRM_DEBT_LEV * creditAppetite(r) * capital, cap));
+}
+
+/**
+ * Monthly: a sound producer whose long debt has amortised below FIRM_DEBT_TOPUP of what it wants to
+ * carry borrows the rest against its workshop (FIRM_DEBT_TERM days): the proceeds go to its
+ * owner with the spare cash (payOutExcess), so the credit stock keeps pace with the capital stock
+ * while money is cheap, and much less when it is dear.
+ */
+function refinance(s: SimState, f: Firm, termDebt: number, debt: number): void {
+  const fref = firmRef(f.id);
+  const b = f.building >= 0 ? s.buildings[f.building] : undefined;
+  const capital = (b ? Math.max(0, fin(b.cost)) : 0) + Math.max(0, fin(f.tools)) * Math.max(0, fin(marketOf(s, f.town, G.tools).ema));
+  if (!(capital > 0)) return;
+  const r = quoteRate(s, fref, 0);
+  if (r < 0) return;
+  const want = desiredFirmDebt(capital, Math.max(0, fin(f.profitLong)) + (debt * r) / DAYS_PER_YEAR, r, FIRM_DEBT_TERM);
+  const amount = want - termDebt;
+  if (termDebt < FIRM_DEBT_TOPUP * want && amount >= Math.max(BANK_MIN_LOAN, 0.03 * capital)) {
+    requestLoan(s, { borrower: fref, amount, term: FIRM_DEBT_TERM, purpose: 'invest', project: -1 });
+  }
+}
+
+/** Repay up to `amount` of a firm's loans ahead of schedule (working capital first, then the dearest). Returns ¤ repaid. */
+function repayEarly(s: SimState, f: Firm, amount: number): number {
+  if (!(amount > 0.01)) return 0;
+  const fref = firmRef(f.id);
+  const mine: Loan[] = [];
+  for (const ln of s.loans) if (ln.active && ln.borrower === fref && ln.principal > 0) mine.push(ln);
+  if (!mine.length) return 0;
+  mine.sort((a, b) => (a.purpose === 'working' ? 0 : 1) - (b.purpose === 'working' ? 0 : 1) || b.rate - a.rate || a.id - b.id);
+  let left = amount;
+  let paid = 0;
+  for (const ln of mine) {
+    if (!(left > 0.01)) break;
+    const a = repayPrincipal(s, fref, Math.min(left, ln.principal));
+    ln.principal -= a;
+    left -= a;
+    paid += a;
+    if (ln.principal <= 1e-6) {
+      if (ln.principal > 0) writeOff(s, ln.principal);
+      ln.principal = 0;
+      ln.active = false;
+    }
+  }
+  if (paid > 0) bump(s, 'loans_prepaid', paid);
+  return paid;
 }
 
 /** Month end: repay working loans early when flush. */
@@ -1604,7 +1680,7 @@ export function firmsEndDay(s: SimState): void {
       monthEndFinance(s, f, costDay, working);
       f.monthProfit = 0;
     }
-    payOutExcess(s, f, costDay);
+    payOutExcess(s, f, costDay, debts.debt[i] ?? 0);
     const unpaid = i < sc.n ? sc.unpaid[i] : 0;
     const short = i < sc.n ? sc.short[i] : 0;
     const low = f.cash < CASH_LOW_DAYS * costDay;
@@ -1617,6 +1693,11 @@ export function firmsEndDay(s: SimState): void {
         amount = Math.min(amount, room);
         if (amount > 1) requestLoan(s, { borrower: fref, amount, term: WORKING_LOAN_TERM, purpose: 'working', project: -1 });
       }
+    }
+
+    if (d.producer && (s.day + f.id) % DAYS_PER_MONTH === 0 && !pending.has(fref) && !((debts.overdue[i] ?? 0) > 0) && s.day - f.founded >= BANK_YOUNG_FIRM_DAYS && f.lossDays === 0) {
+      const dt = debts.debt[i] ?? 0;
+      refinance(s, f, dt - (debts.working[i] ?? 0), dt);
     }
 
     // An owner with spare means puts cash into a firm that could run profitably but cannot

@@ -22,6 +22,7 @@ export interface TopbarActions {
   exportFile(): void;
   importFile(): void;
   help(): void;
+  welcome(): void;
 }
 
 export interface Topbar {
@@ -179,7 +180,9 @@ const INDICATORS: IndDef[] = [
     title: 'The Purse',
     explain: 'Money the Treasury holds. Spending from it puts money into circulation; collecting pulls it out. You can always create more with Mint — at a price.',
     read(s) {
-      const p = L(s, 'purse');
+      // Live balance (the stats sample is end-of-day; actions while paused move the Purse at once).
+      const live = s.treasury?.purse;
+      const p = typeof live === 'number' && Number.isFinite(live) ? live : L(s, 'purse');
       const tr = trend(D(s, 'purse'), 30);
       return {
         value: fmtMoneyShort(p),
@@ -332,6 +335,7 @@ export function createTopbar(actions: TopbarActions): Topbar {
       item('dice', 'Random events', null, () => act({ type: 'setEvents', value: !events }, true), events),
       h('div', { class: 'menu-sep' }),
       item('book', 'Almanac & help', '?', actions.help),
+      item('info', 'Welcome & controls', null, actions.welcome),
     );
     document.body.appendChild(menuEl);
     const r = menuBtn.getBoundingClientRect();
@@ -421,6 +425,7 @@ export function createTopbar(actions: TopbarActions): Topbar {
   }
 
   on('speed', () => paintSpeed());
+  on('action', () => update(true));
   on('newgame', () => {
     lastDay = -1;
     lastRealm = '';

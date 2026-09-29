@@ -73,16 +73,13 @@ export function applyScenario(s: SimState, id: string): void {
       s.bank.stance = 0;
       s.bank.baseRate = SCEN_CREDIT_RESERVE_RATE + BANK_BASE_SPREAD;
       s.bank.depositRate = Math.max(0, SCEN_CREDIT_RESERVE_RATE - 0.01);
-      // Fresh loans for most producing firms; the proceeds sit in their accounts (new money).
-      const borrowed = new Set<number>();
-      for (const l of s.loans) if (l.active) borrowed.add(l.borrower);
+      // Fresh loans (on top of their mortgages) for most producing firms; the proceeds sit in their accounts (new money).
       const producers = s.firms.filter((f) => f && f.alive && SECTORS[f.sector].producer);
       const want = Math.round(producers.length * SCEN_CREDIT_LOAN_SHARE);
-      let have = producers.filter((f) => borrowed.has(firmRef(f.id))).length;
+      let have = 0;
       for (const f of producers) {
         if (have >= want) break;
         const ref = firmRef(f.id);
-        if (borrowed.has(ref)) continue;
         const b = s.buildings[f.building];
         let toolsValue = 0;
         const m = s.markets[f.town * N_GOODS + G.tools];
@@ -93,7 +90,6 @@ export function applyScenario(s: SimState, id: string): void {
         const spread = 0.006;
         newLoan(s, ref, principal, spread, s.bank.baseRate + spread, STARTUP_LOAN_TERM, 'invest');
         f.cash += principal; // world-init endowment (the loan's deposit), reconciled below
-        borrowed.add(ref);
         have++;
       }
       reconcileBank(s);

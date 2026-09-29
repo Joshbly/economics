@@ -35,11 +35,8 @@ export const INIT_CASH_SIGMA = 0.5;
 export const INIT_OWNER_CASH_DAYS = 400;
 /** Firms start with this many days of costs in cash. */
 export const INIT_FIRM_CASH_DAYS = 18;
-/** Fraction of firms that start with a loan, and its size as a share of capital. */
-export const INIT_LOAN_SHARE = 0.45;
-export const INIT_LOAN_TO_CAPITAL = 0.35;
 /** Bank's initial equity as a fraction of its loans (and a floor in ¤). */
-export const INIT_BANK_EQUITY_RATIO = 0.14;
+export const INIT_BANK_EQUITY_RATIO = 0.13;
 export const INIT_BANK_EQUITY_MIN = 8000;
 export const INIT_PURSE = 12000;
 export const INIT_TREASURY_GOLD = 150; // oz
@@ -72,10 +69,11 @@ export const INIT_DRIVER_SLACK = 1.2;
 export const INIT_LOAN_TERM = 7200;
 /** Founding loans have at least this share of INIT_LOAN_TERM left … */
 export const INIT_LOAN_LEFT_MIN = 0.5;
-/** … and are sized so interest + amortisation take at most this share of expected profit. */
-export const INIT_LOAN_MAX_SERVICE = 0.6;
 /** Bank reserves at founding: at least this share of deposits (any gap is window debt). */
 export const INIT_RESERVE_MIN_SHARE = 0.08;
+/** Founding bank credit: firms' mortgages (above) and landlords' house mortgages at the level they carry in the
+ *  steady state (HOUSE_DEBT_*). With no founding IOUs, reserves = deposits + equity − credit: credit ≈ 85 % of
+ *  deposits leaves reserves ≈ 25 % of deposits (equity 13 % of credit), so interest on reserves is a moderate Purse cost. */
 /** World prices vs harbor prices at founding: goods cheap abroad (imported), dear abroad (exported), neutral. */
 export const INIT_WORLD_CHEAP: [number, number] = [0.72, 0.82];
 export const INIT_WORLD_DEAR: [number, number] = [1.2, 1.32];
@@ -542,9 +540,42 @@ export const BANK_DIVIDEND_SHARE = 0.5;
 export const BANK_FAIL_GRACE_DAYS = 30;
 export const LOAN_DEFAULT_OVERDUE_DAYS = 60;
 export const WORKING_LOAN_TERM = 360;
-export const INVEST_LOAN_TERM = 720;
-export const STARTUP_LOAN_TERM = 1440;
-export const HOUSE_LOAN_TERM = 3600;
+export const INVEST_LOAN_TERM = 1440;
+export const STARTUP_LOAN_TERM = 2880;
+export const HOUSE_LOAN_TERM = 7200;
+/** Reserves count as earning the reserve rate only while the Purse holds this many days of that interest (auto-mint off):
+ *  the bank prices deposits and loans on the reserve interest it actually receives. */
+export const BANK_RESERVE_PAY_DAYS = 30;
+/** Pecking order: when the bank's base rate is above this, firms put a share of their spare cash ((base − ref)/ref,
+ *  at most LOAN_PREPAY_MAX_SHARE) into paying down loans before paying their owners. */
+export const LOAN_PREPAY_RATE_REF = 0.06;
+export const LOAN_PREPAY_MAX_SHARE = 0.5;
+/** Borrowers' appetite for long debt against capital already in place (bank.creditAppetite): a multiple of their normal
+ *  leverage that is 1 at a loan rate of CREDIT_RATE_REF, falls by 1 for every CREDIT_RATE_SCALE of rate above it (none
+ *  at REF + SCALE) and rises as money gets cheaper, up to CREDIT_MAX_MULT. */
+export const CREDIT_RATE_REF = 0.05;
+export const CREDIT_RATE_SCALE = 0.2;
+export const CREDIT_MAX_MULT = 1.5;
+/** Landlords' mortgages (agents/housing.landlordFinance): HOUSE_DEBT_LTV of their houses' book value × the appetite, none
+ *  once the rate reaches the houses' rent yield. Each reviews it once a month: below HOUSE_DEBT_TOPUP × the desired debt
+ *  they borrow the rest against their houses (mortgages roll over as they amortise); above HOUSE_DEBT_PAYDOWN × they pay
+ *  it down with cash beyond HOUSE_DEBT_KEEP_DAYS of income. */
+export const HOUSE_DEBT_LTV = 0.08;
+export const HOUSE_DEBT_TOPUP = 0.85;
+export const HOUSE_DEBT_PAYDOWN = 1.2;
+export const HOUSE_DEBT_KEEP_DAYS = 60;
+/** … paying down at most this share of the debt at each monthly review. */
+export const HOUSE_DEBT_PAYDOWN_MONTH = 0.05;
+/** … and interest + amortisation stay within this share of the rent the houses bring in. */
+export const HOUSE_DEBT_MAX_SERVICE = 0.45;
+/** Firms' long debt (agents/firms.desiredFirmDebt): FIRM_DEBT_LEV of their capital (building + tools) × the appetite,
+ *  its interest + amortisation within FIRM_DEBT_MAX_SERVICE of profit. Every founding producer starts at that level; each
+ *  month a sound producer below FIRM_DEBT_TOPUP × the desired debt borrows the rest over FIRM_DEBT_TERM days (the
+ *  workshop's mortgage rolls over as it amortises). Dear money: the pecking order (LOAN_PREPAY_RATE_REF) pays it down. */
+export const FIRM_DEBT_LEV = 0.145;
+export const FIRM_DEBT_MAX_SERVICE = 0.6;
+export const FIRM_DEBT_TOPUP = 0.8;
+export const FIRM_DEBT_TERM = 3600;
 // -- added by finance-trade engineer --
 /** Operating reserves the bank keeps above any legal requirement (share of deposits). */
 export const BANK_RESERVE_BUFFER = 0.01;

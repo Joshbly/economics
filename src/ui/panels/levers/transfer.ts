@@ -151,8 +151,10 @@ export function transferLever(): Lever {
     }
     preview.replaceChildren(...bits);
     setText(go, dir === 1 ? 'Give now' : 'Take now');
-    go.disabled = !(a > 0) || t.n === 0 || (dir === 1 && !s.treasury.autoMint && !(purse > 0));
-    if (dir === 1 && !s.treasury.autoMint && !(purse > 0) && a > 0 && t.n > 0) preview.append(h('span', { class: 'bad' }, ' The Purse is empty.'));
+    // a Purse under half a penny is empty (dust left after a capped payout)
+    const empty = dir === 1 && !s.treasury.autoMint && !(purse >= 0.005);
+    go.disabled = !(a > 0) || t.n === 0 || empty;
+    if (empty && a > 0 && t.n > 0) preview.append(h('span', { class: 'bad' }, ' The Purse is empty.'));
   }
 
   async function submit(): Promise<void> {
@@ -164,6 +166,7 @@ export function transferLever(): Lever {
     const money = fin(s.stats?.latest?.money);
     const purse = fin(s.treasury.purse);
     const want = dir === 1 ? a * t.n : t.takeable;
+    if (dir === 1 && !s.treasury.autoMint && !(purse >= 0.005)) return msg.err('The Purse is empty. Create money with Mint, or switch on auto-mint.');
     // what would actually move: without auto-mint a payout is capped by the Purse
     const capped = dir === 1 && !s.treasury.autoMint && want > Math.max(0, purse);
     const total = capped ? Math.max(0, purse) : want;

@@ -345,6 +345,16 @@ const EXPERIMENTS: Experiment[] = [
     show: ['money', 'unemp'],
   },
   {
+    id: '5b',
+    name: 'Window rates to 0 %',
+    arms: [{ name: 'window 0 %', setup: (g) => act(g, { type: 'setWindow', reserveRate: 0, lendRate: 0.01 }, 'window') }],
+    checks: [
+      { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.03 },
+      { label: 'investment up', metric: 'inv', kind: 'up', tol: 0.03 },
+    ],
+    show: ['money', 'cpi', 'unemp'],
+  },
+  {
     id: '6',
     name: 'Paved road farm town ↔ capital',
     days: (o) => Math.max(o.days, 540),
