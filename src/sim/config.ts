@@ -456,6 +456,10 @@ export const BUILDER_MAX_BID_MULT = 1.6;
 export const BUILDER_BLOCKED_SHARE = 0.3;
 /** Effective labour of a Treasury worker on construction (no tools of their own). */
 export const STATEWORKS_BUILD_EFF = 0.8;
+/** Labour orders that staff Treasury projects: size the crew to do a project's remaining labour in about this many days. */
+export const AUTO_CREW_DAYS = 30;
+/** …and employ at most this many people in a town unless the order says otherwise. */
+export const AUTO_CREW_MAX = 60;
 /** Builders hire at most this many workers beyond those their tools can equip (construction.ts constructionPlan). */
 export const BUILDER_TOOLLESS_HANDS = 2;
 /** Routes are recomputed after this many newly paved tiles (and on completion). */

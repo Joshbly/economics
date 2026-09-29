@@ -72,7 +72,7 @@ import { addAsk, addBid, type Books } from '../market/markets';
 import { aimedRateAt, bankClaimRoom, inGroup, isAimed, isTargetedSale, primeAimedRates, rateIn, steerLevies } from './levies';
 import { heldAtOrigin, isRouteOrder, marketFloor, newRoute, routeBusy, routeFloor } from './routes';
 import { news } from '../stats/events';
-import { cancelProject, estimateCost, startProject } from '../agents/construction';
+import { cancelProject, estimateCost, startProject, treasuryCrewWanted } from '../agents/construction';
 import { freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
 import { roadPlan } from '../world/paths';
 import { LINE_MAX_FARE, LINE_MAX_WAGONS, TOOLS_PER_WAGON } from '../config';
@@ -644,7 +644,9 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
   }
   if (m.kind === 'labor') {
     const lcap = o.total >= 0 ? ` (at most ${qtyText(o.total)} worker-days in all)` : '';
-    return `The Treasury will employ up to ${qtyText(o.qty)} people in ${townName(s, m.town)} at ${moneyText(o.price)} a day${span}${lcap}. They work on the Treasury's building projects there, or wait idle.`;
+    if (o.staff === 'projects')
+      return `The Treasury will employ as many people in ${townName(s, m.town)} as its building projects there can use — ${qtyText(o.staffToday ?? 0)} today, never more than ${qtyText(o.qty)} — ${priceTerms(s, o, '')}${span}${lcap}, and let them go as the projects finish.`;
+    return `The Treasury will employ up to ${qtyText(o.qty)} people in ${townName(s, m.town)} ${priceTerms(s, o, '')}${span}${lcap}. They work on the Treasury's building projects there, or wait idle.`;
   }
   if (m.kind === 'good') {
     const what = amountOf(m.good, o.qty);
@@ -661,8 +663,11 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
     : `The Treasury will sell up to ${qtyText(o.qty)} oz of gold a day, ${priceTerms(s, o, ' an ounce')}${span}${cap}.`;
 }
 
-function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null, mode: OrderPriceMode = 'fixed', band = 0): string {
-  if (m.kind === 'labor') return `Employ ${qtyText(qty)} · ${townName(s, m.town)} · ${moneyText(price)}/day`;
+function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null, mode: OrderPriceMode = 'fixed', band = 0, staff?: 'projects'): string {
+  if (m.kind === 'labor') {
+    const wage = mode === 'follow' ? `going wage${band > 0 ? ' +' + pctText(band) : ''}` : `${moneyText(price)}/day`;
+    return staff === 'projects' ? `Staff projects · ${townName(s, m.town)} · ≤${qtyText(qty)} · ${wage}` : `Employ ${qtyText(qty)} · ${townName(s, m.town)} · ${wage}`;
+  }
   const lim =
     mode === 'any' ? 'any price' : mode === 'follow' ? `market ${side === 'buy' ? '+' : '−'}${pctText(band)}` : `${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
   const base = `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${lim}`;
@@ -968,6 +973,12 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
           next.price = lim;
         }
       }
+      let staff: 'projects' | undefined = o.staff;
+      if (p.staff !== undefined) {
+        if (p.staff !== 'projects' && p.staff !== 'fixed') return fail('Staffing is either automatic (for the projects) or a set number.');
+        if (o.market.kind !== 'labor') return fail('Only an order for workers can staff projects.');
+        staff = p.staff === 'projects' ? 'projects' : undefined;
+      }
       if (p.price !== undefined && next.priceMode === 'fixed') {
         if (!isNum(p.price) || p.price < 0 || p.price > PLAYER_MAX_PRICE) return fail('The price must be a number between 0 and ' + moneyText(PLAYER_MAX_PRICE) + '.');
         if (o.side === 'buy' && p.price <= 0) return fail('A buying price must be above zero.');
@@ -1006,8 +1017,15 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         o.route.sellPrice = sellSpec.price;
         o.route.sellMargin = sellSpec.margin;
       }
+      if (staff === 'projects') {
+        o.staff = 'projects';
+        o.staffToday = Math.min(o.qty, treasuryCrewWanted(s, (o.market as { town: TownId }).town));
+      } else {
+        delete o.staff;
+        delete o.staffToday;
+      }
       if (o.total >= 0 && o.filled >= o.total && o.enabled) o.enabled = false;
-      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route, o.priceMode, o.band);
+      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route, o.priceMode, o.band, o.staff);
       return { ok: true, message: o.enabled ? describeOrder(s, o) : 'Order paused.', id: o.id };
     }
     case 'cancelOrder': {
@@ -1171,7 +1189,15 @@ function lowerFirst(t: string): string {
 // reach down to its floor, so a ¤0 floor with a large quantity sells at PRICE_MIN.
 
 /** Today's reference price of a Treasury order's market (0 if none known). */
+/** The going wage in a town: its workshops' average posted wage (else the founding wage). */
+export function goingWage(s: SimState, town: TownId): number {
+  const t = s.towns[town];
+  const w = t ? fin(t.avgWage) : 0;
+  return w > 0 ? w : fin(s.stats?.baseWage);
+}
+
 function orderRefPrice(s: SimState, m: OrderMarket): number {
+  if (m.kind === 'labor') return goingWage(s, m.town);
   const mk = m.kind === 'good' ? s.markets[m.town * N_GOODS + m.good] : m.kind === 'iou' ? s.iouMarket : m.kind === 'gold' ? s.goldMarket : undefined;
   const p = mk ? (mk.ema > 0 ? mk.ema : mk.price) : 0;
   if (p > 0 && Number.isFinite(p)) return p;
@@ -1191,8 +1217,9 @@ function sellFloorShare(m: OrderMarket): number {
  */
 export function effectiveOrderLimit(s: SimState, o: Pick<PlayerOrder, 'market' | 'side' | 'price' | 'priceMode' | 'band'>): number {
   const mode = o.priceMode ?? 'fixed';
-  if (mode === 'fixed' || o.market.kind === 'labor') return o.price;
+  if (mode === 'fixed' || (o.market.kind === 'labor' && mode !== 'follow')) return o.price;
   const ref = orderRefPrice(s, o.market);
+  if (o.market.kind === 'labor') return ref > 0 ? ref * (1 + Math.min(ORDER_BAND_MAX, Math.max(0, fin(o.band)))) : o.price;
   if (!(ref > 0)) return 0;
   const floor = ref * sellFloorShare(o.market);
   if (mode === 'follow') {
@@ -1205,6 +1232,10 @@ export function effectiveOrderLimit(s: SimState, o: Pick<PlayerOrder, 'market' |
 /** The price part of an order's description, in words. */
 function priceTerms(s: SimState, o: Pick<PlayerOrder, 'market' | 'side' | 'price' | 'priceMode' | 'band'>, unit: string): string {
   const mode = o.priceMode ?? 'fixed';
+  if (o.market.kind === 'labor')
+    return mode === 'follow'
+      ? `at the going wage${o.band > 0 ? ` plus ${pctText(o.band)}` : ''} (${moneyText(effectiveOrderLimit(s, o))} a day today)`
+      : `at ${moneyText(o.price)} a day`;
   if (mode === 'any') return o.side === 'buy' ? 'at whatever price the market asks' : 'for whatever the market pays';
   if (mode === 'follow') {
     const b = pctText(o.band);
@@ -1271,7 +1302,10 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     route = rc.route;
     routeNote = rc.note;
   }
-  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, route, mode, band);
+  if (a.staff !== undefined && a.staff !== 'projects') return fail('Staffing is either automatic (for the projects) or a set number.');
+  if (a.staff === 'projects' && m.kind !== 'labor') return fail('Only an order for workers can staff projects.');
+  const staff = a.staff === 'projects' ? 'projects' : undefined;
+  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, route, mode, band, staff);
   const market: OrderMarket =
     m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : { kind: m.kind };
   const o: PlayerOrder = {
@@ -1293,6 +1327,10 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     priceMode: mode,
     band,
   };
+  if (staff && m.kind === 'labor') {
+    o.staff = staff;
+    o.staffToday = Math.min(qty, treasuryCrewWanted(s, m.town));
+  }
   s.policy.orders.push(o);
   let note = '';
   if (m.kind === 'good' && a.side === 'sell' && (s.treasury.goods[m.town]?.[m.good] ?? 0) <= 1e-9)
@@ -1317,7 +1355,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
 function checkPriceMode(mode: unknown, band: unknown, m: OrderMarket): { ok: true; mode: OrderPriceMode; band: number } | { ok: false; message: string } {
   if (mode === undefined || mode === 'fixed') return { ok: true, mode: 'fixed', band: 0 };
   if (mode !== 'follow' && mode !== 'any') return { ok: false, message: 'Choose a fixed price, a price that follows the market, or any price.' };
-  if (m.kind === 'labor') return { ok: false, message: 'Treasury workers are hired at a fixed daily wage.' };
+  if (m.kind === 'labor' && mode === 'any') return { ok: false, message: 'Treasury workers are hired at a daily wage: a fixed one, or the going wage plus a margin.' };
   if (mode === 'any') return { ok: true, mode, band: 0 };
   const b = band === undefined ? 0.1 : band;
   if (!isNum(b) || b < 0 || b > ORDER_BAND_MAX) return { ok: false, message: `The band around the going price must lie between 0% and ${pctText(ORDER_BAND_MAX)} (0.1 = 10%).` };
@@ -1928,9 +1966,20 @@ export function policyBeginDay(s: SimState): void {
     for (const o of P.orders) {
       if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== f.town || o.side !== 'buy') continue;
       if (orderExhausted(o)) continue;
+      // The going wage + band, re-set each morning.
+      if (o.priceMode === 'follow') {
+        const w = effectiveOrderLimit(s, o);
+        if (w > 0) o.price = w;
+      }
+      // Staffing the town's projects: as many as they can use today, within the order's maximum.
+      let want = o.qty;
+      if (o.staff === 'projects') {
+        want = Math.min(o.qty, treasuryCrewWanted(s, f.town));
+        o.staffToday = want;
+      }
       // Never more workers than the order's remaining worker-days.
-      target += o.total >= 0 ? Math.min(o.qty, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : o.qty;
-      if (o.price > wage) wage = o.price;
+      target += o.total >= 0 ? Math.min(want, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : want;
+      if (want > 0 && o.price > wage) wage = o.price;
     }
     if (P.lines?.length) {
       const d = lineDriversWanted(s, f.town);
@@ -2150,8 +2199,9 @@ export function playerAfterClear(s: SimState, books: Books): void {
       let left = f.workers.length;
       for (const o of orders) {
         if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== f.town) continue;
-        const room = o.total >= 0 ? Math.max(0, o.total - o.filled) : o.qty;
-        const n = Math.min(o.qty, left, room);
+        const wanted = o.staff === 'projects' ? (o.staffToday ?? 0) : o.qty;
+        const room = o.total >= 0 ? Math.max(0, o.total - o.filled) : wanted;
+        const n = Math.min(wanted, left, room);
         left -= n;
         o.filledToday = n;
         o.filled += n;

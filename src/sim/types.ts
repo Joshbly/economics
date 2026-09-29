@@ -278,6 +278,9 @@ export interface Project {
   label: string;
   prepaid: number; // ¤ the owner has advanced to the builder and not yet been billed (a liability of the builder) // added by firms engineer
   loanWanted: number; // ¤ of financing requested from the bank and not yet granted; > 0 = waiting, no work starts // added by firms engineer
+  /** Treasury projects: labour-days its Treasury workers put in today, and about how many of them that was. */
+  crewToday?: number;
+  crewHeads?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +636,15 @@ export interface PlayerOrder {
    */
   priceMode: OrderPriceMode;
   band: number; // fraction, for 'follow' (0.1 = within 10 % of the going price)
+  /**
+   * Labour orders only. 'projects': each morning the number of people employed is re-set to
+   * what the Treasury's building projects in the town can use (construction.treasuryCrewWanted),
+   * never more than `qty`; as projects finish the crew is let go. Absent: a fixed number (`qty`).
+   * For labour, priceMode 'follow' means the town's going wage (its average posted wage) + band.
+   */
+  staff?: 'projects';
+  /** 'projects' orders: the number of people wanted today. */
+  staffToday?: number;
 }
 
 export type OrderPriceMode = 'fixed' | 'follow' | 'any';
@@ -738,14 +750,18 @@ export type PlayerAction =
       label?: string;
       /** Goods BUY orders only: carry everything bought to another town and offer it there. */
       route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
-      /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Not for labour. */
+      /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Labour: 'fixed' or 'follow' (the going wage + band). */
       priceMode?: OrderPriceMode;
       band?: number;
+      /** Labour orders: staff the town's Treasury projects automatically (`qty` = the most to employ). */
+      staff?: 'projects';
     }
   | {
       type: 'updateOrder';
       id: number;
       patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until' | 'priceMode' | 'band'>> & {
+        /** Labour orders: 'projects' = staff the town's Treasury projects automatically; 'fixed' = a set number. */
+        staff?: 'projects' | 'fixed';
         /** Supply routes only: change how goods are offered at the destination. */
         route?: { sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
       };

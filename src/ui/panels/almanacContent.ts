@@ -40,7 +40,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a price moving more than a set share in a day; a loan rate above or below a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital (the standing 8 % rule can be raised or lowered).
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
-- **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
+- **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects (the builders bill only for the rest). With *Staff it with Treasury workers automatically* on, the town then employs as many Treasury workers as its projects can use and lets them go as they finish — the **Works** tab shows who is where. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
 - **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank; or a one-off handout of goods you hold in a town.
 
 Everything else is up to you to discover.`,
@@ -132,6 +132,12 @@ A workshop raises its wage when it cannot fill its posts, and lowers it only slo
         body: `Workshops pay their owners part of their spare coin each month. A workshop that cannot pay its workers or its loans for weeks goes under: its people are laid off, its stock is sold off cheaply, the bank loses what it lent, and the building stands empty until someone reopens it.
 
 When a trade earns much more than borrowing costs, someone with savings — or a loan — builds a new workshop. Borrowing costs therefore decide how fast the realm grows.`,
+      },
+      {
+        title: 'Treasury workers',
+        body: `The Treasury can employ people itself, in the labour market of any town, at a wage you set — a fixed one, or the town's going wage plus a margin, re-set each morning. They work on the Treasury's own building projects in their town (the builders then bill only for the rest of the labour) or drive its freight lines; with nothing to do they wait idle, still paid, and nobody else can hire them meanwhile.
+
+An order that **staffs the projects** sizes the crew for you each morning: enough to put in each project's remaining labour in about a month, no more than the materials on hand allow, and nobody once the projects are finished. The **Works** tab shows each town's crew, who is on which site, who drives and who is idle, and what each project is waiting for.`,
       },
     ],
   },

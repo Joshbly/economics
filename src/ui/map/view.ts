@@ -17,6 +17,7 @@
 // through ui.game.dispatch.
 // ============================================================================
 import { isFirm, refId } from '../../sim/ledger';
+import { ensureCrew } from '../crew';
 import { rt } from '../../sim/runtime';
 import { STATE, Terrain, type PlayerAction, type Sector, type SimState } from '../../sim/types';
 import { footprintOf, isResourceSector, isValidSite, nearestTown, siteQuality, type SiteWhat } from '../../sim/world/layout';
@@ -494,6 +495,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     setPlacing(null);
     plKey = '';
     // show the new building site in the inspector
+    if (r.ok) ensureCrew(s, pl.town); // staff it with Treasury workers (if that is switched on)
     if (r.ok && r.id !== undefined) {
       const pr = s.projects.find((q) => q && q.id === r.id);
       if (pr && pr.building >= 0 && s.buildings[pr.building]) select({ kind: 'building', id: pr.building });

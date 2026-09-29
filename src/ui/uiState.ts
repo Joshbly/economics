@@ -14,7 +14,7 @@ export type Selection =
   | { kind: 'market'; town: number; good: number }
   | null;
 
-export type TabId = 'levers' | 'markets' | 'ledger' | 'charts' | 'people' | 'almanac' | 'inspect';
+export type TabId = 'levers' | 'works' | 'markets' | 'ledger' | 'charts' | 'people' | 'almanac' | 'inspect';
 
 export type OverlayId = 'none' | 'price' | 'unemployment' | 'wealth' | 'health' | 'rent';
 

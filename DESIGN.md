@@ -413,7 +413,13 @@ that pay ¤5 per year each, forever). Seven primitives:
 1. **Mint** — create (or destroy) money in the Purse.
 2. **Trade** — post buy/sell orders in *any* market: any good in any town, the
    labour market of a town (hire Treasury workers at a wage — they work on
-   Treasury construction projects in that town, or idle), the IOU market
+   Treasury construction projects in that town, or idle; the wage is fixed or
+   `follow` = the town's going wage (average posted wage) + band, re-set each
+   morning; `staff: 'projects'` re-sets the headcount each morning to what the
+   town's Treasury projects can use — each active, financed, unstalled project's
+   remaining labour over AUTO_CREW_DAYS, no more than its materials on hand allow,
+   ÷ STATEWORKS_BUILD_EFF (construction.treasuryCrewWanted), capped by `qty` — so
+   the crew is let go as the projects finish), the IOU market
    (selling = issuing new IOUs, buying = retiring them), the Gold market.
    Price limit, quantity per day, duration (once / N days / standing), optional
    total cap. Also *Move goods* between towns (pays freight).

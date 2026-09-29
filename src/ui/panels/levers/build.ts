@@ -20,9 +20,10 @@ import { STATE, type Materials, type ProjectKind, type Sector, type SimState } f
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { centerMap, on, setPlacing, ui, type PrefillRequest } from '../../uiState';
-import { button, icon, numberInput, segmented, selectInput, townOptions, type Option } from '../../widgets';
+import { button, icon, numberInput, segmented, selectInput, toggle, townOptions, type Option } from '../../widgets';
 import { banner, dynRow, fin, fmtM, formEl, formFoot, msgLine, row, run, safe, subhead, submitButton, townName, type Lever } from './common';
 import { projectList, treasuryProjects } from './projects';
+import { autoCrewOn, ensureCrew, setAutoCrew } from '../../crew';
 import { freightLines, lineList } from './lines';
 
 type BKind = 'road' | 'house' | 'firm' | 'pier' | 'expand' | 'line';
@@ -142,6 +143,8 @@ export function buildLever(): Lever {
   const showRoute = button({ label: 'Show route', kind: 'ghost', size: 'sm', icon: icon('target', 14), onClick: () => showOnMap() });
   const pickSite = button({ label: 'Choose on map', kind: 'secondary', title: 'Click a spot on the map; Esc cancels', icon: icon('target', 14), onClick: () => startPlacing() });
   const go = submitButton('Commission');
+  const crewSw = toggle({ value: autoCrewOn(), title: 'After commissioning, the town employs as many Treasury workers as its Treasury projects can use (the going wage + 10%) and lets them go as the projects finish', onChange: (v) => setAutoCrew(v) });
+  const crewRow = row('Crew', h('span', { class: 'lv-crew' }, crewSw.el, h('span', { class: 'lv-hint-inline' }, 'Staff it with Treasury workers automatically — see the Works tab')));
   const preview = h('div', { class: 'lv-preview' });
 
   const projects = projectList({ empty: 'No Treasury projects yet. Anything commissioned here appears with its progress.' });
@@ -150,7 +153,7 @@ export function buildLever(): Lever {
   const lineCount = h('span', { class: 'lv-sub-v' });
   const linesHead = subhead('Treasury freight lines', lineCount);
 
-  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, fareRow, townRow.el, sectorRow, firmRow, what, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
+  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, fareRow, townRow.el, sectorRow, firmRow, what, crewRow, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
   const body = h('div', { class: 'lv-body-in' }, form, h('div', { class: 'lv-sep' }), linesHead, lines.el, subhead('Treasury projects', projCount), projects.el);
 
   on('placing', () => last && paint());
@@ -218,6 +221,7 @@ export function buildLever(): Lever {
     const sited = kind === 'house' || kind === 'firm' || kind === 'pier';
     show(pickSite, sited);
     show(showRoute, kind === 'road' || kind === 'line');
+    show(crewRow, kind !== 'line');
     setText(go, sited ? 'Let builders choose' : kind === 'line' ? 'Open the line' : 'Commission');
     go.title = sited ? 'The builders pick a free site near the town (Enter)' : kind === 'line' ? 'Open the freight line (Enter)' : 'Queue it with the builders (Enter)';
     const nLines = freightLines(s).length;
@@ -422,7 +426,13 @@ export function buildLever(): Lever {
         r = run({ type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined }, msg, '✓ Line opened — see Treasury freight lines below.');
         break;
     }
-    if (r?.ok) planKey = '';
+    if (r?.ok) {
+      planKey = '';
+      if (kind !== 'line') {
+        const t = kind === 'road' ? from : kind === 'expand' ? (s.firms[firmId]?.town ?? -1) : town;
+        ensureCrew(s, t);
+      }
+    }
   }
 
   return {

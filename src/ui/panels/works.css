@@ -1,0 +1,42 @@
+/* Works panel — the Treasury's workforce, town by town. */
+.wk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 12px; }
+.wk-actions .spacer, .wk-ctl-row .spacer, .wk-proj-head .spacer { flex: 1; }
+.wk-towns > .card + .card { margin-top: 10px; }
+.wk-head-l { display: inline-flex; align-items: baseline; gap: 8px; }
+.icon-link { background: none; border: 0; padding: 0; font-size: 11px; color: var(--ink-2); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.icon-link:hover { color: var(--ink-0); }
+.icon-link.bad:hover { color: var(--bad); }
+.wk-ctl { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--bg-2); }
+.wk-ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.wk-lab { width: 56px; flex: none; font-size: 11px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.wk-w { font-size: 12px; color: var(--ink-1); }
+.wk-hint { font-size: 11.5px; color: var(--ink-2); }
+.wk-hint-row { line-height: 1.4; }
+.wk-apply:disabled { opacity: 0.45; }
+.wk-apply.pulse { box-shadow: 0 0 0 2px var(--gold-line); }
+.wk-bar { display: flex; height: 8px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--bg-3); }
+.wk-bar-seg { display: block; height: 100%; transition: width 0.25s var(--ease); }
+.wk-bar-seg.site { background: var(--gold); }
+.wk-bar-seg.drive { background: var(--info); }
+.wk-bar-seg.idle { background: var(--ink-3); }
+.wk-bar-seg.gap { background: repeating-linear-gradient(45deg, transparent 0 3px, var(--line-3) 3px 5px); }
+.wk-legend { margin-top: 5px; font-size: 11.5px; color: var(--ink-1); }
+.wk-who { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.wk-who-row { font-size: 11.5px; line-height: 1.45; color: var(--ink-1); }
+.wk-who-t { font-weight: 600; margin-right: 6px; }
+.wk-who-t::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.wk-who-t.site::before { background: var(--gold); }
+.wk-who-t.drive::before { background: var(--info); }
+.wk-who-t.idle::before { background: var(--ink-3); }
+.wk-who-row .lv-chip { margin-left: 6px; }
+.wk-names .ent-link { font-size: 11.5px; }
+.wk-sub { margin: 10px 0 4px; font-size: 11px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.wk-proj { padding: 6px 0; border-top: 1px solid var(--line-1); }
+.wk-proj-head { display: flex; align-items: baseline; gap: 8px; }
+.wk-proj-t { font-size: 12.5px; font-weight: 600; color: var(--ink-0); }
+.wk-proj-pct { font-size: 11.5px; color: var(--gold); }
+.wk-prog { height: 4px; margin: 4px 0; border-radius: 2px; background: var(--bg-3); overflow: hidden; }
+.wk-prog > i { display: block; height: 100%; background: var(--gold); }
+.wk-proj-m { font-size: 11.5px; color: var(--ink-2); line-height: 1.45; }
+.wk-proj-m .warn { color: var(--warn); }
+.wk-extra { margin-top: 6px; }

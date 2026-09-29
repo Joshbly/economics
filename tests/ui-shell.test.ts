@@ -89,7 +89,7 @@ describe('save packing', () => {
 
 describe('panel registry', () => {
   it('has every tab once, in the documented order', () => {
-    expect(PANELS.map((p) => p.id)).toEqual(['levers', 'markets', 'ledger', 'charts', 'people', 'almanac', 'inspect']);
+    expect(PANELS.map((p) => p.id)).toEqual(['levers', 'works', 'markets', 'ledger', 'charts', 'people', 'almanac', 'inspect']);
     for (const p of PANELS) {
       expect(typeof p.mount).toBe('function');
       expect(typeof p.update).toBe('function');

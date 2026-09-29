@@ -46,6 +46,7 @@ import {
   ROAD_INVALIDATE_TILES,
   STALL_CANCEL_DAYS,
   STATEWORKS_BUILD_EFF,
+  AUTO_CREW_DAYS,
   TARGET_HYSTERESIS,
   TARGET_SMOOTH,
   TOOLS_BUFFER_DAYS,
@@ -236,6 +237,31 @@ function stateLabor(s: SimState): { labor: Float64Array; heads: Float64Array } {
     heads[f.town] += f.workers.length - drivers;
   }
   return { labor, heads };
+}
+
+/**
+ * People the Treasury's building projects in `town` can use: enough to put in each unfinished
+ * project's remaining labour in about AUTO_CREW_DAYS, counting only projects a builder is working
+ * on now (the first MAX_ACTIVE_PROJECTS in its queue, financed, not stalled). Materials still to
+ * arrive may leave some of them idle for a while. 0 when there is nothing to build.
+ */
+export function treasuryCrewWanted(s: SimState, town: TownId): number {
+  let perDay = 0;
+  for (const b of s.firms) {
+    if (!isBuilder(b) || b.town !== town || !b.build) continue;
+    for (const p of eligible(s, b, MAX_ACTIVE_PROJECTS)) {
+      if (p.owner !== STATE || p.status === 'stalled') continue;
+      const rem = Math.max(0, fin(p.need.labor) - fin(p.done.labor));
+      if (!(rem > EPS)) continue;
+      // Labour cannot run more than LABOR_AHEAD_MAX ahead of the materials on hand: while they
+      // are short, hire only for the work they allow (plus a little, for what is arriving).
+      const reach = materialReach(p, b.inv);
+      const capL = Math.max(0, Math.min(1, reach + LABOR_AHEAD_MAX) * fin(p.need.labor) - fin(p.done.labor));
+      const pace = Math.max(rem / AUTO_CREW_DAYS, Math.min(rem, 1));
+      perDay += Math.min(pace, Math.max(capL, Math.min(pace, 1)));
+    }
+  }
+  return perDay > EPS ? Math.ceil(perDay / STATEWORKS_BUILD_EFF - 1e-9) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -637,6 +663,12 @@ export function constructionProgress(s: SimState): void {
   let stateHeads = 0;
   const cancelled: Project[] = [];
   const prices: number[][] = [];
+  for (const p of s.projects) {
+    if (p && p.owner === STATE) {
+      p.crewToday = 0;
+      p.crewHeads = 0;
+    }
+  }
   for (const b of s.firms) {
     if (!isBuilder(b)) continue;
     if (b.building >= 0 && s.buildings[b.building] && s.buildings[b.building].status !== 'active') continue;
@@ -658,7 +690,12 @@ export function constructionProgress(s: SimState): void {
       if (t >= 0 && t < swLeft.length) swLeft[t] = Math.max(0, swLeft[t] - st.stateLabor);
       used += st.builderLabor;
       stateLaborTotal += st.stateLabor;
-      if (st.stateLabor > 0 && t >= 0 && t < sw.length && sw[t] > 0) stateHeads += (st.stateLabor / sw[t]) * heads[t];
+      if (st.stateLabor > 0 && t >= 0 && t < sw.length && sw[t] > 0) {
+        const h = (st.stateLabor / sw[t]) * heads[t];
+        stateHeads += h;
+        p.crewToday = (p.crewToday ?? 0) + st.stateLabor;
+        p.crewHeads = (p.crewHeads ?? 0) + h;
+      }
       matVal += st.matValue;
       if (isComplete(p)) complete(s, b, p);
       else if (p.stalledDays >= STALL_CANCEL_DAYS) cancelled.push(p);

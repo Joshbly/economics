@@ -186,7 +186,8 @@ function labourHeads(s: SimState, town: TownId): number {
   for (const o of s.policy.orders) {
     if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== town || o.side !== 'buy') continue;
     if (o.total >= 0 && o.filled >= o.total - 1e-9) continue;
-    n += o.total >= 0 ? Math.min(o.qty, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : o.qty;
+    const want = o.staff === 'projects' ? (o.staffToday ?? 0) : o.qty; // an order staffing projects: today's number
+    n += o.total >= 0 ? Math.min(want, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : want;
   }
   return n;
 }

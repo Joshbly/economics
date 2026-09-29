@@ -558,3 +558,6 @@
 .lv-ln-ctl .lv-chip:disabled { opacity: 0.45; cursor: default; }
 .lv-ln-gap { flex: 1; min-width: 6px; }
 .lv-ln-list + .lv-sub { margin-top: 14px; }
+
+.lv-crew { display: inline-flex; align-items: center; gap: 8px; }
+.lv-hint-inline { font-size: 11.5px; color: var(--ink-2); }
