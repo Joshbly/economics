@@ -457,6 +457,8 @@ describe('supply routes', () => {
       filledToday: 0,
       created: 0,
       route: { to: 1, sell: 'market', sellPrice: 0, sellMargin: 0, inTransit: 0, waiting: 0, landed: 0, shippedToday: 0, soldToday: 0, shippedTotal: 0, soldTotal: 0, freightPaid: 0, revenue: 0 },
+      priceMode: 'fixed',
+      band: 0,
       ...patch,
     };
     s.policy.orders.push(o);

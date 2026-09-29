@@ -51,6 +51,10 @@ export function tradeLever(): Lever {
   let good: number = G.bread;
   let side: 'buy' | 'sell' = 'buy';
   let dur: Dur = 'standing';
+  /** How the price limit is set: fixed, following the market within a band, or none. */
+  type PMode = 'fixed' | 'f05' | 'f10' | 'f20' | 'f30' | 'any';
+  let pmode: PMode = 'fixed';
+  const bandOf = (m: PMode): number => (m === 'f05' ? 0.05 : m === 'f10' ? 0.1 : m === 'f20' ? 0.2 : m === 'f30' ? 0.3 : 0);
   let priceFor = ''; // market signature the price field was last defaulted for
   let uiMarketApplied = '';
   let last: SimState | null = null;
@@ -138,6 +142,24 @@ export function tradeLever(): Lever {
       }, k === 0 ? 'Set the limit to the current market price' : `Market price ${lab}`),
     ),
   );
+  const modeSeg = segmented<PMode>({
+    options: [
+      { value: 'fixed', label: 'Fixed', title: 'A price limit you set and that stays put' },
+      { value: 'f05', label: '±5%', title: 'Follow the market: each morning the limit re-sets to the going price, within 5%' },
+      { value: 'f10', label: '±10%', title: 'Follow the market: each morning the limit re-sets to the going price, within 10%' },
+      { value: 'f20', label: '±20%', title: 'Follow the market: each morning the limit re-sets to the going price, within 20%' },
+      { value: 'f30', label: '±30%', title: 'Follow the market: each morning the limit re-sets to the going price, within 30%' },
+      { value: 'any', label: 'Any', title: 'Any price — no limit: buying goes on however high the price climbs (while the Purse can pay); selling takes whatever the market pays' },
+    ],
+    value: pmode,
+    size: 'sm',
+    onChange: (v) => {
+      pmode = v;
+      edited();
+    },
+  });
+  const modeHint = hint();
+  const modeRow = dynRow('Price', modeSeg.el, modeHint);
   const priceRow = dynRow('Price limit', price.el, pctChips);
   const priceHint = hint();
   priceRow.ctl.appendChild(priceHint);
@@ -171,6 +193,7 @@ export function tradeLever(): Lever {
     marketRow,
     ref,
     sideRow.el,
+    modeRow.el,
     priceRow.el,
     qtyRow.el,
     durRow,
@@ -251,6 +274,13 @@ export function tradeLever(): Lever {
     if (kind === 'gold') return s.goldMarket;
     if (kind === 'good' || kind === 'route') return s.markets[town * N_GOODS + good];
     return undefined;
+  }
+  /** The going price the simulation follows (the market's smoothed clearing price). */
+  function goingPrice(s: SimState): number {
+    if (kind === 'labor') return 0;
+    const m = market(s);
+    const p = m ? (m.ema > 0 ? m.ema : m.price) : 0;
+    return fin(p) > 0 ? p : kind === 'iou' ? IOU_PAR : 0;
   }
   function refPrice(s: SimState): number {
     if (kind === 'labor') {
@@ -413,6 +443,30 @@ export function tradeLever(): Lever {
           : `Market ${fmtPrice(r)}${u.price}`,
     );
 
+    // price mode: follow the market / any price (not for wages)
+    const canFollow = kind !== 'labor';
+    if (!canFollow && pmode !== 'fixed') {
+      pmode = 'fixed';
+      modeSeg.set('fixed');
+    }
+    show(modeRow.el, canFollow);
+    show(priceRow.el, pmode === 'fixed');
+    const going = goingPrice(s);
+    const band = bandOf(pmode);
+    const sign = side === 'buy' ? '+' : '−';
+    setText(
+      modeHint,
+      pmode === 'fixed'
+        ? 'Your limit stays where you set it.'
+        : !(going > 0)
+          ? 'This market has no going price yet to follow.'
+          : pmode === 'any'
+            ? side === 'buy'
+              ? `No limit: keeps buying however high the price goes (going price ≈ ${fmtPrice(going)}${u.price}), as long as the Purse can pay.`
+              : `No floor: takes whatever the market pays (going price ≈ ${fmtPrice(going)}${u.price}).`
+            : `Each morning the limit re-sets to the going price ${sign}${Math.round(band * 100)}% — today ${fmtPrice(going * (side === 'buy' ? 1 + band : 1 - band))}${u.price}.`,
+    );
+
     // quantity hint
     if (kind === 'good') {
       const have = fin(t.goods[town]?.[good]);
@@ -423,20 +477,22 @@ export function tradeLever(): Lever {
     } else if (kind === 'iou') setText(qtyHint, side === 'buy' ? `In public hands: ${fmtNum(fin(t.iouOutstanding))}.` : 'New IOUs are created as they sell.');
     else setText(qtyHint, `The Treasury holds ${fmtQ(fin(t.gold))} oz.`);
 
-    // preview
+    // preview (a following order is estimated at today's limit; 'any price' at the going price)
+    const pEff = pmode === 'fixed' ? p : pmode === 'any' ? (side === 'buy' ? going : 0) : going * (side === 'buy' ? 1 + band : 1 - band);
     const q = qty.value;
     const n = dur === 'days' ? days.value : dur === 'once' ? 1 : NaN;
     const cap = total.value;
-    const perDay = p * q;
+    const perDay = pEff * q;
     const bits: (string | Node)[] = [];
     const B = (x: string) => h('b', null, x);
     const span = dur === 'once' ? ', today only' : dur === 'days' && n > 0 ? `, for ${plural(n, 'day')}` : ', until cancelled';
-    if (!(p > 0) && !(kind !== 'labor' && side === 'sell' && p === 0)) bits.push('Set a price limit.');
+    if (pmode !== 'fixed' && !(going > 0)) bits.push('No going price to follow yet — choose Fixed.');
+    else if (pmode === 'fixed' && !(p > 0) && !(kind !== 'labor' && side === 'sell' && p === 0)) bits.push('Set a price limit.');
     else if (!(q > 0)) bits.push('Set a quantity per day.');
     else if (kind === 'labor') {
       bits.push('Up to ', B(fmtM(perDay)), ' a day in wages for ', B(plural(Math.round(q), 'worker')), ' in ', townName(s, town), span, '. Paid from the Purse.');
     } else if (kind === 'good' && side === 'buy') {
-      bits.push('Up to ', B(fmtM(perDay)), ' a day from the Purse', span, '.');
+      bits.push(pmode === 'any' ? 'About ' : 'Up to ', B(fmtM(perDay)), ' a day from the Purse at today’s prices', span, pmode === 'any' ? ' — more if the price climbs.' : '.');
     } else if (kind === 'good') {
       const have = fin(t.goods[town]?.[good]);
       bits.push('Sells from your holdings in ', townName(s, town), ': ', B(`${fmtQ(have)} available`), have > 0 ? `, raising at least ${fmtM(perDay)} a day if all ${q === 1 ? 'of it sells' : 'sell'}` : ' — buy some there or move goods in first', '.');
@@ -451,20 +507,20 @@ export function tradeLever(): Lever {
     }
     if (cap > 0 && q > 0) bits.push(' Stops after ', B(`${fmtQ(cap)} ${u.total}`), ' in all.');
     const buying = kind === 'labor' || side === 'buy';
-    if (buying && p > 0 && q > 0 && !t.autoMint && fin(t.purse) < perDay) {
+    if (buying && pEff > 0 && q > 0 && !t.autoMint && fin(t.purse) < perDay) {
       bits.push(h('span', { class: 'warn' }, ` The Purse holds ${fmtM(fin(t.purse))}, so purchases are capped by what it can pay.`));
     }
     preview.replaceChildren(...bits);
-    const okPrice = kind !== 'labor' && side === 'sell' ? p >= 0 : p > 0;
+    const okPrice = pmode !== 'fixed' ? going > 0 : kind !== 'labor' && side === 'sell' ? p >= 0 : p > 0;
     place.disabled = !(okPrice && q > 0 && (dur !== 'days' || n > 0) && !total.error);
     setText(place, kind === 'labor' ? 'Hire' : kind === 'iou' && side === 'sell' ? 'Issue' : 'Place order');
   }
 
   function submit(): void {
     if (!last || kind === 'route') return;
-    const p = price.value;
+    const p = pmode === 'fixed' ? price.value : 0;
     const q = qty.value;
-    if (!Number.isFinite(p)) return msg.err(price.error ?? 'Set a price limit.');
+    if (pmode === 'fixed' && !Number.isFinite(p)) return msg.err(price.error ?? 'Set a price limit.');
     if (!(q > 0)) return msg.err(qty.error ?? 'Set a quantity per day.');
     if (total.error) return msg.err(total.error);
     const m: OrderMarket = kind === 'good' ? { kind: 'good', town, good } : kind === 'labor' ? { kind: 'labor', town } : { kind: kind === 'iou' ? 'iou' : 'gold' };
@@ -479,6 +535,8 @@ export function tradeLever(): Lever {
         total: total.value > 0 ? total.value : undefined,
         days: dur === 'days' ? Math.max(1, Math.round(days.value)) : undefined,
         once: dur === 'once',
+        priceMode: kind === 'labor' || pmode === 'fixed' ? 'fixed' : pmode === 'any' ? 'any' : 'follow',
+        band: pmode === 'fixed' || pmode === 'any' ? undefined : bandOf(pmode),
       },
       msg,
       '✓ Order placed — it is listed under In force.',

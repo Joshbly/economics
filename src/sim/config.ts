@@ -881,3 +881,10 @@ export const ROUTE_MARGIN_MAX = 10;
  *  the Purse pays a whole wagon's trip however little it carries. What is left leaves when the buying ends. */
 export const ROUTE_LOAD_SHARE = 0.5;
 export const ROUTE_HOLD_DAYS = 3;
+/** Bands offered for orders that follow the market (fractions of the going price). */
+export const ORDER_BANDS = [0.05, 0.1, 0.2, 0.3];
+export const ORDER_BAND_MAX = 1; // at most 100 % above/below the going price
+/** 'Any price' buys bid up to this multiple of the going price (effectively unlimited)... */
+export const ORDER_ANY_MULT = 25;
+/** ...and the Purse is budgeted as if they fill at this multiple (settlement scales fills that cannot be paid). */
+export const ORDER_ANY_BUDGET_MULT = 1.5;

@@ -533,3 +533,7 @@
 /* Stores: holdings a supply route is offering where they are */
 .lv-hold-r > span.routed { color: var(--gold-hi); }
 .lv-hold-r > span.routed::before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 5px 1px 0; border-radius: 50%; background: var(--gold); vertical-align: middle; }
+
+/* Route cards: change the destination offer in place */
+.lv-rt-offer { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 11.5px; }
+.lv-rt-offer-k { color: var(--muted, #9aa0a6); margin-right: 2px; }

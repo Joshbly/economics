@@ -104,7 +104,7 @@ describe('supply routes — placing', () => {
 
     const r = dispatch(s, { ...buy, route: { to: 1, sell: 'cost' } });
     expect(r.ok, r.message).toBe(true);
-    expect(r.message).toMatch(/^The Treasury will buy up to 20 loaves of bread a day in Millbrook at up to ¤4\.50, carry it to Kingsbridge and offer it there at landed cost\./);
+    expect(r.message).toMatch(/^The Treasury will buy up to 20 loaves of bread a day in Millbrook, paying at most ¤4\.50 each, carry it to Kingsbridge and offer it there at landed cost\./);
     const o = route(s, r.id!);
     expect(o.route).toMatchObject({ to: 1, sell: 'cost', sellMargin: 0, inTransit: 0, waiting: 0, landed: 0, shippedTotal: 0, soldTotal: 0, freightPaid: 0, revenue: 0 });
     expect(o.label).toMatch(/→ Kingsbridge$/);

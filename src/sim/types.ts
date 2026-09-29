@@ -598,7 +598,18 @@ export interface PlayerOrder {
    * town's market. null = an ordinary order.
    */
   route: OrderRoute | null;
+  /**
+   * How the limit is set each day: 'fixed' = `price` as entered; 'follow' = the market's
+   * going price (its smoothed clearing price) plus `band` for buys / minus `band` for sells,
+   * re-set every morning; 'any' = no limit (buys keep buying through spikes, capped only by
+   * the Purse; sells take whatever the auction pays). For 'follow'/'any', `price` holds
+   * today's effective limit.
+   */
+  priceMode: OrderPriceMode;
+  band: number; // fraction, for 'follow' (0.1 = within 10 % of the going price)
 }
+
+export type OrderPriceMode = 'fixed' | 'follow' | 'any';
 
 /**
  * A Treasury supply route: buy in the order's town → carry → offer at the destination.
@@ -649,8 +660,18 @@ export type PlayerAction =
       label?: string;
       /** Goods BUY orders only: carry everything bought to another town and offer it there. */
       route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
+      /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Not for labour. */
+      priceMode?: OrderPriceMode;
+      band?: number;
     }
-  | { type: 'updateOrder'; id: number; patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until'>> }
+  | {
+      type: 'updateOrder';
+      id: number;
+      patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until' | 'priceMode' | 'band'>> & {
+        /** Supply routes only: change how goods are offered at the destination. */
+        route?: { sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
+      };
+    }
   | { type: 'cancelOrder'; id: number }
   | {
       type: 'moveGoods';

@@ -185,11 +185,31 @@ export function routeComposer(): RouteComposer {
     ),
   );
   const buyHint = hint();
+  // How the buying limit is set: fixed, following the going price within a band, or none.
+  type BMode = 'fixed' | 'f05' | 'f10' | 'f20' | 'f30' | 'any';
+  let bmode: BMode = 'fixed';
+  const bandOf = (m: BMode): number => (m === 'f05' ? 0.05 : m === 'f10' ? 0.1 : m === 'f20' ? 0.2 : m === 'f30' ? 0.3 : 0);
+  const buyModeSeg = segmented<BMode>({
+    options: [
+      { value: 'fixed', label: 'Fixed', title: 'Pay at most a price you set' },
+      { value: 'f05', label: '+5%', title: 'Follow the market: pay at most 5% above the going price, re-set every morning' },
+      { value: 'f10', label: '+10%', title: 'Follow the market: pay at most 10% above the going price, re-set every morning' },
+      { value: 'f20', label: '+20%', title: 'Follow the market: pay at most 20% above the going price, re-set every morning' },
+      { value: 'f30', label: '+30%', title: 'Follow the market: pay at most 30% above the going price, re-set every morning' },
+      { value: 'any', label: 'Any', title: 'Any price — no limit: keep buying however high the price climbs, while the Purse can pay' },
+    ],
+    value: bmode,
+    size: 'sm',
+    onChange: (v) => ((bmode = v), edited()),
+  });
+  const upTo = h('span', { class: 'lv-w' }, 'at up to');
+  const followText = h('span', { class: 'lv-w' });
   const step1 = step(
     '1',
     'Buy',
     h('div', { class: 'lv-step-line' }, goodSel.el, h('span', { class: 'lv-w' }, 'in'), fromSel.el),
-    h('div', { class: 'lv-step-line' }, h('span', { class: 'lv-w' }, 'at up to'), price.el, h('span', { class: 'lv-nowrap' }, h('span', { class: 'lv-w' }, '×'), qty.el)),
+    h('div', { class: 'lv-step-line' }, buyModeSeg.el),
+    h('div', { class: 'lv-step-line' }, upTo, price.el, followText, h('span', { class: 'lv-nowrap' }, h('span', { class: 'lv-w' }, '×'), qty.el)),
     buyChips,
     buyHint,
   );
@@ -410,7 +430,15 @@ export function routeComposer(): RouteComposer {
     show(marginChips, mode === 'cost');
     show(wMarket, mode === 'market');
 
-    const p = price.value;
+    const fixedBuy = bmode === 'fixed';
+    const goingA = fin(s.markets[from * N_GOODS + good]?.ema);
+    show(upTo, fixedBuy);
+    show(price.el, fixedBuy);
+    show(buyChips, fixedBuy);
+    show(followText, !fixedBuy);
+    setText(followText, bmode === 'any' ? 'at whatever price is asked' : `at up to the going price +${Math.round(bandOf(bmode) * 100)}%`);
+    // A following limit is quoted at today's value; 'any price' at the going price.
+    const p = fixedBuy ? price.value : bmode === 'any' ? goingA : goingA * (1 + bandOf(bmode));
     const q = qty.value;
     const Q = routeQuote(s, from, to, good, p, q, mode, sellPrice.value, margin.value);
     const hl = Q.haul;
@@ -418,9 +446,13 @@ export function routeComposer(): RouteComposer {
     const rel = Q.refA > 0 && p > 0 ? p / Q.refA - 1 : NaN;
     setText(
       buyHint,
-      Q.refA > 0
-        ? `Here ${fmtPrice(Q.refA)}/${u}${Number.isFinite(rel) ? ` · yours is ${Math.abs(rel) < 0.0005 ? 'at the market' : fmtPct(Math.abs(rel)) + (rel > 0 ? ' above' : ' below')}` : ''} · ≈ ${fmtQ(fin(s.markets[from * N_GOODS + good]?.volEma))} ${us} traded a day.`
-        : 'No price here yet.',
+      !(Q.refA > 0)
+        ? 'No price here yet.'
+        : !fixedBuy
+          ? bmode === 'any'
+            ? `No limit: keeps buying however high the price goes (here ${fmtPrice(Q.refA)}/${u} today), while the Purse can pay.`
+            : `Each morning the limit re-sets to the going price +${Math.round(bandOf(bmode) * 100)}% — today ${fmtPrice(p)}/${u}.`
+          : `Here ${fmtPrice(Q.refA)}/${u}${Number.isFinite(rel) ? ` · yours is ${Math.abs(rel) < 0.0005 ? 'at the market' : fmtPct(Math.abs(rel)) + (rel > 0 ? ' above' : ' below')}` : ''} · ≈ ${fmtQ(fin(s.markets[from * N_GOODS + good]?.volEma))} ${us} traded a day.`,
     );
     // ② carry hint
     if (!hl.ok) carryHint.replaceChildren(h('span', { class: 'warn' }, hl.reason));
@@ -485,9 +517,9 @@ export function routeComposer(): RouteComposer {
   function submit(): void {
     const s = last;
     if (!s) return;
-    const p = price.value;
+    const p = bmode === 'fixed' ? price.value : 0;
     const q = qty.value;
-    if (!(p > 0)) return msg.err(price.error ?? 'Set the most to pay.');
+    if (bmode === 'fixed' && !(p > 0)) return msg.err(price.error ?? 'Set the most to pay.');
     if (!(q > 0)) return msg.err(qty.error ?? 'Set how many to buy a day.');
     if (from === to) return msg.err('Choose a different town to carry the goods to.');
     if (total.error) return msg.err(total.error);
@@ -510,6 +542,8 @@ export function routeComposer(): RouteComposer {
         days: dur === 'days' ? Math.max(1, Math.round(days.value)) : undefined,
         once: dur === 'once',
         route,
+        priceMode: bmode === 'fixed' ? 'fixed' : bmode === 'any' ? 'any' : 'follow',
+        band: bmode === 'fixed' || bmode === 'any' ? undefined : bandOf(bmode),
       },
       msg,
       '✓ Route started — follow it under Stores & wagons below.',

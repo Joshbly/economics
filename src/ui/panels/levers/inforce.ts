@@ -288,7 +288,7 @@ function orderRow(o: PlayerOrder): OrderRow {
   const today = stat('Today');
   const all = stat('In all');
   const value = stat('Value');
-  const price = inlineEdit('Change the price limit', (v) => run({ type: 'updateOrder', id, patch: { price: v } }, null));
+  const price = inlineEdit('Change the price limit (a following order becomes fixed at this price)', (v) => run({ type: 'updateOrder', id, patch: { priceMode: 'fixed', price: v } }, null));
   const side = h('span', { class: 'lv-dir' });
   const rm = removeBtn('Withdraw this order', () => run({ type: 'cancelOrder', id }, null));
   const el = h(
@@ -311,7 +311,7 @@ function routeOrderRow(o: PlayerOrder): OrderRow {
   const all = stat('Bought');
   const value = stat('Sold');
   const result = stat('Result');
-  const price = inlineEdit('Change the most the route pays', (v) => run({ type: 'updateOrder', id, patch: { price: v } }, null));
+  const price = inlineEdit('Change the most the route pays (a following limit becomes fixed at this price)', (v) => run({ type: 'updateOrder', id, patch: { priceMode: 'fixed', price: v } }, null));
   const side = h('span', { class: 'lv-dir' });
   const pipe = pipeline({ compact: true });
   const rm = removeBtn('Withdraw this route: it stops buying, and what it bought stays in the Treasury’s stores', () => run({ type: 'cancelOrder', id }, null));
@@ -342,7 +342,7 @@ function paintRouteOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
   setText(v.title, `${GOODS[o.market.good]?.name ?? 'Goods'} → ${s.towns[r.to]?.name ?? ''}`);
   v.title.title = `${GOODS[o.market.good]?.name ?? 'Goods'}: bought in ${s.towns[o.market.town]?.name ?? ''}, offered in ${s.towns[r.to]?.name ?? ''}`;
   const g = o.market.good;
-  setText(v.desc, `${s.towns[o.market.town]?.name ?? ''} → ${s.towns[r.to]?.name ?? ''}: up to ${fmtQ(o.qty)} ${unitsOf(g)} a day at ≤ ${fmtPrice(o.price)}, offered ${sellText(r, g)}.`);
+  setText(v.desc, `${s.towns[o.market.town]?.name ?? ''} → ${s.towns[r.to]?.name ?? ''}: up to ${fmtQ(o.qty)} ${unitsOf(g)} a day at ${limitText(o)}, offered ${sellText(r, g)}.`);
   v.desc.title = tersely(routeWords(s, o) || o.label);
   v.pipe?.set(s, o);
   setText(v.all.v, fmtQ(fin(o.filled)) + (o.total >= 0 ? ` / ${fmtQ(o.total)}` : ''));
@@ -353,7 +353,15 @@ function paintRouteOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
     v.result.v.title = 'Sales at the destination less purchases and freight: ' + signedMoney(rr);
     setTone(v.result.v, TONES, flowTone(rr));
   }
-  v.price.refresh('≤ ' + fmtPrice(o.price), o.price, false, PLAYER_MAX_PRICE);
+  v.price.refresh(limitText(o), o.price, false, PLAYER_MAX_PRICE);
+}
+
+/** An order's price limit in a few words: '≤ ¤4.20', 'market +10%', 'any price'. */
+function limitText(o: PlayerOrder): string {
+  const mode = o.priceMode ?? 'fixed';
+  if (mode === 'any') return 'any price';
+  if (mode === 'follow') return `market ${o.side === 'buy' ? '+' : '−'}${Math.round(fin(o.band) * 100)}%`;
+  return (o.side === 'buy' ? '≤ ' : '≥ ') + fmtPrice(o.price);
 }
 
 function paintOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
@@ -372,7 +380,7 @@ function paintOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
   setText(v.value.v, Math.abs(val) >= 1000 ? (val > 0 ? '+' : '−') + fmtMS(Math.abs(val)) : signedMoney(val));
   v.value.v.title = signedMoney(val);
   setTone(v.value.v, TONES, flowTone(val));
-  v.price.refresh(fmtPrice(o.price) + (labor ? '/day' : ''), o.price, false, PLAYER_MAX_PRICE);
+  v.price.refresh(labor ? fmtPrice(o.price) + '/day' : limitText(o), o.price, false, PLAYER_MAX_PRICE);
 }
 
 // ---------------------------------------------------------------------------

@@ -235,6 +235,9 @@ function fillRoutes(s: SimState): void {
   const nT = s.towns.length;
   for (const o of s.policy.orders as unknown as Obj[]) {
     if (!isObj(o)) continue;
+    // Orders from before prices could follow the market are fixed-price orders.
+    if (o.priceMode !== 'fixed' && o.priceMode !== 'follow' && o.priceMode !== 'any') o.priceMode = 'fixed';
+    if (!isNum(o.band) || o.band < 0) o.band = 0;
     const r = o.route;
     if (!isObj(r)) {
       o.route = null;

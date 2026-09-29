@@ -148,6 +148,8 @@ function enrich(s: SimState): void {
       value: 0,
       filledToday: perDay,
       created: s.day - 6,
+      priceMode: 'fixed',
+      band: 0,
       route: { to: b, sell: 'cost', sellPrice: 0, sellMargin: 0.05, inTransit: 0, waiting: perDay * 0.5, landed: 3, shippedToday: perDay, soldToday: perDay * 0.8, shippedTotal: perDay * 6, soldTotal: perDay * 4, freightPaid: 20, revenue: 60 },
     };
     s.policy.orders.push(o);

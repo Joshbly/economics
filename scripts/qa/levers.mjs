@@ -48,7 +48,13 @@ const topPurse = () => page.locator('.ind[aria-label="The Purse"] .ind-val').tex
   const p1 = await q.s('s.treasury.purse');
   check('mint create 25k', Math.abs(p1 - p0 - 25000) < 0.01, `${p0.toFixed(2)} -> ${p1.toFixed(2)}`);
   await page.waitForTimeout(400);
-  check('top bar purse follows mint while paused', /29\.|29,|¤29/.test(await topPurse()) || (await topPurse()).includes('29'), await topPurse());
+  {
+    // Compare the top bar's figure (e.g. "¤37.0k", "¤4,094") with the live Purse.
+    const txt = await topPurse();
+    const m = /([\d.,]+)\s*([kM]?)/.exec(txt.replace(/\u2212/g, '-'));
+    const val = m ? parseFloat(m[1].replace(/,/g, '')) * (m[2] === 'k' ? 1e3 : m[2] === 'M' ? 1e6 : 1) : NaN;
+    check('top bar purse follows mint while paused', Number.isFinite(val) && Math.abs(val - p1) <= Math.max(1, 0.01 * p1), `${txt} vs ${p1.toFixed(2)}`);
+  }
   await num(L('mint'), 'Amount', '5000');
   await page.locator(`${L('mint')} button:text-is("Destroy")`).click();
   await page.waitForTimeout(300);

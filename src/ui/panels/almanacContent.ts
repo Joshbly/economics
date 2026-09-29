@@ -85,6 +85,8 @@ A legal floor works the other way round: unsold goods pile up in the sellers' st
         title: 'Your orders in the market',
         body: `Your orders are part of the same auction. A large order to buy pushes the price up for everyone; a large order to sell pushes it down. An order to buy an unlimited quantity at a set price means the price can never fall below it while your Purse lasts. An order to sell unlimited quantities at a set price caps it — while your stores last.
 
+An order's **Price** can be fixed, or it can follow the market. With **±10%**, a buy order's limit re-sets each morning to the going price plus 10% (a sell order's to the going price less 10%), so you keep trading as the market drifts without re-typing the price. A sudden jump bigger than the band stops you until the going price catches up. With **Any**, there is no limit at all: you buy whatever the sellers ask, however high it spikes. Typing a price again makes it fixed.
+
 Goods you hold sit in the town where you bought them. Bread, fish and ale go stale in store.`,
       },
       {

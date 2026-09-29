@@ -291,6 +291,18 @@ function routeRow(o: PlayerOrder, state: () => SimState | null): RouteRow {
     if (A && B) centerMap((A.x + B.x) / 2, (A.y + B.y) / 2);
   });
   const rm = h('button', { class: 'icon-btn lv-ibtn', type: 'button', title: 'Withdraw this route: it stops buying, and what it bought stays in the Treasury’s stores', 'aria-label': 'Withdraw route', onClick: () => run({ type: 'cancelOrder', id }, null) }, icon('trash', 15));
+  // Change how the goods are offered at the destination, in place (goods on the road and
+  // waiting keep their landed cost).
+  const offerChip = (label: string, title: string, route: { sell: 'fixed' | 'cost' | 'market'; sellPrice?: number; sellMargin?: number }) =>
+    h('button', { class: 'chip lv-chip', type: 'button', title, onClick: () => run({ type: 'updateOrder', id, patch: { route } }, null) }, label);
+  const offer = h(
+    'div',
+    { class: 'lv-rt-offer' },
+    h('span', { class: 'lv-rt-offer-k' }, 'Offer there:'),
+    offerChip('at cost', 'Offer the goods at what they cost to buy and carry', { sell: 'cost', sellMargin: 0 }),
+    offerChip('cost + 10%', 'Offer them at landed cost plus 10%', { sell: 'cost', sellMargin: 0.1 }),
+    offerChip('any price', 'Offer them for whatever the destination auction pays', { sell: 'market' }),
+  );
   const el = h(
     'div',
     { class: 'lv-rt' },
@@ -298,6 +310,7 @@ function routeRow(o: PlayerOrder, state: () => SimState | null): RouteRow {
     h('div', { class: 'lv-rt-sub' }, status, terms),
     pipe.el,
     h('div', { class: 'lv-rt-money' }, spent.el, freight.el, earned.el, result.el),
+    offer,
   );
   return { el, sw, goodSw, good, path, status, terms, pipe, spent, freight, earned, result };
 }
@@ -317,7 +330,7 @@ function paintRoute(s: SimState, v: RouteRow, o: PlayerOrder): void {
   const refB = fin(s.markets[r.to * N_GOODS + g]?.price);
   const stuck = fin(r.waiting) > 0.5 && fin(r.soldToday) < 1e-6 && refB > 0 && floor > refB * 1.001;
   v.status.title = stuck
-    ? `Its lowest ask (${fmtPrice(floor)}) is above ${townName(s, r.to)}’s price (${fmtPrice(refB)}), so its goods wait unsold. Withdraw it and start one with a lower margin, a lower price, or “any price” — what is waiting stays in the Treasury’s stores.`
+    ? `Its lowest ask (${fmtPrice(floor)}) is above ${townName(s, r.to)}’s price (${fmtPrice(refB)}), so its goods wait unsold. Lower its offer below (at cost, or any price) — goods waiting keep their landed cost.`
     : '';
   const [st, tone] = stuck
     ? ['Ask above price', 'warn']

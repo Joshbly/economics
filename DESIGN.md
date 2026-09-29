@@ -383,6 +383,13 @@ that pay ¤5 per year each, forever). Seven primitives:
    (selling = issuing new IOUs, buying = retiring them), the Gold market.
    Price limit, quantity per day, duration (once / N days / standing), optional
    total cap. Also *Move goods* between towns (pays freight).
+   * **Price mode** (`priceMode`, goods/IOU/gold orders; labour orders are always
+     fixed): `fixed` uses `price`; `follow` re-sets the limit every morning to the
+     market's going price (its EMA) × (1 + `band`) for a buy, × (1 − `band`) for a
+     sell (never below the sell floor) — the UI offers bands ORDER_BANDS (5/10/20/30%);
+     `any` has no effective limit (buy: going price × ORDER_ANY_MULT; sell: the floor),
+     with the daily budget reserved at going price × ORDER_ANY_BUDGET_MULT. Typing a
+     price switches an order back to `fixed`.
    * **Supply route** (a goods *buy* order with `route`): everything the order buys
      is carried to another town and offered there. Every step is a real flow: the
      purchase clears in the origin's auction; the day's purchases are loaded onto
