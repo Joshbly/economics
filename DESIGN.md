@@ -191,7 +191,10 @@ newcomers accept the chance of a spell without work, as in Harris–Todaro — i
 real wage is near the realm's base (arrivals taper off from IMMIGRATION_WAGE_FLOOR
 of it: with fixed workshops and land each hand adds less than the last, and
 without this brake a hiring realm would draw people until wages fell to
-subsistence) and there is housing), emigration (long unemployment, hunger,
+subsistence) and there is housing; the wage a newcomer weighs is what a worker
+there takes home — after worker-side wage levies, plus any per-head payments a
+worker receives — never the posted gross, so who hands a wage levy over does not
+change who comes), emigration (long unemployment, hunger,
 misery), internal migration between towns. Emigrants take their money abroad
 (it moves to the foreign desk, which converts it to gold → capital flight).
 
@@ -230,7 +233,11 @@ dividends to their owner, invest, and can go bankrupt.
   unemployment is above WAGE_CUT_UNEMP and the firm has no vacancy (at
   WAGE_DOWN_DAY for a losing firm, scaled by the slack for any other: the
   downward side of the Phillips curve); partially indexed to expected inflation.
-  Clamped by any wage Limit.
+  Clamped by any wage Limit. Every labour-*cost* judgement (planning, the
+  urgency of a vacancy, fair prices, entry, freight, the wage-based exchange
+  parity) prices a hand at its employer cost — the posted wage plus any
+  employer-side wage levies; every *take-home* judgement (job search, migration)
+  uses the wage after worker-side levies.
 * **Selling** — ask ladder over sellable inventory centred on the firm's cost
   anchor (marginal cost of its planned sales × BASE_MARKUP, kept within
   ASK_ANCHOR_BAND of the price expectation) times a stock shift (more stock

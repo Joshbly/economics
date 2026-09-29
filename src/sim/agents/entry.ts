@@ -66,6 +66,7 @@ import { dayOfMonth } from '../calendar';
 import { G, GOODS, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId } from '../ledger';
 import { expectedGross, expectedNet, marketOf } from '../market/markets';
+import { employerWageCost } from '../policy/levies';
 import { chance, rand } from '../rng';
 import { news } from '../stats/events';
 import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownId } from '../types';
@@ -193,7 +194,7 @@ export function typicalAnnualProfit(s: SimState, town: TownId, sector: Sector): 
   const pNet = fin(expectedNet(s, town, d.out), 0);
   const mc = materialCostPerUnit(sector, prices);
   const tc = toolCostPerUnit(sector, prices[G.tools], q / Math.max(1, n), fin(s.bank.baseRate, 0.045));
-  const w = defaultWage(s, town);
+  const w = employerWageCost(s, town, sector, defaultWage(s, town));
   return (q * (pNet - mc - tc) - n * w) * DAYS_PER_YEAR;
 }
 
@@ -213,7 +214,7 @@ function entrantAnnualProfit(s: SimState, town: TownId, sector: Sector, q: numbe
   const n = Math.max(1, Math.ceil(laborForOutput(sector, q, 1, 1) / 0.95 - 0.05));
   const mc = materialCostPerUnit(sector, prices);
   const tc = toolCostPerUnit(sector, prices[G.tools], q / n, fin(s.bank.baseRate, 0.045));
-  return (q * (pNet - mc - tc) - n * defaultWage(s, town)) * DAYS_PER_YEAR;
+  return (q * (pNet - mc - tc) - n * employerWageCost(s, town, sector, defaultWage(s, town))) * DAYS_PER_YEAR;
 }
 
 function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {

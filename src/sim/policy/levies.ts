@@ -323,7 +323,7 @@ export function chargeLevy(s: SimState, base: LevyBase, payerRef: Ref, payer: Le
 export function wageLevyRates(
   s: SimState,
   town: TownId,
-  sector: Sector,
+  sector: Sector | '',
   wage?: number,
 ): { workerPct: number; workerUnit: number; employerPct: number; employerUnit: number } {
   const r = { workerPct: 0, workerUnit: 0, employerPct: 0, employerUnit: 0 };
@@ -355,6 +355,19 @@ export function wageLevyRates(
     }
   }
   return r;
+}
+
+/**
+ * Employer's cost of one worker-day at gross wage `w`: the wage plus any employer-side wage
+ * levies (a give lowers it). Every labour-COST decision (hiring, pricing, entry, freight,
+ * valuation) uses this; every take-home decision (job search, migration) uses the worker
+ * side. `sector` '' = only rules that apply to every sector (town-wide measures).
+ */
+export function employerWageCost(s: SimState, town: TownId, sector: Sector | '', w: number): number {
+  if (s.policy.levies.length === 0 || !(w > 0)) return Math.max(0, w);
+  const r = wageLevyRates(s, town, sector, w);
+  const c = w * (1 + r.employerPct) + r.employerUnit;
+  return Number.isFinite(c) ? Math.max(0, c) : w;
 }
 
 // ---- stock levies -------------------------------------------------------------

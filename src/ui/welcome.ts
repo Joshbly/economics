@@ -44,7 +44,7 @@ const keys = (): [(string | HTMLElement)[], string][] => [
   [[kbd('Space')], 'Start or pause the clock (a new realm waits, paused)'],
   [[kbd('1'), '–', kbd('5')], 'Speed: ¼ to 40 days a second; 0 pauses'],
   [['Drag · scroll'], 'Pan the map (two fingers on a trackpad)'],
-  [['Pinch · ', kbd('+'), kbd('−')], 'Zoom in and out'],
+  [['Pinch · wheel · ', kbd('+'), kbd('−')], 'Zoom in and out'],
   [['Click'], 'Inspect a house, workshop, person, town or market hall'],
   [[kbd('Esc')], 'Close, cancel or deselect'],
   [[kbd('['), kbd(']')], 'Previous / next tab'],

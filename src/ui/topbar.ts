@@ -15,6 +15,9 @@ import { sparkCanvas } from './widgets/sparkline';
 import { T } from './widgets/theme';
 import { attachTip, tipKV, tipNote, tipTitle } from './widgets/tooltip';
 
+/** Days of the player's own reign before inflation readings are shown. */
+const REIGN_INFL_DAYS = 30;
+
 export interface TopbarActions {
   newRealm(): void;
   save(): void;
@@ -99,17 +102,23 @@ const INDICATORS: IndDef[] = [
       'What a typical household basket costs — bread, fish, ale, coal, furniture and rent — as an index: 100 is the level when you took charge. The small figure is inflation: the change over the last 30 days, expressed per year.',
     read(s) {
       const cpi = L(s, 'cpi');
-      const inf = L(s, 'infl30');
+      // Until a month of the reign has passed there is no inflation of the player's own to show
+      // (the figure would only echo the founding year settling).
+      const young = s.day - s.startDay < REIGN_INFL_DAYS;
+      const inf = young ? NaN : L(s, 'infl30');
       const hot = Number.isFinite(inf) && (inf > 0.06 || inf < -0.03);
       return {
         value: fmtIndex(cpi),
         delta: Number.isFinite(inf) ? fmtPctSigned(inf) + '/yr' : undefined,
-        dir: inf,
+        dir: Number.isFinite(inf) ? inf : 0,
         tone: hot ? 'bad' : null,
       };
     },
     detail(s) {
-      return [tipKV('Last 30 days (per year)', fmtPctSigned(L(s, 'infl30'))), tipKV('Last 12 months', fmtPctSigned(L(s, 'inflYoY')))];
+      const days = s.day - s.startDay;
+      const month = days < REIGN_INFL_DAYS ? 'measured after your first month' : fmtPctSigned(L(s, 'infl30'));
+      const year = days < 360 ? 'measured after your first year' : fmtPctSigned(L(s, 'inflYoY'));
+      return [tipKV('Last 30 days (per year)', month), tipKV('Last 12 months', year)];
     },
   },
   {

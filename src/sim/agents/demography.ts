@@ -19,7 +19,7 @@ import * as CAL from '../calendar';
 import { newPerson } from '../factory';
 import * as GOODS_M from '../goods';
 import * as LEDGER from '../ledger';
-import { chargeLevy, matchLevies, noteRule } from '../policy/levies';
+import { chargeLevy, levyAmount, matchLevies, noteRule } from '../policy/levies';
 import * as RNG from '../rng';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
@@ -30,7 +30,7 @@ import { personName } from '../world/names';
 import { debtOf } from './bank';
 import { firmAssets } from './firms';
 import { findHome, leaveHome } from './housing';
-import { hasLevyBase, leaveJob } from './labor';
+import { hasLevyBase, leaveJob, netWage, wageCtx } from './labor';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -82,27 +82,37 @@ interface Tallies {
   vacancies: number[];
   vacantSlots: number[];
   content: number[];
+  /** Employment-weighted take-home wage (after worker-side wage levies). */
   wage: number[];
+  /** Per-head payments (net of per-head takes) an employed resident receives, ¤/day (town mean). */
+  head: number[];
 }
 
 function tallies(s: SimState): Tallies {
   const nT = s.towns.length;
   const z = () => new Array(nT).fill(0);
-  const t: Tallies = { pop: z(), unemployed: z(), vacancies: z(), vacantSlots: z(), content: z(), wage: z() };
+  const t: Tallies = { pop: z(), unemployed: z(), vacancies: z(), vacantSlots: z(), content: z(), wage: z(), head: z() };
+  const heads = hasLevyBase(s, 'head');
+  const hn = z();
   for (const p of s.people) {
     if (!p || !p.alive || p.town < 0 || p.town >= nT) continue;
     t.pop[p.town]++;
     if (p.job < 0) t.unemployed[p.town]++;
+    else if (heads) {
+      t.head[p.town] -= fin(levyAmount(s, 'head', 'receiver', { person: p, town: p.town }, 0, 0));
+      hn[p.town]++;
+    }
     t.content[p.town] += p.contentment;
   }
   const wn = z();
+  const wc = wageCtx(s);
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.town < 0 || f.town >= nT) continue;
     const want = Math.max(0, Math.floor(fin(f.target) + 0.5));
     const cap = f.sector === 'stateworks' ? want : Math.max(0, f.capacity);
     t.vacancies[f.town] += Math.max(0, Math.min(want, cap) - f.workers.length);
     if (f.workers.length > 0) {
-      t.wage[f.town] += fin(f.wage) * f.workers.length;
+      t.wage[f.town] += netWage(s, wc, f) * f.workers.length;
       wn[f.town] += f.workers.length;
     }
   }
@@ -113,6 +123,7 @@ function tallies(s: SimState): Tallies {
   for (let i = 0; i < nT; i++) {
     t.content[i] = t.pop[i] > 0 ? t.content[i] / t.pop[i] : 0.6;
     t.wage[i] = wn[i] > 0 ? t.wage[i] / wn[i] : BASE_WAGE;
+    t.head[i] = hn[i] > 0 ? t.head[i] / hn[i] : 0;
   }
   return t;
 }
@@ -228,7 +239,10 @@ function immigration(s: SimState): void {
     let attract = clamp((tl.content[t] - 0.3) / 0.3, 0, 1);
     const cpi = s.towns[t].cpi > 1 ? s.towns[t].cpi : 100;
     const base = fin(s.stats.baseWage) > 0.5 ? s.stats.baseWage : BASE_WAGE;
-    const rel = tl.wage[t] / (cpi / 100) / base;
+    // What a working newcomer would live on here: take-home pay plus per-head payments. The
+    // posted gross would make the statutory side of a wage levy decide who comes (a levy the
+    // worker hands over leaves the posted wage high; one the employer pays lowers it).
+    const rel = (tl.wage[t] + tl.head[t]) / (cpi / 100) / base;
     attract *= clamp((rel - IMMIGRATION_WAGE_FLOOR) / Math.max(0.01, 1 - IMMIGRATION_WAGE_FLOOR), 0, 1);
     const cap = IMMIGRATION_MAX_SHARE * Math.max(tl.pop[t], 10);
     const x = Math.min(gap, slots, cap) * attract;

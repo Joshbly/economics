@@ -149,7 +149,7 @@ import { newFirm } from '../factory';
 import { G, GOODS, N_GOODS, SECTORS, type SectorDef } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, repayPrincipal, writeOff } from '../ledger';
 import { addAsk, addBid, bookFor, expectedGross, expectedNet, marketOf, type Books } from '../market/markets';
-import { chargeLevy, wageLevyRates } from '../policy/levies';
+import { chargeLevy, employerWageCost, wageLevyRates } from '../policy/levies';
 import { wageBounds } from '../policy/limits';
 import { rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
@@ -557,7 +557,8 @@ export function fairPrice(s: SimState, town: TownId, good: number, prices?: read
   let c = bag.fairPrices as { day: number; byTown: number[][] } | undefined;
   if (!c || c.day !== s.day || c.byTown.length !== s.towns.length) {
     const r = carryRate(s);
-    c = { day: s.day, byTown: s.towns.map((t) => basePrices(defaultWage(s, t.id), BASE_MARKUP, r)) };
+    // Priced on what labour costs employers (employer-side wage levies included).
+    c = { day: s.day, byTown: s.towns.map((t) => basePrices(employerWageCost(s, t.id, '', defaultWage(s, t.id)), BASE_MARKUP, r)) };
     bag.fairPrices = c;
   }
   const v = c.byTown[town]?.[good];
@@ -573,9 +574,7 @@ function carryRate(s: SimState): number {
 
 /** Employer's cost of one worker-day at gross wage w (employer-side wage levies included). */
 function employerCost(s: SimState, f: Firm, w: number, levies: boolean): number {
-  if (!levies) return w;
-  const r = wageLevyRates(s, f.town, f.sector, w);
-  return Math.max(0, fin(w * (1 + r.employerPct) + r.employerUnit, w));
+  return levies ? employerWageCost(s, f.town, f.sector, w) : w;
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +635,7 @@ export function typicalDailyCost(s: SimState, sector: Sector, town: TownId): num
   const d = SECTORS[sector];
   if (!d) return 1;
   const n = Math.max(1, Math.min(d.capacityPerLevel, d.typicalSize));
-  const w = defaultWage(s, town);
+  const w = employerWageCost(s, town, sector, defaultWage(s, town));
   let c = n * w;
   if (d.producer) {
     let mc = 0;
@@ -674,7 +673,8 @@ function hiringUrgency(s: SimState, f: Firm, w: number, pt: PriceTable): number 
   const mc = materialCostPerUnit(f.sector, pt.gross[t]);
   const tc = toolCostPerUnit(f.sector, pt.gross[t][G.tools], Math.max(1e-6, apl));
   const value = d.alpha * Math.max(0, pExp - mc - tc) * apl;
-  return clamp(value / w - WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX);
+  // Set against what the hand costs the firm (employer-side wage levies included), not the posted wage.
+  return clamp(value / Math.max(1e-9, employerWageCost(s, t, f.sector, w)) - WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX);
 }
 
 /** Posted-wage adjustment (all firm sectors except stateworks). */

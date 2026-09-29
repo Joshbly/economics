@@ -36,7 +36,7 @@ import { newShipment } from '../factory';
 import { G, GOODS, N_GOODS } from '../goods';
 import { pay } from '../ledger';
 import { addAsk, addBid, bookFor, expectedGross, expectedNet, marketOf, type Books } from '../market/markets';
-import { chargeLevy, levyAmount, saleWedgeInto, type LevyCtx } from '../policy/levies';
+import { chargeLevy, employerWageCost, levyAmount, saleWedgeInto, type LevyCtx } from '../policy/levies';
 import { noteBinding, priceBounds, quota } from '../policy/limits';
 import { rt, type Route } from '../runtime';
 import { FIRM_BASE, STATE } from '../types';
@@ -139,13 +139,15 @@ function usableRoute(s: SimState, a: TownId, b: TownId): Route | null {
   return r;
 }
 
-/** Wage used for freight: the trader's posted wage, else the town average, else the founding wage. */
+/**
+ * Driver cost per day used for freight: the trader's posted wage (else the town average, else
+ * the founding wage) plus any employer-side wage levies — what a driver-day costs the house.
+ */
 function carterWage(s: SimState, town: TownId, f: Firm | undefined): number {
-  if (f && f.wage > 0 && Number.isFinite(f.wage)) return f.wage;
   const t = s.towns[town];
-  if (t && t.avgWage > 0) return t.avgWage;
   const bw = fin(s.stats.baseWage);
-  return bw > 0 ? bw : BASE_WAGE;
+  const w = f && f.wage > 0 && Number.isFinite(f.wage) ? f.wage : t && t.avgWage > 0 ? t.avgWage : bw > 0 ? bw : BASE_WAGE;
+  return employerWageCost(s, town, 'trader', w);
 }
 
 /**

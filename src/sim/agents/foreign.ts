@@ -26,7 +26,7 @@ import * as CFG from '../config';
 import { isMonthStart } from '../calendar';
 import { N_GOODS } from '../goods';
 import { addAsk, addBid, bookFor, marketOf, type Books } from '../market/markets';
-import { levyActive, portDuty, portTown } from '../policy/levies';
+import { employerWageCost, levyActive, portDuty, portTown } from '../policy/levies';
 import { noteBinding, quota } from '../policy/limits';
 import { normal } from '../rng';
 import { rt } from '../runtime';
@@ -365,7 +365,7 @@ function wagePPP(s: SimState): number {
   let wSum = 0;
   let wN = 0;
   for (const t of s.towns) {
-    const w = fin(t.avgWage);
+    const w = employerWageCost(s, t.id, '', fin(t.avgWage)); // unit labour cost (employer-side levies included)
     const n = Math.max(0, fin(t.employed));
     if (w > 0 && n > 0) {
       wSum += w * n;
