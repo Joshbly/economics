@@ -23,12 +23,39 @@ export const LOD_SLACK = 1.15;
 export const CHUNK_PX = 512;
 /** Per-pixel ground colour is computed at most at this many px per tile (then upscaled; vector detail stays crisp). */
 export const GROUND_MAX_PX = 32;
-/** Terrain chunks kept in memory (≈ 1 MB each at 512²). */
+/**
+ * Terrain chunks kept in memory (≈ 1 MB each at 512²) once they are off screen.
+ * Chunks drawn this frame are never evicted, so a large view (right after a level
+ * change a 1440×900 @2× view needs up to 88) may briefly hold more.
+ */
 export const CHUNK_CACHE_MAX = 64;
+/**
+ * At most this many chunks of one level on screen: a view that would need more
+ * (very large displays, just after a level change) draws the next coarser level,
+ * slightly softer, rather than holding hundreds of MB of canvases.
+ */
+export const CHUNK_VIEW_MAX = 96;
 /** Wall-clock budget per frame for rendering missing terrain chunks (ms); at least one chunk is always rendered. */
 export const CHUNK_BUDGET_MS = 7;
-/** Tiles of neighbouring terrain drawn into a chunk so overhanging trees/peaks join seamlessly. */
+/**
+ * Tiles of neighbouring terrain drawn into a chunk so overhanging features join
+ * seamlessly: every feature is drawn into each chunk it touches. The largest
+ * reach is a summit peak (≤ 1.4 tiles above its tile, its shadow ≤ 1.6 tiles
+ * beside it), so 2 tiles cover everything.
+ */
 export const CHUNK_MARGIN = 2;
+/** A freshly rendered terrain chunk (or a new level of detail) fades in over the old picture (ms). */
+export const CHUNK_FADE_MS = 180;
+/**
+ * Terrain detail by level of detail (device px per tile). Features themselves —
+ * trees, bushes, hill mounds, peaks, rocks, marsh pools — are identical at every
+ * level (same world position, size, shape and colour); finer levels only add
+ * detail on top: highlights, strata and reeds from DETAIL_L, grass tufts and
+ * sand stipple from TUFT_L, flowers from FLOWER_L.
+ */
+export const DETAIL_L = 16;
+export const TUFT_L = 32;
+export const FLOWER_L = 64;
 
 /** Building sprite margins (tiles) around the footprint: sides, above (chimneys, cranes, derricks), below. */
 export const SPRITE_MX = 0.6;
@@ -69,6 +96,30 @@ export const DOT_MAX_PX = 3.4;
 export const CONVOY_MAX = 3;
 /** Visual delivery trips per producer per day (small handcarts to the market hall). */
 export const DELIVERY_MIN_PATH = 3;
+
+// ---- Treasury supply routes ---------------------------------------------------
+/** Line colour (dashes and chevrons) and its dark under-stroke. */
+export const ROUTE_COLOR = 'rgba(242,205,114,0.85)';
+export const ROUTE_SHADE = 'rgba(18,14,6,0.42)';
+/** Dash and gap (CSS px), line width (CSS px). */
+export const ROUTE_DASH: [number, number] = [7, 5];
+export const ROUTE_WIDTH = 1.6;
+/** Chevrons: spacing along the line and drift toward the destination (CSS px, CSS px per second), half-size (CSS px). */
+export const ROUTE_CHEVRON_GAP = 64;
+export const ROUTE_CHEVRON_SPEED = 12;
+export const ROUTE_CHEVRON_R = 3.6;
+/** The line keeps this far right of the road's centre (tiles), like the wagons; each further route on the same road one lane more. */
+export const ROUTE_SIDE = 0.13;
+export const ROUTE_LANE = 0.24;
+/** Trim the line inside the towns: from max(ROUTE_TRIM_MIN, radius × ROUTE_TRIM_R) tiles of each centre. */
+export const ROUTE_TRIM_MIN = 2;
+export const ROUTE_TRIM_R = 0.5;
+/** Pointer distance (CSS px) that counts as on a route line. */
+export const ROUTE_HIT_PX = 6;
+/** Soft glow under Treasury wagons: radius (tiles, at least CSS px) and opacity. */
+export const TREASURY_GLOW_R = 0.7;
+export const TREASURY_GLOW_MIN_PX = 9;
+export const TREASURY_GLOW_ALPHA = 0.85;
 
 // ---- smoke ------------------------------------------------------------------
 export const SMOKE_MAX = 1400;

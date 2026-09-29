@@ -21,6 +21,7 @@
 //   pave=0-1      pave the road between towns 0 and 1 (tests paved roads, bridges, chunk invalidation)
 //   constr=6      put this many buildings under construction (fake projects, random progress)
 //   vacant=4      leave this many workshops standing empty
+//   routes=3      add this many synthetic Treasury supply routes (route orders + Treasury wagons on the road)
 //   sync=1        (with bench) force rasterisation every frame so timings include drawing
 // window.__map exposes { view, debug, ui, s } for scripted checks.
 // ============================================================================
@@ -29,7 +30,7 @@ import { stepDay } from '../../sim/engine';
 import { newPerson, newShipment } from '../../sim/factory';
 import { Game } from '../../sim/game';
 import { N_GOODS, SECTORS } from '../../sim/goods';
-import { STATE, type SimState } from '../../sim/types';
+import { STATE, type PlayerOrder, type SimState } from '../../sim/types';
 import { createWorld } from '../../sim/world/init';
 import { routeBetweenTowns } from '../../sim/world/paths';
 import { newProject } from '../../sim/factory';
@@ -117,6 +118,47 @@ function enrich(s: SimState): void {
     b.status = 'construction';
   }
   for (const b of pickB((b) => b.status === 'active' && b.kind === 'firm' && b.sector !== 'builder' && b.sector !== 'trader', num('vacant', 0))) b.status = 'vacant';
+  // Treasury supply routes: route orders and their wagons at various points of the road
+  const nRoutes = Math.min(6, num('routes', 0));
+  const plan: [number, number, number, number][] = [
+    [0, 3, 8, 20], // bread, capital → harbour
+    [2, 0, 3, 12], // coal, mining town → capital
+    [1, 2, 0, 30], // grain, farming town → mining town
+    [3, 1, 1, 8], // fish, harbour → farming town
+    [0, 2, 7, 4], // tools, capital → mining town
+    [3, 0, 2, 15], // wood, harbour → capital
+  ];
+  for (let k = 0; k < nRoutes && nt > 1; k++) {
+    const [a0, b0, g, perDay] = plan[k];
+    const a = a0 % nt;
+    const b = b0 % nt === a ? (a + 1) % nt : b0 % nt;
+    const days = Math.max(0.3, routeBetweenTowns(s, a, b).days);
+    const o: PlayerOrder = {
+      id: s.ids.policy++,
+      label: 'test route',
+      enabled: true,
+      market: { kind: 'good', town: a, good: g },
+      side: 'buy',
+      price: 2 + r() * 4,
+      qty: perDay,
+      total: -1,
+      until: -1,
+      once: false,
+      filled: perDay * 6,
+      value: 0,
+      filledToday: perDay,
+      created: s.day - 6,
+      route: { to: b, sell: 'cost', sellPrice: 0, sellMargin: 0.05, inTransit: 0, waiting: perDay * 0.5, landed: 3, shippedToday: perDay, soldToday: perDay * 0.8, shippedTotal: perDay * 6, soldTotal: perDay * 4, freightPaid: 20, revenue: 60 },
+    };
+    s.policy.orders.push(o);
+    for (const f of [0.18, 0.52, 0.83]) {
+      const q = Math.round(perDay * (1.5 + r()));
+      const depart = s.day + 0.45 - f * days;
+      const sh = newShipment(s, STATE, a, b, g, q, 3, depart, depart + days, 1 + Math.floor(r() * 2));
+      sh.order = o.id;
+      o.route!.inTransit += q;
+    }
+  }
   touchBuildings(s);
   void SECTORS;
 }

@@ -16,6 +16,15 @@
 // Neighbouring tiles within CHUNK_MARGIN are drawn too (their features
 // overhang), with deterministic jitter, so chunk seams are invisible.
 //
+// Stable across zoom: every feature is placed, sized and shaped from its world
+// tile alone (ihash of seed and tile), never from the level of detail or the
+// chunk, so a bush is the same bush at every zoom; finer levels only add
+// detail (DETAIL_L / TUFT_L / FLOWER_L). Level changes are seamless: a chunk
+// that is new on screen fades in over what was there (the previous level, or
+// the best cached levels composited coarse → fine) over CHUNK_FADE_MS, and
+// chunks drawn this frame are never evicted (a view larger than the cache
+// would otherwise evict and re-render its own chunks in a loop, flickering).
+//
 // Invalidation: the map's road and occupancy arrays are diffed against a
 // snapshot whenever runtime roadVersion / buildingVersion move; only chunks
 // near changed tiles are dropped.
@@ -23,7 +32,7 @@
 import { rt } from '../../sim/runtime';
 import { Terrain, type MapData, type SimState } from '../../sim/types';
 import type { Camera } from './camera';
-import { CHUNK_BUDGET_MS, CHUNK_CACHE_MAX, CHUNK_MARGIN, CHUNK_PX, GROUND_MAX_PX, LODS, TILE_PX } from './constants';
+import { CHUNK_BUDGET_MS, CHUNK_CACHE_MAX, CHUNK_FADE_MS, CHUNK_MARGIN, CHUNK_PX, CHUNK_VIEW_MAX, DETAIL_L, FLOWER_L, GROUND_MAX_PX, LODS, TILE_PX, TUFT_L } from './constants';
 import { buildFields, fillGround, ihash, setUrban, type Fields } from './fields';
 import { BRIDGE, HILL, MARSH_F, PEAK, RIVER, ROAD, TREE } from './palette';
 import { riverCourses, roadChains, type Chain, type River } from './roads';
@@ -42,6 +51,10 @@ interface Chunk {
   used: number;
   /** Superseded by a road/building change: still drawn until its replacement is ready. */
   stale: boolean;
+  /** performance.now() when rendered (0 = shown at once, no fade-in). */
+  born: number;
+  /** The picture this chunk replaced (a stale version), shown under it while it fades in; then released. */
+  prev: HTMLCanvasElement | null;
 }
 
 /** Per-building data the terrain needs (footprint, door stub). */
@@ -70,6 +83,8 @@ export interface TerrainLayer {
   pending(): number;
   /** Mean render time (ms) of a chunk, per level of detail rendered so far. */
   renderStats(): Record<number, number>;
+  /** DEV: paint any tile rectangle at level L in one piece (a reference to compare chunk seams against). */
+  paintArea(L: number, tx0: number, ty0: number, tw: number, th: number): HTMLCanvasElement | null;
   fields(): Fields | null;
   chains(): Chain[];
 }
@@ -86,8 +101,31 @@ function chunkTiles(L: number): number {
  */
 function release(ch: Chunk | undefined): void {
   if (!ch) return;
-  ch.canvas.width = 0;
-  ch.canvas.height = 0;
+  releaseCanvas(ch.canvas);
+  if (ch.prev) releaseCanvas(ch.prev);
+  ch.prev = null;
+}
+
+function releaseCanvas(c: HTMLCanvasElement): void {
+  c.width = 0;
+  c.height = 0;
+}
+
+/** Fade-in opacity of a chunk `t` ms after it appeared (smoothstep over CHUNK_FADE_MS). */
+export function fadeIn(t: number): number {
+  if (!(t > 0)) return 0;
+  if (t >= CHUNK_FADE_MS) return 1;
+  const x = t / CHUNK_FADE_MS;
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Levels to stand in for level `L`, best first: the level shown before (`prevL`,
+ * what is on screen now), then the nearest levels (by scale ratio), finer first on ties.
+ */
+export function standInOrder(L: number, prevL: number, lods: readonly number[] = LODS): number[] {
+  const rest = lods.filter((x) => x !== L && x !== prevL).sort((a, b) => Math.abs(Math.log(a / L)) - Math.abs(Math.log(b / L)) || b - a);
+  return prevL !== L && lods.includes(prevL) ? [prevL, ...rest] : rest;
 }
 
 function newCanvas(w: number, h: number): HTMLCanvasElement {
@@ -115,6 +153,12 @@ export function createTerrainLayer(): TerrainLayer {
   let frame = 0;
   let scratch: HTMLCanvasElement | null = null;
   let lastL: number = LODS[0];
+  /** Level drawn last frame, the one before it, and when the current one took over (0 = at once). */
+  let shownL = -1;
+  let fromL = -1;
+  let levelAt = 0;
+  /** Chunks rendered by flush/reset appear at once (screenshots, first frame). */
+  let instant = false;
   const renderMs: Record<number, number> = {};
   const renderN: Record<number, number> = {};
   let scratchCtx: CanvasRenderingContext2D | null = null;
@@ -218,10 +262,14 @@ export function createTerrainLayer(): TerrainLayer {
     derive(s);
     deriveRoads(s);
     snapshot(s);
+    shownL = fromL = -1;
+    levelAt = 0;
     // the whole map at the coarsest level, so there is always something to show
     const L = LODS[0];
     const n = chunkTiles(L);
+    instant = true;
     for (let cy = 0; cy * n < s.map.h; cy++) for (let cx = 0; cx * n < s.map.w; cx++) render(L, cx, cy);
+    instant = false;
   }
 
   function sync(s: SimState): boolean {
@@ -254,7 +302,9 @@ export function createTerrainLayer(): TerrainLayer {
 
   function evict(): void {
     if (cache.size <= CHUNK_CACHE_MAX) return;
-    const arr = [...cache.values()].filter((c) => c.L !== LODS[0]).sort((a, b) => a.used - b.used);
+    // never the coarsest level (the universal stand-in) nor anything on screen this frame:
+    // evicting a visible chunk would queue it again next frame, forever
+    const arr = [...cache.values()].filter((c) => c.L !== LODS[0] && c.used < frame).sort((a, b) => a.used - b.used);
     let k = 0;
     while (cache.size > CHUNK_CACHE_MAX && k < arr.length) {
       const ch = arr[k++];
@@ -271,33 +321,33 @@ export function createTerrainLayer(): TerrainLayer {
     return scratchCtx!;
   }
 
-  function render(L: number, cx: number, cy: number): Chunk | null {
-    const t0 = performance.now();
-    const s = S;
-    const fl = F;
-    if (!s || !fl) return null;
-    const m = s.map;
-    const n = chunkTiles(L);
-    const tx0 = cx * n;
-    const ty0 = cy * n;
-    if (tx0 >= m.w || ty0 >= m.h) return null;
-    const tw = Math.min(n, m.w - tx0);
-    const th = Math.min(n, m.h - ty0);
+  /** Paint a tile rectangle at level L (a chunk, or any area for checks): ground, then vectors in tile units. */
+  function paint(L: number, tx0: number, ty0: number, tw: number, th: number): HTMLCanvasElement {
+    const m = S!.map;
+    const fl = F!;
     const canvas = newCanvas(tw * L, th * L);
     const ctx = canvas.getContext('2d')!;
     // ---- ground ----
     const g = Math.min(L, GROUND_MAX_PX);
-    const pw = tw * g;
-    const ph = th * g;
-    const img = ctx.createImageData(pw, ph);
-    fillGround(fl, img.data, pw, ph, tx0, ty0, g);
-    if (g === L) ctx.putImageData(img, 0, 0);
-    else {
+    if (g === L) {
+      const img = ctx.createImageData(tw * g, th * g);
+      fillGround(fl, img.data, tw * g, th * g, tx0, ty0, g);
+      ctx.putImageData(img, 0, 0);
+    } else {
+      // Coarser ground, upscaled. It is computed with a one-pixel apron of the
+      // neighbouring ground and drawn whole, offset by that pixel, so the chunk's
+      // edge pixels interpolate real neighbours rather than a clamped edge (which
+      // left a faint line along every chunk seam at close zoom).
+      const pw = tw * g + 2;
+      const ph = th * g + 2;
+      const img = ctx.createImageData(pw, ph);
+      fillGround(fl, img.data, pw, ph, tx0 - 1 / g, ty0 - 1 / g, g);
       const sc = getScratch(pw, ph);
       sc.putImageData(img, 0, 0);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(scratch!, 0, 0, pw, ph, 0, 0, tw * L, th * L);
+      const up = L / g;
+      ctx.drawImage(scratch!, 0, 0, pw, ph, -up, -up, pw * up, ph * up);
     }
     // ---- vector layers in tile units ----
     ctx.setTransform(L, 0, 0, L, -tx0 * L, -ty0 * L);
@@ -313,10 +363,32 @@ export function createTerrainLayer(): TerrainLayer {
     drawBridges(ctx, bridges, vx0, vy0, vx1, vy1, px, L);
     drawFeatures(ctx, m, fl.seed, Math.max(0, vx0), Math.max(0, vy0), Math.min(m.w, vx1), Math.min(m.h, vy1), L, px);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return canvas;
+  }
+
+  function render(L: number, cx: number, cy: number): Chunk | null {
+    const t0 = performance.now();
+    const s = S;
+    if (!s || !F) return null;
+    const m = s.map;
+    const n = chunkTiles(L);
+    const tx0 = cx * n;
+    const ty0 = cy * n;
+    if (tx0 >= m.w || ty0 >= m.h) return null;
+    const tw = Math.min(n, m.w - tx0);
+    const th = Math.min(n, m.h - ty0);
+    const canvas = paint(L, tx0, ty0, tw, th);
     const key = L + ':' + cx + ':' + cy;
-    const ch: Chunk = { key, L, cx, cy, canvas, tx0, ty0, tw, th, used: frame, stale: false };
     const old = cache.get(key);
-    if (old && old.canvas !== canvas) release(old);
+    // a stale picture stays under its replacement while that fades in
+    let prev: HTMLCanvasElement | null = null;
+    if (old) {
+      if (old.prev) releaseCanvas(old.prev);
+      old.prev = null;
+      if (instant || !old.canvas.width) releaseCanvas(old.canvas);
+      else prev = old.canvas;
+    }
+    const ch: Chunk = { key, L, cx, cy, canvas, tx0, ty0, tw, th, used: frame, stale: false, born: instant ? 0 : performance.now(), prev };
     cache.set(key, ch);
     evict();
     const ms = performance.now() - t0;
@@ -362,11 +434,41 @@ export function createTerrainLayer(): TerrainLayer {
     }
   }
 
-  function draw(ctx: CanvasRenderingContext2D, cam: Camera, L: number): void {
+  /** Tile rectangle [x0, y0, x1, y1) of the map in view. */
+  function inView(cam: Camera, m: MapData): [number, number, number, number] {
+    const k = TILE_PX * cam.z * cam.dpr;
+    const ox = cam.vw * cam.dpr / 2 - cam.x * k;
+    const oy = cam.vh * cam.dpr / 2 - cam.y * k;
+    return [Math.max(0, Math.floor(-ox / k)), Math.max(0, Math.floor(-oy / k)), Math.min(m.w, Math.ceil((cam.vw * cam.dpr - ox) / k)), Math.min(m.h, Math.ceil((cam.vh * cam.dpr - oy) / k))];
+  }
+
+  /** The level to draw: `L`, or a coarser one if the view would need more than CHUNK_VIEW_MAX chunks of it. */
+  function levelFor(cam: Camera, L: number, m: MapData): number {
+    const [x0, y0, x1, y1] = inView(cam, m);
+    let i = LODS.indexOf(L as (typeof LODS)[number]);
+    if (i < 0) return L;
+    while (i > 0) {
+      const n = chunkTiles(LODS[i]);
+      const count = (Math.floor((x1 - 1) / n) - Math.floor(x0 / n) + 1) * (Math.floor((y1 - 1) / n) - Math.floor(y0 / n) + 1);
+      if (count <= CHUNK_VIEW_MAX) break;
+      i--;
+    }
+    return LODS[i];
+  }
+
+  function draw(ctx: CanvasRenderingContext2D, cam: Camera, Lwant: number): void {
     const s = S;
     if (!s) return;
     frame++;
+    const L = levelFor(cam, Lwant, s.map);
     lastL = L;
+    const now = performance.now();
+    if (L !== shownL) {
+      // a new level of detail: its chunks fade in over the level shown until now
+      fromL = shownL;
+      shownL = L;
+      levelAt = fromL > 0 ? now : 0;
+    }
     const m = s.map;
     const n = chunkTiles(L);
     const k = TILE_PX * cam.z * cam.dpr; // device px per tile
@@ -383,6 +485,7 @@ export function createTerrainLayer(): TerrainLayer {
     const cy0 = Math.floor(y0 / n);
     const cx1 = Math.floor((x1 - 1) / n);
     const cy1 = Math.floor((y1 - 1) / n);
+    const order = standInOrder(L, fromL);
     // centre-out ordering for the queue
     const want: { cx: number; cy: number; d: number }[] = [];
     for (let cy = cy0; cy <= cy1; cy++) {
@@ -391,10 +494,24 @@ export function createTerrainLayer(): TerrainLayer {
         const ch = cache.get(key);
         if (ch) {
           ch.used = frame;
-          blit(ctx, ch, ox, oy, k);
+          const a = fadeIn(now - Math.max(ch.born, levelAt));
+          if (a < 1) {
+            // cross-fade: the old picture (stale version, or other levels) under the new one
+            if (ch.prev && ch.prev.width) blitCanvas(ctx, ch.prev, ch.tx0, ch.ty0, ch.tw, ch.th, ox, oy, k);
+            else standIn(ctx, order, cx, cy, n, ox, oy, k, m.w, m.h);
+            ctx.globalAlpha = a;
+            blit(ctx, ch, ox, oy, k);
+            ctx.globalAlpha = 1;
+          } else {
+            if (ch.prev) {
+              releaseCanvas(ch.prev);
+              ch.prev = null;
+            }
+            blit(ctx, ch, ox, oy, k);
+          }
           if (ch.stale) want.push({ cx, cy, d: -1 }); // refresh first
         } else {
-          fallback(ctx, L, cx, cy, n, ox, oy, k, m.w, m.h);
+          standIn(ctx, order, cx, cy, n, ox, oy, k, m.w, m.h);
           const ccx = (cx + 0.5) * n;
           const ccy = (cy + 0.5) * n;
           want.push({ cx, cy, d: (ccx - cam.x) ** 2 + (ccy - cam.y) ** 2 });
@@ -418,54 +535,76 @@ export function createTerrainLayer(): TerrainLayer {
   }
 
   function blit(ctx: CanvasRenderingContext2D, ch: Chunk, ox: number, oy: number, k: number): void {
-    // integer device-pixel edges shared by neighbours → no hairline seams
-    const dx0 = Math.round(ox + ch.tx0 * k);
-    const dy0 = Math.round(oy + ch.ty0 * k);
-    const dx1 = Math.round(ox + (ch.tx0 + ch.tw) * k);
-    const dy1 = Math.round(oy + (ch.ty0 + ch.th) * k);
-    if (dx1 <= dx0 || dy1 <= dy0 || !ch.canvas.width) return; // released chunks are 0×0
-    ctx.drawImage(ch.canvas, dx0, dy0, dx1 - dx0, dy1 - dy0);
+    blitCanvas(ctx, ch.canvas, ch.tx0, ch.ty0, ch.tw, ch.th, ox, oy, k);
   }
 
-  /** Draw the area of a missing chunk from cached chunks of other levels. */
-  function fallback(ctx: CanvasRenderingContext2D, L: number, cx: number, cy: number, n: number, ox: number, oy: number, k: number, mw: number, mh: number): void {
+  function blitCanvas(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, tx0: number, ty0: number, tw: number, th: number, ox: number, oy: number, k: number): void {
+    // integer device-pixel edges shared by neighbours → no hairline seams
+    const dx0 = Math.round(ox + tx0 * k);
+    const dy0 = Math.round(oy + ty0 * k);
+    const dx1 = Math.round(ox + (tx0 + tw) * k);
+    const dy1 = Math.round(oy + (ty0 + th) * k);
+    if (dx1 <= dx0 || dy1 <= dy0 || !c.width) return; // released chunks are 0×0
+    ctx.drawImage(c, dx0, dy0, dx1 - dx0, dy1 - dy0);
+  }
+
+  /** Cached chunks of level L2 over a tile rectangle: [chunks, whether they cover all of it]. */
+  function cachedOver(L2: number, tx0: number, ty0: number, tx1: number, ty1: number, out: Chunk[]): boolean {
+    const n2 = chunkTiles(L2);
+    const c0 = Math.floor(tx0 / n2);
+    const c1 = Math.floor((tx1 - 1) / n2);
+    const r0 = Math.floor(ty0 / n2);
+    const r1 = Math.floor((ty1 - 1) / n2);
+    out.length = 0;
+    let all = true;
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const ch = cache.get(L2 + ':' + c + ':' + r);
+      if (ch && ch.canvas.width) out.push(ch);
+      else all = false;
+    }
+    return all;
+  }
+
+  /**
+   * Stand-in for the area of a chunk (missing, or fading in) from cached chunks of
+   * other levels: the best level that covers it all as the base, then any partial
+   * coverage of better levels on top, so the picture is as close as possible to
+   * what the player saw a moment ago (features are the same at every level; only
+   * sharpness differs). The coarsest level always covers the whole map.
+   */
+  function standIn(ctx: CanvasRenderingContext2D, order: readonly number[], cx: number, cy: number, n: number, ox: number, oy: number, k: number, mw: number, mh: number): void {
     const tx0 = cx * n;
     const ty0 = cy * n;
     const tx1 = Math.min(mw, tx0 + n);
     const ty1 = Math.min(mh, ty0 + n);
-    // prefer the nearest finer level, then coarser
-    const order = [...LODS].filter((x) => x !== L).sort((a, b) => Math.abs(Math.log(a / L)) - Math.abs(Math.log(b / L)) || b - a);
-    for (const L2 of order) {
-      const n2 = chunkTiles(L2);
-      const c0 = Math.floor(tx0 / n2);
-      const c1 = Math.floor((tx1 - 1) / n2);
-      const r0 = Math.floor(ty0 / n2);
-      const r1 = Math.floor((ty1 - 1) / n2);
-      let all = true;
-      for (let r = r0; r <= r1 && all; r++) for (let c = c0; c <= c1; c++) if (!cache.has(L2 + ':' + c + ':' + r)) {
-        all = false;
+    let base = order.length - 1;
+    for (let i = 0; i < order.length; i++) {
+      if (cachedOver(order[i], tx0, ty0, tx1, ty1, standInBuf)) {
+        base = i;
         break;
       }
-      if (!all) continue;
-      ctx.save();
-      ctx.beginPath();
-      const dx0 = Math.round(ox + tx0 * k);
-      const dy0 = Math.round(oy + ty0 * k);
-      ctx.rect(dx0, dy0, Math.round(ox + tx1 * k) - dx0, Math.round(oy + ty1 * k) - dy0);
-      ctx.clip();
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-        const ch = cache.get(L2 + ':' + c + ':' + r)!;
+    }
+    ctx.save();
+    ctx.beginPath();
+    const dx0 = Math.round(ox + tx0 * k);
+    const dy0 = Math.round(oy + ty0 * k);
+    ctx.rect(dx0, dy0, Math.round(ox + tx1 * k) - dx0, Math.round(oy + ty1 * k) - dy0);
+    ctx.clip();
+    for (let i = base; i >= 0; i--) {
+      cachedOver(order[i], tx0, ty0, tx1, ty1, standInBuf);
+      for (const ch of standInBuf) {
         ch.used = frame;
         blit(ctx, ch, ox, oy, k);
       }
-      ctx.restore();
-      return;
     }
+    ctx.restore();
   }
+  const standInBuf: Chunk[] = [];
 
   function work(budgetMs = CHUNK_BUDGET_MS): number {
     let done = 0;
     const t0 = performance.now();
+    evict(); // chunks that were only stand-ins during a transition go once it is over
     while (queue.length) {
       const q = queue.shift()!;
       queued.delete(q.key);
@@ -478,9 +617,11 @@ export function createTerrainLayer(): TerrainLayer {
     return done;
   }
 
-  function flush(cam: Camera, L: number): void {
+  function flush(cam: Camera, Lwant: number): void {
     const s = S;
     if (!s) return;
+    frame++; // everything this view needs counts as on screen (not evictable)
+    const L = levelFor(cam, Lwant, s.map);
     const n = chunkTiles(L);
     const k = TILE_PX * cam.z * cam.dpr;
     const ox = cam.vw * cam.dpr / 2 - cam.x * k;
@@ -489,10 +630,21 @@ export function createTerrainLayer(): TerrainLayer {
     const y0 = Math.max(0, Math.floor(-oy / k));
     const x1 = Math.min(s.map.w, Math.ceil((cam.vw * cam.dpr - ox) / k));
     const y1 = Math.min(s.map.h, Math.ceil((cam.vh * cam.dpr - oy) / k));
+    instant = true;
     for (let cy = Math.floor(y0 / n); cy * n < y1; cy++) for (let cx = Math.floor(x0 / n); cx * n < x1; cx++) {
       const have = cache.get(L + ':' + cx + ':' + cy);
       if (!have || have.stale) render(L, cx, cy);
+      else {
+        // settle any fade in progress
+        have.used = frame;
+        have.born = 0;
+        if (have.prev) releaseCanvas(have.prev);
+        have.prev = null;
+      }
     }
+    instant = false;
+    shownL = L;
+    levelAt = 0;
     queue.length = 0;
     queued.clear();
   }
@@ -505,6 +657,7 @@ export function createTerrainLayer(): TerrainLayer {
     reset,
     pending: () => queue.length,
     renderStats: () => ({ ...renderMs }),
+    paintArea: (L, tx0, ty0, tw, th) => (S && F ? paint(L, tx0, ty0, tw, th) : null),
     fields: () => F,
     chains: () => roads,
   };
@@ -618,8 +771,10 @@ function drawRoads(ctx: CanvasRenderingContext2D, chains: Chain[], sites: Site[]
     }
   };
   const W = (tiles: number, minPx: number) => Math.max(tiles, minPx * px);
-  // dirt tracks: soft brown edge, core, faint ruts when close (thinner when seen from afar)
-  const core = L >= 32 ? 0.27 : L >= 16 ? 0.21 : 0.24;
+  // dirt tracks: soft brown edge, core, faint ruts when close (the same width at every
+  // level of detail, so tracks do not swell or thin as the player zooms; only a
+  // minimum on-screen width keeps them legible from afar)
+  const core = 0.24;
   path(dirt, true);
   ctx.strokeStyle = ROAD.dirtEdge;
   ctx.lineWidth = W(core + 0.12, 2.2);
@@ -697,30 +852,68 @@ function drawBridges(ctx: CanvasRenderingContext2D, list: { x: number; y: number
 // Terrain features (trees, peaks, hills, marsh, sand, grass)
 // ---------------------------------------------------------------------------
 
-const TREE_SPOTS: Record<number, [number, number][]> = {
-  2: [
-    [0.32, 0.34],
-    [0.7, 0.72],
-  ],
-  3: [
-    [0.28, 0.3],
-    [0.74, 0.42],
-    [0.36, 0.78],
-  ],
-  5: [
-    [0.24, 0.22],
-    [0.72, 0.2],
-    [0.48, 0.52],
-    [0.2, 0.8],
-    [0.78, 0.78],
-  ],
-};
+/**
+ * Where the (up to) five trees of a forest tile stand, before per-tile jitter.
+ * The same at every level of detail: a tree never moves, shrinks or vanishes as
+ * the player zooms.
+ */
+const TREE_SPOTS: readonly [number, number][] = [
+  [0.24, 0.22],
+  [0.72, 0.2],
+  [0.48, 0.52],
+  [0.2, 0.8],
+  [0.78, 0.78],
+];
+
+/** A tree or bush: centre and crown radius (tiles), crown shade (0–2), conifer or broadleaf. */
+export interface Plant {
+  x: number;
+  y: number;
+  r: number;
+  b: number;
+  conifer: boolean;
+}
+
+const treeBuf: Plant[] = [];
+
+/**
+ * The trees of a forest tile — a function of the world tile alone (seed, x, y,
+ * how many of its 4 neighbours are not forest, its elevation), never of the
+ * level of detail or the chunk being painted. Up to five; fewer on the edge.
+ */
+export function forestTrees(seed: number, x: number, y: number, edge: number, elev: number, out: Plant[] = []): Plant[] {
+  out.length = 0;
+  for (let k = 0; k < TREE_SPOTS.length; k++) {
+    const h1 = ihash(seed + k * 101, x, y);
+    const h2 = ihash(seed + k * 211 + 7, x, y);
+    const h3 = ihash(seed + k * 307 + 13, x, y);
+    if (edge >= 2 && h3 < 0.35) continue;
+    out.push({
+      x: x + TREE_SPOTS[k][0] + (h1 - 0.5) * 0.26,
+      y: y + TREE_SPOTS[k][1] + (h2 - 0.5) * 0.24,
+      r: (0.2 + 0.1 * h3) * (edge ? 0.9 : 1),
+      b: Math.floor(h1 * 3) % 3,
+      conifer: elev > 0.5 ? h3 < 0.75 : h3 < 0.18,
+    });
+  }
+  return out;
+}
+
+/** The lone tree or bush of a grass tile (commoner beside woods), or null — from the world tile alone. */
+export function grassBush(seed: number, x: number, y: number, nearForest: boolean): Plant | null {
+  if (ihash(seed ^ 0xb005, x, y) >= (nearForest ? 0.22 : 0.035)) return null;
+  return {
+    x: x + 0.25 + 0.5 * ihash(seed ^ 0x11, x, y),
+    y: y + 0.25 + 0.5 * ihash(seed ^ 0x22, x, y),
+    r: 0.14 + 0.1 * ihash(seed ^ 0x33, x, y),
+    b: Math.floor(ihash(seed ^ 0x44, x, y) * 3) % 3,
+    conifer: false,
+  };
+}
 
 function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x0: number, y0: number, x1: number, y1: number, L: number, px: number): void {
   const w = m.w;
-  const nTrees = L >= 32 ? 5 : L >= 16 ? 3 : 2;
-  const spots = TREE_SPOTS[nTrees];
-  const rScale = L >= 32 ? 1 : L >= 16 ? 1.18 : 1.45;
+  const hl = L >= DETAIL_L; // highlights are detail: added on finer levels, never moving anything
   // reusable per-row paths
   for (let y = y0; y < y1; y++) {
     const shadow = new Path2D();
@@ -745,19 +938,14 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
         if (x < w - 1 && m.terrain[i + 1] !== Terrain.Forest) edge++;
         if (y > 0 && m.terrain[i - w] !== Terrain.Forest) edge++;
         if (y < m.h - 1 && m.terrain[i + w] !== Terrain.Forest) edge++;
-        for (let k = 0; k < spots.length; k++) {
-          const h1 = ihash(seed + k * 101, x, y);
-          const h2 = ihash(seed + k * 211 + 7, x, y);
-          const h3 = ihash(seed + k * 307 + 13, x, y);
-          if (edge >= 2 && h3 < 0.35) continue;
-          const tx = x + spots[k][0] + (h1 - 0.5) * 0.26;
-          const ty = y + spots[k][1] + (h2 - 0.5) * 0.24;
-          const r = (0.2 + 0.1 * h3) * rScale * (edge ? 0.9 : 1);
-          const conifer = e > 0.5 ? h3 < 0.75 : h3 < 0.18;
+        for (const tr of forestTrees(seed, x, y, edge, e, treeBuf)) {
+          const tx = tr.x;
+          const ty = tr.y;
+          const r = tr.r;
           anyTree = true;
           shadow.moveTo(tx + 0.08 + r, ty + 0.1);
           shadow.ellipse(tx + 0.08, ty + 0.1, r * 1.02, r * 0.78, 0, 0, Math.PI * 2);
-          if (conifer) {
+          if (tr.conifer) {
             const hgt = r * 2.3;
             conD.moveTo(tx, ty - hgt * 0.62);
             conD.lineTo(tx + r * 0.95, ty + hgt * 0.38);
@@ -767,34 +955,33 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
             conM.lineTo(tx + r * 0.1, ty + hgt * 0.36);
             conM.lineTo(tx - r * 0.95, ty + hgt * 0.38);
             conM.closePath();
-            if (L >= 16) {
+            if (hl) {
               conL.moveTo(tx, ty - hgt * 0.6);
               conL.lineTo(tx - r * 0.12, ty - hgt * 0.05);
               conL.lineTo(tx - r * 0.55, ty + hgt * 0.1);
               conL.closePath();
             }
           } else {
-            const b = Math.floor(h1 * 3) % 3;
+            const b = tr.b;
             dark[b].moveTo(tx + r, ty);
             dark[b].arc(tx, ty, r, 0, Math.PI * 2);
             mid[b].moveTo(tx - r * 0.1 + r * 0.8, ty - r * 0.12);
             mid[b].arc(tx - r * 0.1, ty - r * 0.12, r * 0.8, 0, Math.PI * 2);
-            if (L >= 16) {
+            if (hl) {
               light[b].moveTo(tx - r * 0.3 + r * 0.36, ty - r * 0.34);
               light[b].arc(tx - r * 0.3, ty - r * 0.34, r * 0.36, 0, Math.PI * 2);
             }
           }
         }
       } else if (t === Terrain.Grass) {
-        const h1 = ihash(seed ^ 0xb005, x, y);
-        let nearForest = false;
-        if ((x > 0 && m.terrain[i - 1] === Terrain.Forest) || (x < w - 1 && m.terrain[i + 1] === Terrain.Forest) || (y > 0 && m.terrain[i - w] === Terrain.Forest) || (y < m.h - 1 && m.terrain[i + w] === Terrain.Forest)) nearForest = true;
-        if (h1 < (nearForest ? 0.22 : 0.035)) {
+        const nearForest = (x > 0 && m.terrain[i - 1] === Terrain.Forest) || (x < w - 1 && m.terrain[i + 1] === Terrain.Forest) || (y > 0 && m.terrain[i - w] === Terrain.Forest) || (y < m.h - 1 && m.terrain[i + w] === Terrain.Forest);
+        const bush = grassBush(seed, x, y, nearForest);
+        if (bush) {
           // a lone tree or bush
-          const tx = x + 0.25 + 0.5 * ihash(seed ^ 0x11, x, y);
-          const ty = y + 0.25 + 0.5 * ihash(seed ^ 0x22, x, y);
-          const r = (0.14 + 0.1 * ihash(seed ^ 0x33, x, y)) * rScale;
-          const b = Math.floor(ihash(seed ^ 0x44, x, y) * 3) % 3;
+          const tx = bush.x;
+          const ty = bush.y;
+          const r = bush.r;
+          const b = bush.b;
           anyTree = true;
           shadow.moveTo(tx + 0.06 + r, ty + 0.08);
           shadow.ellipse(tx + 0.06, ty + 0.08, r, r * 0.75, 0, 0, Math.PI * 2);
@@ -802,7 +989,7 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
           dark[b].arc(tx, ty, r, 0, Math.PI * 2);
           mid[b].moveTo(tx - r * 0.1 + r * 0.8, ty - r * 0.12);
           mid[b].arc(tx - r * 0.1, ty - r * 0.12, r * 0.8, 0, Math.PI * 2);
-          if (L >= 16) {
+          if (hl) {
             light[b].moveTo(tx - r * 0.3 + r * 0.36, ty - r * 0.34);
             light[b].arc(tx - r * 0.3, ty - r * 0.34, r * 0.36, 0, Math.PI * 2);
           }
@@ -814,10 +1001,10 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
       const i = y * w + x;
       if (m.occ[i] >= 0 || m.road[i] >= 1 || m.river[i]) continue;
       const t = m.terrain[i];
-      if (t === Terrain.Hills && L >= 16) drawHill(ctx, seed, x, y, m.elev[i] ?? 0.6, px);
+      if (t === Terrain.Hills) drawHill(ctx, seed, x, y, m.elev[i] ?? 0.6);
       else if (t === Terrain.Marsh) drawMarsh(ctx, seed, x, y, L, px);
-      else if (t === Terrain.Sand && L >= 32) drawSand(ctx, seed, x, y);
-      else if (t === Terrain.Grass && L >= 32) drawGrass(ctx, seed, x, y, L, m.fert[i] ?? 0.5);
+      else if (t === Terrain.Sand && L >= TUFT_L) drawSand(ctx, seed, x, y);
+      else if (t === Terrain.Grass && L >= TUFT_L) drawGrass(ctx, seed, x, y, L, m.fert[i] ?? 0.5);
     }
     if (anyTree) {
       ctx.fillStyle = TREE.shadow;
@@ -827,7 +1014,7 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
         ctx.fill(dark[b]);
         ctx.fillStyle = TREE.mid[b];
         ctx.fill(mid[b]);
-        if (L >= 16) {
+        if (hl) {
           ctx.fillStyle = TREE.light[b];
           ctx.fill(light[b]);
         }
@@ -836,7 +1023,7 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
       ctx.fill(conD);
       ctx.fillStyle = TREE.conMid;
       ctx.fill(conM);
-      if (L >= 16) {
+      if (hl) {
         ctx.fillStyle = TREE.conLight;
         ctx.fill(conL);
       }
@@ -850,7 +1037,7 @@ function drawFeatures(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x
   }
 }
 
-function drawHill(ctx: CanvasRenderingContext2D, seed: number, x: number, y: number, e: number, px: number): void {
+function drawHill(ctx: CanvasRenderingContext2D, seed: number, x: number, y: number, e: number): void {
   const h0 = ihash(seed ^ 0x4a11, x, y);
   if (h0 < 0.25) return; // leave some ground bare
   const n = h0 > 0.82 ? 2 : 1;
@@ -991,7 +1178,7 @@ function drawPeak(ctx: CanvasRenderingContext2D, m: MapData, seed: number, x: nu
   ctx.lineTo(cx + bw, by);
   ctx.closePath();
   ctx.fill();
-  if (L >= 16) {
+  if (L >= DETAIL_L) {
     // strata on the lit face
     ctx.strokeStyle = PEAK.line;
     ctx.lineWidth = Math.max(px, 0.02);
@@ -1045,7 +1232,7 @@ function drawMarsh(ctx: CanvasRenderingContext2D, seed: number, x: number, y: nu
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (L >= 16) {
+    if (L >= DETAIL_L) {
       ctx.strokeStyle = MARSH_F.poolRim;
       ctx.lineWidth = Math.max(px, 0.025);
       ctx.beginPath();
@@ -1053,11 +1240,10 @@ function drawMarsh(ctx: CanvasRenderingContext2D, seed: number, x: number, y: nu
       ctx.stroke();
     }
   }
-  if (L < 16) return;
-  // reeds
+  if (L < DETAIL_L) return;
+  // reeds (the same three clumps at every level that shows them)
   ctx.lineCap = 'round';
-  const clusters = L >= 32 ? 3 : 2;
-  for (let c = 0; c < clusters; c++) {
+  for (let c = 0; c < 3; c++) {
     const a = ihash(seed + 131 * c + 1, x, y);
     const b = ihash(seed + 151 * c + 2, x, y);
     const cx = x + 0.15 + 0.7 * a;
@@ -1072,7 +1258,7 @@ function drawMarsh(ctx: CanvasRenderingContext2D, seed: number, x: number, y: nu
       ctx.lineTo(cx + dx * 1.8, cy - hgt);
     }
     ctx.stroke();
-    if (L >= 32 && a < 0.5) {
+    if (L >= TUFT_L && a < 0.5) {
       ctx.fillStyle = MARSH_F.cattail;
       ctx.fillRect(cx + 0.02, cy - 0.24, 0.035, 0.07);
     }
@@ -1105,7 +1291,7 @@ function drawGrass(ctx: CanvasRenderingContext2D, seed: number, x: number, y: nu
     ctx.lineTo(cx + 0.06, cy - 0.07);
   }
   ctx.stroke();
-  if (L >= 64 && fert > 0.35) {
+  if (L >= FLOWER_L && fert > 0.35) {
     const cols = ['#f1e7c7', '#e9c85a', '#d98fa0', '#c9d4f0'];
     for (let k = 0; k < 3; k++) {
       const a = ihash(seed + 61 * k + 3, x, y);

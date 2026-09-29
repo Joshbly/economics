@@ -82,3 +82,5 @@
 .mapc-leg-ends { display: flex; justify-content: space-between; margin-top: 4px; color: var(--ink-2, #948b7a); font-size: 11px; }
 
 .mapc-tip { min-width: 180px; }
+/* two-line title: "Treasury: 40 bread → Saltmere" over "arrives in 1.4 days" */
+.mapc-tip .tip-title.mapc-tt2 .tip-sub { display: block; margin: 1px 0 0; }

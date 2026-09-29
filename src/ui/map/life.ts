@@ -14,8 +14,9 @@
 // Wagons — each shipment in s.shipments rides routeBetweenTowns(from, to) at
 // progress (day + dayFrac − depart) / (arrive − depart), as a convoy of up to
 // CONVOY_MAX carts carrying the good's colour, keeping to the right of the
-// road; Treasury shipments fly a gold pennant. Delivery carts (purely visual)
-// run from producers to their market hall once or twice a day.
+// road; Treasury shipments fly a gold pennant and ride in a soft gold glow.
+// Delivery carts (purely visual) run from producers to their market hall once
+// or twice a day.
 //
 // Smoke — a pooled particle system; each chimney/stack/vent in a building's
 // SpriteMeta emits at a rate proportional to today's output relative to the
@@ -41,6 +42,9 @@ import {
   SMOKE_MAX,
   SMOKE_RATE,
   TREASURY_COLOR,
+  TREASURY_GLOW_ALPHA,
+  TREASURY_GLOW_MIN_PX,
+  TREASURY_GLOW_R,
   UNEMPLOYED_COLOR,
 } from './constants';
 import { commuteTrip, EMPTY_POLY, hash01, Leg, polyFromTiles, samplePoly, shipmentProgress, strollTrip, tripAt, type Poly, type PolySample, type Trip } from './schedule';
@@ -175,6 +179,7 @@ export function createLifeLayer(): LifeLayer {
   const emitAcc = new Map<number, number>();
   let puffs: HTMLCanvasElement[] | null = null;
   let glowSprite: HTMLCanvasElement | null = null;
+  let goldGlow: HTMLCanvasElement | null = null;
 
   function ensureSprites(): void {
     if (puffs) return;
@@ -189,6 +194,26 @@ export function createLifeLayer(): LifeLayer {
     g.fillStyle = grd;
     g.fillRect(0, 0, 64, 64);
     glowSprite = c;
+    // soft gold halo under the Treasury's wagons
+    const c2 = document.createElement('canvas');
+    c2.width = c2.height = 64;
+    const g2 = c2.getContext('2d')!;
+    const grd2 = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grd2.addColorStop(0, 'rgba(255,218,120,0.9)');
+    grd2.addColorStop(0.42, 'rgba(244,194,84,0.5)');
+    grd2.addColorStop(1, 'rgba(232,170,60,0)');
+    g2.fillStyle = grd2;
+    g2.fillRect(0, 0, 64, 64);
+    goldGlow = c2;
+  }
+
+  /** The Treasury's soft gold glow centred on a device-px point. */
+  function treasuryGlow(ctx: CanvasRenderingContext2D, v: View, dx: number, dy: number): void {
+    ensureSprites();
+    const r = Math.max(TREASURY_GLOW_MIN_PX * v.dpr, TREASURY_GLOW_R * v.k);
+    ctx.globalAlpha = TREASURY_GLOW_ALPHA;
+    ctx.drawImage(goldGlow!, dx - r, dy - r, 2 * r, 2 * r);
+    ctx.globalAlpha = 1;
   }
 
   function sync(s: SimState): void {
@@ -496,8 +521,10 @@ export function createLifeLayer(): LifeLayer {
         const dx = v.ox + x * k;
         const dy = v.oy + y * k;
         if (dx < -margin || dy < -margin || dx > v.vw + margin || dy > v.vh + margin) continue;
-        if (detailed) cart(ctx, v, x, y, smp.dx, smp.dy, cargo, treasury && j === 0, false, Math.sin((s.day + dayFrac) * 60 + sh.id) * 0.01);
-        else dots.push(dx, dy, sh.good, treasury ? 1 : 0);
+        if (detailed) {
+          if (treasury) treasuryGlow(ctx, v, dx, dy);
+          cart(ctx, v, x, y, smp.dx, smp.dy, cargo, treasury && j === 0, false, Math.sin((s.day + dayFrac) * 60 + sh.id) * 0.01);
+        } else dots.push(dx, dy, sh.good, treasury ? 1 : 0);
         if (j === 0 && wagN < wagX.length) {
           wagX[wagN] = dx;
           wagY[wagN] = dy;
@@ -547,6 +574,7 @@ export function createLifeLayer(): LifeLayer {
       }
     }
     if (dots.length) {
+      for (let i = 0; i < dots.length; i += 4) if (dots[i + 3]) treasuryGlow(ctx, v, dots[i], dots[i + 1]);
       const r = Math.max(1.6, 0.2 * v.scale) * v.dpr;
       ctx.fillStyle = 'rgba(16,14,12,0.7)';
       ctx.beginPath();

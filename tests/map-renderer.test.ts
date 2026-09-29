@@ -2,14 +2,16 @@
 // networks, ground painter, overlay values). No DOM needed.
 import { describe, expect, it } from 'vitest';
 import { clampCamera, fitZoom, newCamera, panBy, pickLod, sx, sy, wx, wy, zoomAround } from '../src/ui/map/camera';
-import { LODS, ZOOM_MAX, ZOOM_MIN } from '../src/ui/map/constants';
+import { CHUNK_FADE_MS, CHUNK_MARGIN, LODS, ZOOM_MAX, ZOOM_MIN } from '../src/ui/map/constants';
 import { buildFields, chamfer, fillGround } from '../src/ui/map/fields';
 import { overlayValues, relColor, townPrice } from '../src/ui/map/overlay';
 import { chaikin, riverCourses, roadChains } from '../src/ui/map/roads';
+import { activeRoutes, chevronsAt, distToPath, offsetPath, roundQty, routeLabel, slicePoly, treasuryWagonText, trimSpan } from '../src/ui/map/routes';
 import { commuteTrip, hash01, Leg, polyFromPoints, polyFromTiles, samplePoly, shipmentProgress, strollTrip, tripAt } from '../src/ui/map/schedule';
-import { newMarket, newPerson, newSimState, newTown } from '../src/sim/factory';
+import { fadeIn, forestTrees, grassBush, standInOrder } from '../src/ui/map/terrain';
+import { newMarket, newPerson, newShipment, newSimState, newTown } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
-import { Terrain } from '../src/sim/types';
+import { STATE, Terrain, type PlayerOrder } from '../src/sim/types';
 import { generateMap } from '../src/sim/world/mapgen';
 
 describe('camera', () => {
@@ -356,5 +358,195 @@ describe('overlay values', () => {
     }
     expect(overlayValues(s, 'none', 0)).toBeNull();
     expect(relColor(NaN)).toMatch(/^rgba\(/);
+  });
+});
+
+describe('terrain features and levels of detail', () => {
+  it('trees and bushes depend on the world tile only, stay near it and within the chunk margin', () => {
+    let trees = 0;
+    let bushes = 0;
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 40; x++) {
+        for (const edge of [0, 1, 2, 3]) {
+          const a = forestTrees(77, x, y, edge, 0.3);
+          const b = forestTrees(77, x, y, edge, 0.3);
+          expect(b).toEqual(a); // deterministic
+          expect(a.length).toBeLessThanOrEqual(5);
+          if (edge < 2) expect(a.length).toBe(5);
+          for (const t of a) {
+            trees++;
+            // a crown (conifers are 2.3 r tall) plus its shadow stays well inside CHUNK_MARGIN of the tile
+            expect(t.x - t.r).toBeGreaterThan(x - CHUNK_MARGIN);
+            expect(t.x + t.r + 0.1).toBeLessThan(x + 1 + CHUNK_MARGIN);
+            expect(t.y - t.r * 2.3 * 0.62).toBeGreaterThan(y - CHUNK_MARGIN);
+            expect(t.r).toBeGreaterThan(0.15);
+            expect(t.r).toBeLessThanOrEqual(0.3);
+            expect([0, 1, 2]).toContain(t.b);
+          }
+        }
+        for (const near of [false, true]) {
+          const u = grassBush(77, x, y, near);
+          expect(grassBush(77, x, y, near)).toEqual(u);
+          if (u) {
+            bushes++;
+            expect(u.x).toBeGreaterThanOrEqual(x + 0.25);
+            expect(u.x).toBeLessThanOrEqual(x + 0.75);
+            expect(u.r).toBeGreaterThanOrEqual(0.14);
+            expect(u.r).toBeLessThanOrEqual(0.24);
+          }
+        }
+        // a bush that stands away from the woods also stands beside them (same spot, same size)
+        const far = grassBush(77, x, y, false);
+        if (far) expect(grassBush(77, x, y, true)).toEqual(far);
+      }
+    }
+    expect(trees).toBeGreaterThan(20000);
+    expect(bushes).toBeGreaterThan(100);
+  });
+
+  it('stand-in levels: the level shown before first, then the nearest, finer first on ties', () => {
+    expect(standInOrder(64, 32)).toEqual([32, 128, 16, 8]);
+    expect(standInOrder(64, -1)).toEqual([128, 32, 16, 8]);
+    expect(standInOrder(8, 16)).toEqual([16, 32, 64, 128]);
+    expect(standInOrder(128, 128)).toEqual([64, 32, 16, 8]);
+    for (const L of LODS) {
+      const o = standInOrder(L, -1);
+      expect(o).not.toContain(L);
+      expect(o.length).toBe(LODS.length - 1);
+      if (L !== LODS[0]) expect(o).toContain(LODS[0]); // the coarsest level (always complete) is always a candidate
+    }
+  });
+
+  it('fade-in ramps smoothly from 0 to 1 over CHUNK_FADE_MS', () => {
+    expect(fadeIn(-5)).toBe(0);
+    expect(fadeIn(0)).toBe(0);
+    expect(fadeIn(NaN)).toBe(0);
+    expect(fadeIn(CHUNK_FADE_MS / 2)).toBeCloseTo(0.5, 6);
+    expect(fadeIn(CHUNK_FADE_MS)).toBe(1);
+    expect(fadeIn(1e9)).toBe(1);
+    let prev = 0;
+    for (let t = 0; t <= CHUNK_FADE_MS; t += CHUNK_FADE_MS / 20) {
+      const a = fadeIn(t);
+      expect(a).toBeGreaterThanOrEqual(prev);
+      prev = a;
+    }
+  });
+});
+
+describe('supply routes', () => {
+  function state() {
+    const n = 20 * 12;
+    const s = newSimState(1, { w: 20, h: 12, terrain: new Array(n).fill(3), elev: new Array(n).fill(0.3), fert: new Array(n).fill(0.5), deposit: new Array(n).fill(0), river: new Array(n).fill(0), road: new Array(n).fill(0), occ: new Array(n).fill(-1), district: new Array(n).fill(0) });
+    s.towns.push(newTown(0, 'Kingsbridge', 'capital', 3, 5, 4), newTown(1, 'Saltmere', 'harbor', 16, 6, 3));
+    return s;
+  }
+  function order(s: ReturnType<typeof state>, patch: Partial<PlayerOrder> = {}): PlayerOrder {
+    const o: PlayerOrder = {
+      id: s.ids.policy++,
+      label: '',
+      enabled: true,
+      market: { kind: 'good', town: 0, good: G.bread },
+      side: 'buy',
+      price: 5,
+      qty: 20,
+      total: -1,
+      until: -1,
+      once: false,
+      filled: 0,
+      value: 0,
+      filledToday: 0,
+      created: 0,
+      route: { to: 1, sell: 'market', sellPrice: 0, sellMargin: 0, inTransit: 0, waiting: 0, landed: 0, shippedToday: 0, soldToday: 0, shippedTotal: 0, soldTotal: 0, freightPaid: 0, revenue: 0 },
+      ...patch,
+    };
+    s.policy.orders.push(o);
+    return o;
+  }
+
+  it('lists active route orders only, with lanes, and counts Treasury wagons on the road', () => {
+    const s = state();
+    s.day = 10;
+    const a = order(s);
+    order(s, { route: null }); // an ordinary order
+    order(s, { side: 'sell' });
+    order(s, { enabled: false }); // paused and nothing on the road
+    order(s, { until: 5 }); // lapsed
+    const b = order(s, { qty: 7.25 }); // a second route on the same road
+    const c = order(s, { enabled: false }); // paused, but its last load is still travelling
+    const sh = newShipment(s, STATE, 0, 1, G.bread, 12, 3, 9, 12, 1);
+    sh.order = c.id;
+    const r = activeRoutes(s);
+    expect(r.map((x) => x.order)).toEqual([a.id, b.id, c.id]);
+    expect(r.map((x) => x.lane)).toEqual([0, 1, 2]);
+    expect(r[2].buying).toBe(false);
+    expect(r[2].inTransit).toBe(12);
+    expect(routeLabel(r[0], 'Saltmere')).toBe('bread · 20/day → Saltmere');
+    expect(routeLabel(r[1], 'Saltmere')).toBe('bread · 7.3/day → Saltmere');
+    expect(routeLabel(r[2], 'Saltmere')).toBe('bread · 12 on the road → Saltmere');
+    // no orders, a route to its own town, or to a town that does not exist: nothing
+    expect(activeRoutes(state())).toEqual([]);
+    const s2 = state();
+    order(s2, { route: { ...a.route!, to: 0 } });
+    order(s2, { route: { ...a.route!, to: 9 } });
+    expect(activeRoutes(s2)).toEqual([]);
+  });
+
+  it('Treasury wagon hover text', () => {
+    const s = state();
+    s.day = 10;
+    const sh = newShipment(s, STATE, 0, 1, G.bread, 40, 3, 9.5, 11.85, 2);
+    expect(treasuryWagonText(s, sh, 0.45)).toEqual(['Treasury: 40 bread → Saltmere', 'arrives in 1.4 days']);
+    s.day = 11;
+    expect(treasuryWagonText(s, sh, 0.83)[1]).toBe('arriving now');
+    expect(roundQty(12.46)).toBe(12);
+    expect(roundQty(2.46)).toBe(2.5);
+    expect(roundQty(NaN)).toBe(0);
+  });
+
+  it('offsets a path to the right of travel, keeps its shape, and measures distances', () => {
+    // eastward (y grows downwards, so "right" is +y), then southward ("right" is −x)
+    const p = offsetPath([0, 0, 4, 0, 4, 4], 0.5);
+    expect(p.length).toBe(6);
+    expect(p[0]).toBeCloseTo(0, 9);
+    expect(p[1]).toBeCloseTo(0.5, 9);
+    expect(p[4]).toBeCloseTo(3.5, 9);
+    expect(p[5]).toBeCloseTo(4, 9);
+    // the mitred corner sits 0.5 from both legs
+    expect(p[2]).toBeCloseTo(3.5, 9);
+    expect(p[3]).toBeCloseTo(0.5, 9);
+    expect(offsetPath([1, 1, 2, 2], 0)).toEqual([1, 1, 2, 2]);
+    expect(distToPath([0, 0, 4, 0], 2, 3)).toBeCloseTo(3, 9);
+    expect(distToPath([0, 0, 4, 0], 6, 0)).toBeCloseTo(2, 9);
+    expect(distToPath([], 0, 0)).toBe(Infinity);
+    for (const v of offsetPath([0, 0, 0, 0, 3, 0], 0.2)) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it('trims the line inside the towns and slices the visible part', () => {
+    const poly = polyFromPoints([0, 0, 10, 0, 20, 0]);
+    const [d0, d1] = trimSpan(poly, 0, 0, 3, 20, 0, 4);
+    // the first vertex 3+ tiles from A is at 10 and the last 4+ tiles from B at 10,
+    // but at most 40% of the length is trimmed from each end
+    expect(d0).toBeCloseTo(8, 9);
+    expect(d1).toBeCloseTo(12, 9);
+    const fine = polyFromPoints(Array.from({ length: 41 }, (_, i) => [i * 0.5, 0]).flat());
+    const [e0, e1] = trimSpan(fine, 0, 0, 3, 20, 0, 4);
+    expect(e0).toBeCloseTo(3, 9);
+    expect(e1).toBeCloseTo(16, 9);
+    const sl = slicePoly(fine, e0, e1);
+    expect(sl[0]).toBeCloseTo(3, 9);
+    expect(sl[sl.length - 2]).toBeCloseTo(16, 9);
+    expect(slicePoly(fine, 5, 5)).toEqual([]);
+  });
+
+  it('chevrons are evenly spaced and drift toward the destination', () => {
+    const a = chevronsAt(2, 12, 2.5, 0);
+    expect(a).toEqual([2, 4.5, 7, 9.5, 12]);
+    const b = chevronsAt(2, 12, 2.5, 1);
+    expect(b[0]).toBeCloseTo(3, 9);
+    // a full gap of drift brings the same pattern back
+    expect(chevronsAt(2, 12, 2.5, 2.5)).toEqual(a);
+    expect(chevronsAt(2, 12, 0, 1)).toEqual([]);
+    expect(chevronsAt(5, 2, 1, 0)).toEqual([]);
+    expect(chevronsAt(0, 3, 1, -0.5)[0]).toBeCloseTo(0.5, 9);
   });
 });

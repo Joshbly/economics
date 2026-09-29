@@ -11,6 +11,7 @@ import { h, type Child } from '../dom';
 import { fmtMoney, fmtNum, fmtPct, fmtPrice, plural } from '../format';
 import { tipKV, tipNote, tipTitle } from '../widgets/tooltip';
 import { projectProgress } from './buildings';
+import { roundQty, treasuryWagonText } from './routes';
 import { shipmentProgress } from './schedule';
 
 export type HoverTarget =
@@ -18,6 +19,8 @@ export type HoverTarget =
   | { kind: 'person'; id: number }
   | { kind: 'wagon'; id: number }
   | { kind: 'town'; id: number }
+  /** A Treasury supply route (id = the order's id). */
+  | { kind: 'route'; id: number }
   | { kind: 'tile'; i: number }
   | null;
 
@@ -150,6 +153,20 @@ function wagonTip(s: SimState, id: number, dayFrac: number): Child[] {
   if (!sh) return [];
   const from = s.towns[sh.from]?.name ?? '?';
   const to = s.towns[sh.to]?.name ?? '?';
+  if (sh.owner === STATE) {
+    // "Treasury: 40 bread → Saltmere" over "arrives in 1.4 days"
+    const [line, when] = treasuryWagonText(s, sh, dayFrac);
+    const title = tipTitle(line, when);
+    title.classList.add('mapc-tt2');
+    const out: Child[] = [title];
+    out.push(tipKV('From', from));
+    out.push(tipKV('On the way', fmtPct(shipmentProgress(s.day, dayFrac, sh.depart, sh.arrive), 0)));
+    const o = sh.order >= 0 ? s.policy?.orders.find((x) => x && x.id === sh.order) : undefined;
+    if (o && o.route) out.push(tipKV('Supply route', `${fmtNum(roundQty(o.qty))} a day`, 'gold'));
+    if (sh.wagons > 1) out.push(tipKV('Wagons', fmtNum(sh.wagons)));
+    out.push(tipNote(`Click to open ${to}.`));
+    return out;
+  }
   const out: Child[] = [tipTitle(`Wagon${sh.wagons > 1 ? 's' : ''} to ${to}`, `from ${from}`)];
   out.push(tipKV('Carrying', qty(sh.good, sh.qty) + ' of ' + (GOODS[sh.good]?.name.toLowerCase() ?? 'goods')));
   const left = Math.max(0, sh.arrive - (s.day + dayFrac));
@@ -157,6 +174,33 @@ function wagonTip(s: SimState, id: number, dayFrac: number): Child[] {
   out.push(tipKV('Arrives', left < 0.05 ? 'now' : `in ${fmtNum(left, 1)} days`));
   out.push(tipKV('On the way', fmtPct(prog, 0)));
   out.push(tipKV('Owner', sh.owner === STATE ? 'the Treasury' : ownerName(s, sh.owner), sh.owner === STATE ? 'gold' : undefined));
+  return out;
+}
+
+function routeTip(s: SimState, id: number): Child[] {
+  const o = s.policy?.orders.find((x) => x && x.id === id);
+  if (!o || !o.route || o.market.kind !== 'good') return [];
+  const r = o.route;
+  const g = o.market.good;
+  const from = s.towns[o.market.town]?.name ?? '?';
+  const to = s.towns[r.to]?.name ?? '?';
+  const name = (GOODS[g]?.name ?? 'Goods').toLowerCase();
+  const out: Child[] = [tipTitle('Supply route', `${name} · ${from} → ${to}`)];
+  out.push(tipKV(`Buys in ${from}`, `${qty(g, roundQty(o.qty))} a day, up to ${fmtPrice(o.price)}`));
+  let carried = 0;
+  let carts = 0;
+  for (const sh of s.shipments) {
+    if (!sh || sh.owner !== STATE || sh.order !== o.id) continue;
+    carts++;
+    carried += Number.isFinite(sh.qty) ? sh.qty : 0;
+  }
+  const onRoad = Math.max(Number.isFinite(r.inTransit) ? r.inTransit : 0, carried);
+  if (carts === 0 && !(onRoad > 0)) out.push(tipKV('On the road', 'nothing yet'));
+  else out.push(tipKV('On the road', qty(g, roundQty(onRoad)) + (carts ? ` · ${plural(carts, 'convoy')}` : '')));
+  if (r.waiting > 0) out.push(tipKV(`For sale in ${to}`, qty(g, roundQty(r.waiting))));
+  if (r.soldTotal > 0) out.push(tipKV('Sold so far', qty(g, roundQty(r.soldTotal))));
+  if (!o.enabled) out.push(tipKV('Status', 'Paused', 'warn'));
+  out.push(tipNote(`Gold dashes follow the road the Treasury’s wagons take; chevrons point toward ${to}. Click to open ${to}.`));
   return out;
 }
 
@@ -209,6 +253,9 @@ export function hoverContent(s: SimState, t: HoverTarget, dayFrac: number, note?
       break;
     case 'town':
       parts = townTip(s, t.id);
+      break;
+    case 'route':
+      parts = routeTip(s, t.id);
       break;
     case 'tile':
       parts = tileTip(s, t.i, note);

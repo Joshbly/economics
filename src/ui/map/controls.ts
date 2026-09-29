@@ -79,7 +79,15 @@ export function createControls(container: HTMLElement, act: { zoomIn(): void; zo
       sync();
     },
   );
-  const layers = h('div', { class: 'mapc-group mapc-layers' }, people.el, carts.el);
+  const routes = chip(
+    'Routes',
+    () => ui?.showRoutes !== false,
+    (v) => {
+      if (ui) ui.showRoutes = v;
+      sync();
+    },
+  );
+  const layers = h('div', { class: 'mapc-group mapc-layers' }, people.el, carts.el, routes.el);
   // what the colours of the little people mean
   attachTip(
     people.el,
@@ -95,7 +103,15 @@ export function createControls(container: HTMLElement, act: { zoomIn(): void; zo
     ],
     { placement: 'above' },
   );
-  attachTip(carts.el, () => [tipTitle('Wagons', 'goods on the roads'), tipNote('Each cart carries the colour of its cargo; a gold pennant marks the Treasury’s own goods. Handcarts take fresh output from workshops to the market hall.')], { placement: 'above' });
+  attachTip(carts.el, () => [tipTitle('Wagons', 'goods on the roads'), tipNote('Each cart carries the colour of its cargo; a gold pennant and a soft gold glow mark the Treasury’s own goods. Handcarts take fresh output from workshops to the market hall.')], { placement: 'above' });
+  attachTip(
+    routes.el,
+    () => [
+      tipTitle('Routes', 'where the Treasury’s goods are going'),
+      tipNote('A gold dashed line follows the road from the town where the Treasury buys to the town its wagons deliver to; chevrons point the way and a label names the good, the daily amount and the destination. Click a route or a Treasury wagon to open the destination town.'),
+    ],
+    { placement: 'above' },
+  );
   const ovl = h('div', { class: 'mapc-group mapc-ovl' }, overlaySel.el, goodSel.el);
   const legTitle = h('div', { class: 'mapc-leg-t' });
   const legA = h('span');
@@ -111,7 +127,7 @@ export function createControls(container: HTMLElement, act: { zoomIn(): void; zo
     overlaySel.set(ui.overlay);
     goodSel.set(ui.overlayGood);
     goodSel.el.hidden = ui.overlay !== 'price';
-    for (const c of [people, carts]) {
+    for (const c of [people, carts, routes]) {
       const onv = c.get();
       toggleClass(c.el, 'on', onv);
       c.el.setAttribute('aria-pressed', String(onv));

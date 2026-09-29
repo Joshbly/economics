@@ -4,19 +4,21 @@
 // Draw order (device pixels):
 //   terrain chunks → water shimmer → overlay district tints → placement area
 //   → road works → selected person's path → buildings (+ construction bars)
-//   → wagons & carts → walkers → smoke → day/night tint → lights (windows,
-//   furnaces, lamps) → selection / hover rings → placement ghost → labels and
-//   overlay badges.
+//   → Treasury supply routes (gold dashes, chevrons) → wagons & carts →
+//   walkers → smoke → day/night tint → lights (windows, furnaces, lamps) →
+//   selection / hover rings → placement ghost → labels, overlay badges and
+//   route labels.
 // Input: drag / two-finger scroll pans (with inertia); pinch (ctrl+wheel, or
 // Safari gesture events) zooms at the cursor; +/− keys, double-click and the
 // buttons zoom smoothly; arrows pan. Hover shows a tooltip; click selects
 // (building, person, market hall, town label; a wagon selects its trading
-// house); in placement mode valid sites are tinted and a click commissions
-// the building through ui.game.dispatch.
+// house; a supply route or a Treasury wagon selects the destination town); in
+// placement mode valid sites are tinted and a click commissions the building
+// through ui.game.dispatch.
 // ============================================================================
 import { isFirm, refId } from '../../sim/ledger';
 import { rt } from '../../sim/runtime';
-import { Terrain, type PlayerAction, type Sector, type SimState } from '../../sim/types';
+import { STATE, Terrain, type PlayerAction, type Sector, type SimState } from '../../sim/types';
 import { footprintOf, isResourceSector, isValidSite, nearestTown, siteQuality, type SiteWhat } from '../../sim/world/layout';
 import { dayOfYear } from '../../sim/calendar';
 import { DAYS_PER_YEAR } from '../../sim/config';
@@ -45,9 +47,10 @@ import { createControls } from './controls';
 import { hoverContent, sameTarget, type HoverTarget } from './hover';
 import { createLifeLayer, type View } from './life';
 import { overlayValues, relColor, type TownValue } from './overlay';
+import { createRouteLayer } from './routes';
 import type { MapView } from './renderer';
 import type { Look } from './sprites';
-import { createTerrainLayer } from './terrain';
+import { createTerrainLayer, type TerrainLayer } from './terrain';
 
 export interface MapDebug {
   cam: Camera;
@@ -59,8 +62,10 @@ export interface MapDebug {
   /** Simulate a click at a CSS-px point. */
   clickAt(x: number, y: number): void;
   setCamera(x: number, y: number, z: number): void;
-  /** Profiling: layers to skip (terrain, shimmer, buildings, ships, carts, walkers, smoke, tint, lights, labels). */
+  /** Profiling: layers to skip (terrain, shimmer, buildings, routes, ships, carts, walkers, smoke, tint, lights, labels). */
   skip: Record<string, boolean>;
+  /** The terrain layer (seam checks: paintArea). */
+  terrain: TerrainLayer;
 }
 
 const KIND_LABEL: Record<string, string> = { capital: 'Capital', farm: 'Farming town', mining: 'Mining town', harbor: 'Harbour' };
@@ -103,6 +108,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   const terrain = createTerrainLayer();
   const blds = createBuildingLayer();
   const life = createLifeLayer();
+  const routes = createRouteLayer();
 
   // camera animation
   let tz = cam.z;
@@ -282,6 +288,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     S = s;
     blds.reset();
     life.reset();
+    routes.reset();
     terrain.reset(s);
     ovKey = '';
     plKey = '';
@@ -496,6 +503,16 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   // ---------------------------------------------------------------------------
   // Hit testing
   // ---------------------------------------------------------------------------
+  /** Frame parameters for the current camera. */
+  function viewNow(): View {
+    const k = TILE_PX * cam.z * cam.dpr;
+    return { k, ox: (cam.vw * cam.dpr) / 2 - cam.x * k, oy: (cam.vh * cam.dpr) / 2 - cam.y * k, vw: canvas.width, vh: canvas.height, dpr: cam.dpr, scale: TILE_PX * cam.z };
+  }
+
+  function routesShown(): boolean {
+    return ui?.showRoutes !== false && !debug.skip.routes;
+  }
+
   function hitTest(s: SimState, cssX: number, cssY: number): HoverTarget {
     // town labels
     for (let i = 0; i + 4 < labelBoxes.length; i += 5) {
@@ -504,8 +521,13 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     const d = cam.dpr;
     const pid = life.hitPerson(cssX * d, cssY * d, Math.max(5, 0.3 * TILE_PX * cam.z) * d);
     if (pid >= 0) return { kind: 'person', id: pid };
-    const wid = life.hitWagon(cssX * d, cssY * d, Math.max(7, 0.4 * TILE_PX * cam.z) * d);
+    // (hidden wagons keep their last positions in the hit list: ignore them)
+    const wid = ui?.showCarts !== false && !debug.skip.carts ? life.hitWagon(cssX * d, cssY * d, Math.max(7, 0.4 * TILE_PX * cam.z) * d) : -1;
     if (wid >= 0) return { kind: 'wagon', id: wid };
+    // supply-route labels (the lines themselves only where no building is hit)
+    const showR = routesShown();
+    const rid = showR ? routes.hit(viewNow(), cssX, cssY, false) : -1;
+    if (rid >= 0) return { kind: 'route', id: rid };
     const fx = wx(cam, cssX);
     const fy = wy(cam, cssY);
     const m = s.map;
@@ -520,6 +542,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       if (below >= 0 && s.buildings[below]?.kind !== 'house') o = below;
     }
     if (o >= 0 && s.buildings[o] && s.buildings[o].status !== 'ruin') return { kind: 'building', id: o };
+    const lid = showR ? routes.hit(viewNow(), cssX, cssY, true) : -1;
+    if (lid >= 0) return { kind: 'route', id: lid };
     return { kind: 'tile', i };
   }
 
@@ -585,6 +609,14 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         case 'wagon': {
           const sh = s.shipments.find((x) => x && x.id === t.id);
           if (sh && isFirm(sh.owner)) sel = { kind: 'firm', id: refId(sh.owner) };
+          // the Treasury's own wagons: where the goods are going
+          else if (sh && sh.owner === STATE && s.towns[sh.to]) sel = { kind: 'town', id: sh.to };
+          break;
+        }
+        case 'route': {
+          const o = s.policy?.orders.find((x) => x && x.id === t.id);
+          const to = o?.route?.to ?? -1;
+          sel = to >= 0 && s.towns[to] ? { kind: 'town', id: to } : ui.selection;
           break;
         }
         case 'building': {
@@ -1162,6 +1194,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     terrain.sync(s);
     blds.sync(s);
     life.sync(s);
+    routes.sync(s);
     if (needFit) {
       fitRealm(false);
       needFit = false;
@@ -1202,6 +1235,9 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     if (!skip.buildings) blds.draw(ctx, L, k, v.ox, v.oy, v.vw, v.vh, time);
     drawProgressBars(v, infos);
     if (!skip.ships) life.drawShips(ctx, s, infos, v, time);
+    const showR = routesShown();
+    const hotRoute = hover?.kind === 'route' ? hover.id : -1;
+    if (showR) routes.drawLines(ctx, s, v, time, hotRoute);
     const speed = ui?.speed ?? 0;
     if (ui?.showCarts !== false && !skip.carts) life.drawCarts(ctx, s, v, ui?.dayFrac ?? 0.5, speed < PEOPLE_HIDE_SPEED);
     const showPeople = ui?.showPeople !== false && speed < PEOPLE_HIDE_SPEED && cam.z >= PEOPLE_MIN_ZOOM;
@@ -1215,6 +1251,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     drawHover(s, v);
     drawPlacementCursor(s, v, L);
     if (!skip.labels) drawLabels(s, v, vals);
+    if (showR && !skip.labels) routes.drawLabels(ctx, s, v, labelBoxes, hotRoute);
     // background work, within budget
     const spent = performance.now() - t0;
     const budget = Math.max(2, 12 - spent);
@@ -1327,6 +1364,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   const debug: MapDebug = {
     cam,
     skip: {},
+    terrain,
     flush() {
       const s = ui?.game?.s;
       if (!s) return;

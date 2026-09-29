@@ -38,6 +38,8 @@ export interface UiState {
   placing: Placing | null;
   showPeople: boolean;
   showCarts: boolean;
+  /** Map: draw the Treasury's supply routes (gold dashed lines with labels). */
+  showRoutes: boolean;
   /** Market the Markets panel is focused on. */
   marketTown: number;
   marketGood: number;
@@ -108,6 +110,7 @@ export function initUi(game: Game): UiState {
     placing: null,
     showPeople: true,
     showCarts: true,
+    showRoutes: true,
     marketTown: 0,
     marketGood: 8,
   };
