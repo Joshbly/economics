@@ -433,7 +433,10 @@ that pay ¤5 per year each, forever). Seven primitives:
    auction converts just those limits and settlement moves just that money (a
    buyer-side give: the Treasury pays the stated share of the price, the buyer the
    rest; the seller receives the full price) and credits it to the rule. Treasury
-   orders are exempt; foreign merchants are never named. The named traders plan
+   orders are exempt; foreign merchants are never named. A trading house's
+   purchases of merchandise for resale do not carry buyer-side rules (only what it
+   uses — fuel, wagons): the Treasury's share would otherwise be collected again on
+   every round trip between towns, the houses outbidding one another for it. The named traders plan
    with it: a firm's expected input prices and output price, an entrant's costings
    and a named household's expected prices include its own targeted rules, so a
    share of the price of the tools coal mines buy lowers their cost and they plan

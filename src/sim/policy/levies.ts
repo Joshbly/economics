@@ -31,7 +31,9 @@
 // (Order.xPct/xUnit, signed like the wedge: + the trader owes the Treasury, − the
 // Treasury pays), the auction converts that order's limit with them and settlement
 // moves the money and credits the rule (attributeTargetedActual). Treasury orders
-// are exempt; foreign merchants, the Bank and the Treasury are never targeted.
+// are exempt; foreign merchants, the Bank and the Treasury are never targeted; a
+// trading house's merchandise bids (bought for resale, OrderOpts.resale) do not carry
+// buyer-side rules — only what it uses (fuel, wagons) does.
 //
 // Per-rule accounting (levy.today/month/lastMonth/total) is signed:
 // + collected by the Treasury, − paid out by it. Every ¤ is also summed into
