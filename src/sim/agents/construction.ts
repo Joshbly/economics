@@ -40,6 +40,7 @@ import {
   CASH_TARGET_DAYS,
   LABOR_AHEAD_MAX,
   MAX_ACTIVE_PROJECTS,
+  STATE_PARALLEL_MAX,
   NEW_FIRM_WC_DAYS,
   PROJECT_KEEP_DONE,
   REOPEN_COST_SHARE,
@@ -169,6 +170,87 @@ function eligible(s: SimState, b: Firm, max: number): Project[] {
   return out;
 }
 
+/**
+ * What a builder works on today: its first MAX_ACTIVE_PROJECTS financed projects (`slots`: its own
+ * hands work only on these) and — when the town has Treasury workers (`crewed`) — the Treasury's
+ * other financed projects in its queue as well, up to STATE_PARALLEL_MAX in all: Treasury crews
+ * work on every Treasury project in their town at once.
+ */
+function workList(s: SimState, b: Firm, crewed: boolean): { list: Project[]; slots: number } {
+  const list = eligible(s, b, MAX_ACTIVE_PROJECTS);
+  const slots = list.length;
+  if (!crewed || list.length >= STATE_PARALLEL_MAX) return { list, slots };
+  const seen = new Set(list.map((p) => p.id));
+  for (const id of b.build!.queue) {
+    if (list.length >= STATE_PARALLEL_MAX) break;
+    if (seen.has(id)) continue;
+    const p = projectById(s, id);
+    if (!p || p.owner !== STATE || finished(p) || fin(p.loanWanted) > 0) continue;
+    list.push(p);
+  }
+  return { list, slots };
+}
+
+/** Labour a project could take today: what remains, no further ahead of its materials on hand than LABOR_AHEAD_MAX. */
+function usableLabor(p: Project, inv: number[]): number {
+  const need = p.need.labor;
+  if (!(need > EPS)) return 0;
+  const rem = Math.max(0, need - p.done.labor);
+  const capL = Math.max(0, Math.min(1, materialReach(p, inv) + LABOR_AHEAD_MAX) * need - p.done.labor);
+  return Math.min(rem, capL);
+}
+
+/**
+ * Split `total` into equal shares for sites that can each take at most caps[i]; what a full site
+ * cannot take goes to the others (water-filling). Σ result ≤ total.
+ */
+export function shareOut(total: number, caps: number[]): number[] {
+  const out = caps.map(() => 0);
+  let left = Math.max(0, total);
+  let open = caps.map((_, i) => i).filter((i) => caps[i] > EPS);
+  while (left > EPS && open.length) {
+    const each = left / open.length;
+    const next: number[] = [];
+    for (const i of open) {
+      const take = Math.min(each, caps[i] - out[i]);
+      out[i] += take;
+      left -= take;
+      if (caps[i] - out[i] > EPS) next.push(i);
+    }
+    if (next.length === open.length) break; // every site took its full share
+    open = next;
+  }
+  return out;
+}
+
+/**
+ * Today's Treasury labour for each Treasury project (project id → labour-days): each town's
+ * Treasury labour shared equally among all its Treasury projects under way (workList), each
+ * taking no more than it can use today (usableLabor); what one site cannot use goes to the others.
+ */
+function stateShares(s: SimState, sw: Float64Array): Map<number, number> {
+  const out = new Map<number, number>();
+  const byTown = new Map<number, { ids: number[]; caps: number[] }>();
+  for (const b of s.firms) {
+    if (!isBuilder(b)) continue;
+    if (b.building >= 0 && s.buildings[b.building] && s.buildings[b.building].status !== 'active') continue;
+    const t = b.town;
+    if (!(t >= 0 && t < sw.length) || !(sw[t] > EPS)) continue;
+    let e = byTown.get(t);
+    if (!e) byTown.set(t, (e = { ids: [], caps: [] }));
+    for (const p of workList(s, b, true).list) {
+      if (p.owner !== STATE) continue;
+      e.ids.push(p.id);
+      e.caps.push(usableLabor(p, b.inv));
+    }
+  }
+  for (const [t, e] of byTown) {
+    const got = shareOut(sw[t], e.caps);
+    e.ids.forEach((id, i) => out.set(id, got[i]));
+  }
+  return out;
+}
+
 /** Least-supplied material fraction a project could reach with the builder's stock. */
 function materialReach(p: Project, inv: number[]): number {
   let f = 1;
@@ -241,15 +323,15 @@ function stateLabor(s: SimState): { labor: Float64Array; heads: Float64Array } {
 
 /**
  * People the Treasury's building projects in `town` can use: enough to put in each unfinished
- * project's remaining labour in about AUTO_CREW_DAYS, counting only projects a builder is working
- * on now (the first MAX_ACTIVE_PROJECTS in its queue, financed, not stalled). Materials still to
- * arrive may leave some of them idle for a while. 0 when there is nothing to build.
+ * project's remaining labour in about AUTO_CREW_DAYS, counting every financed, unstalled Treasury
+ * project the town's crews can work on at once (workList: up to STATE_PARALLEL_MAX a builder).
+ * Materials still to arrive may leave some of them idle for a while. 0 when there is nothing to build.
  */
 export function treasuryCrewWanted(s: SimState, town: TownId): number {
   let perDay = 0;
   for (const b of s.firms) {
     if (!isBuilder(b) || b.town !== town || !b.build) continue;
-    for (const p of eligible(s, b, MAX_ACTIVE_PROJECTS)) {
+    for (const p of workList(s, b, true).list) {
       if (p.owner !== STATE || p.status === 'stalled') continue;
       const rem = Math.max(0, fin(p.need.labor) - fin(p.done.labor));
       if (!(rem > EPS)) continue;
@@ -271,8 +353,9 @@ export function treasuryCrewWanted(s: SimState, town: TownId): number {
 /**
  * Morning: each builder's target workforce = remaining labour of its active
  * projects / BUILD_TARGET_DAYS (capped by capacity; ≥ 0).
- * Treasury projects count net of the Treasury labour available in the town, and a
- * project waiting for materials counts only BUILDER_BLOCKED_SHARE of its labour.
+ * Treasury projects count net of the share the town's Treasury crews will cover (they work on
+ * all its Treasury projects at once), and a project waiting for materials counts only
+ * BUILDER_BLOCKED_SHARE of its labour.
  */
 export function constructionPlan(s: SimState): void {
   const sw = stateLabor(s).labor;
@@ -281,17 +364,21 @@ export function constructionPlan(s: SimState): void {
     cleanQueue(s, b);
     const active = eligible(s, b, MAX_ACTIVE_PROJECTS);
     let rem = 0;
-    let swLeft = b.town >= 0 && b.town < sw.length ? sw[b.town] * BUILD_TARGET_DAYS : 0;
+    // The Treasury crews share their labour among all the town's Treasury projects at once: the
+    // share of each Treasury project's remaining labour they will cover over BUILD_TARGET_DAYS.
+    const swDays = b.town >= 0 && b.town < sw.length ? sw[b.town] * BUILD_TARGET_DAYS : 0;
+    let cover = 0;
+    if (swDays > EPS) {
+      let stateRem = 0;
+      for (const p of workList(s, b, true).list) if (p.owner === STATE) stateRem += Math.max(0, p.need.labor - p.done.labor);
+      cover = stateRem > EPS ? Math.min(1, swDays / stateRem) : 0;
+    }
     const prices = active.length ? townGrossPrices(s, b.town) : undefined;
     const wDay = Math.max(0, fin(b.wage)) / 0.9;
     for (const p of active) {
       let r = Math.max(0, p.need.labor - p.done.labor);
       if (!(r > EPS)) continue;
-      if (p.owner === STATE && swLeft > 0) {
-        const c = Math.min(swLeft, r);
-        swLeft -= c;
-        r -= c;
-      }
+      if (p.owner === STATE && cover > 0) r -= r * cover;
       const fl = p.need.labor > 0 ? p.done.labor / p.need.labor : 1;
       const blocked = materialReach(p, b.inv) < fl + 0.5 * LABOR_AHEAD_MAX;
       // Only the work its owner can pay for keeps a crew busy.
@@ -642,9 +729,10 @@ function pruneProjects(s: SimState): void {
 }
 
 /**
- * Each builder advances up to MAX_ACTIVE_PROJECTS projects in queue order:
- * labour-days = Σ worker productivity (+ stateworks workers of that town on STATE-owned
- * projects); materials drawn from the builder's inv proportionally (labour cannot run
+ * Each builder advances up to MAX_ACTIVE_PROJECTS projects in queue order with its own
+ * hands (labour-days = Σ worker productivity); the town's Treasury workers work on all of its
+ * Treasury projects at once (workList, stateShares: equal shares, what a site cannot use passes
+ * on) — a Treasury project beyond the builder's slots moves only with them; materials drawn from the builder's inv proportionally (labour cannot run
  * more than 10 % ahead of materials). Bill the owner daily (cost × BUILD_MARGIN, flow
  * 'build'); owner unable to pay → stalled (STALL_CANCEL_DAYS → cancelled; building
  * removed or reverted). Completion: building active (new firm via firms.createFirm with
@@ -656,7 +744,10 @@ function pruneProjects(s: SimState): void {
  */
 export function constructionProgress(s: SimState): void {
   const { labor: sw, heads } = stateLabor(s);
-  const swLeft = Float64Array.from(sw);
+  // Treasury crews: equal shares on every Treasury project of their town; what a site cannot use
+  // passes to the next one (carry, per town).
+  const shares = stateShares(s, sw);
+  const carry = new Float64Array(sw.length);
   const dBuilder = SECTORS.builder;
   let laborTotal = 0;
   let stateLaborTotal = 0;
@@ -674,7 +765,8 @@ export function constructionProgress(s: SimState): void {
     if (b.building >= 0 && s.buildings[b.building] && s.buildings[b.building].status !== 'active') continue;
     const t = b.town;
     cleanQueue(s, b);
-    const active = eligible(s, b, MAX_ACTIVE_PROJECTS);
+    const inTown = t >= 0 && t < sw.length;
+    const { list: active, slots } = workList(s, b, inTown && sw[t] > EPS);
     equipBuilder(s, b, active);
     const leff = workforceEff(s, b) * strikeFactor(s, t);
     const tf = toolFactor(dBuilder, Math.max(0, fin(b.tools)), leff);
@@ -684,10 +776,14 @@ export function constructionProgress(s: SimState): void {
     const pr = prices[t] ?? (prices[t] = townGrossPrices(s, t));
     let used = 0;
     let matVal = 0;
-    for (const p of active) {
-      const st = advance(s, b, p, labor, t >= 0 && t < swLeft.length ? swLeft[t] : 0, costLD, pr);
+    for (let i = 0; i < active.length; i++) {
+      const p = active[i];
+      const own = i < slots; // the builder's own hands work only on its first projects
+      const give = p.owner === STATE && inTown ? (shares.get(p.id) ?? 0) + carry[t] : 0;
+      if (!own && !(give > EPS)) continue; // a Treasury project beyond the builder's slots waits for a crew
+      const st = advance(s, b, p, own ? labor : 0, give, costLD, pr);
       labor = Math.max(0, labor - st.builderLabor);
-      if (t >= 0 && t < swLeft.length) swLeft[t] = Math.max(0, swLeft[t] - st.stateLabor);
+      if (p.owner === STATE && inTown) carry[t] = Math.max(0, give - st.stateLabor);
       used += st.builderLabor;
       stateLaborTotal += st.stateLabor;
       if (st.stateLabor > 0 && t >= 0 && t < sw.length && sw[t] > 0) {
@@ -736,11 +832,17 @@ export function constructionProgress(s: SimState): void {
  */
 export function builderOrders(s: SimState, books: Books): void {
   const dB = SECTORS.builder;
+  const crewedTowns = stateLabor(s).labor;
   for (const b of s.firms) {
     if (!isBuilder(b)) continue;
     if (b.building >= 0 && s.buildings[b.building] && s.buildings[b.building].status !== 'active') continue;
     const t = b.town;
     const active = eligible(s, b, MAX_ACTIVE_PROJECTS + 1);
+    // …and the Treasury projects its town's Treasury crews work on at once
+    if (t >= 0 && t < crewedTowns.length && crewedTowns[t] > EPS) {
+      const ids = new Set(active.map((p) => p.id));
+      for (const p of workList(s, b, true).list) if (!ids.has(p.id)) active.push(p);
+    }
     const want = { wood: 0, iron: 0, tools: 0 };
     for (const p of active) {
       for (const m of MATS) {

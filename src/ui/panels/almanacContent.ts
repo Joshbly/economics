@@ -141,7 +141,12 @@ When a trade earns much more than borrowing costs, someone with savings — or a
         title: 'Treasury workers',
         body: `The Treasury can employ people itself, in the labour market of any town, at a wage you set — a fixed one, or the town's going wage plus a margin, re-set each morning. They work on the Treasury's own building projects in their town (the builders then bill only for the rest of the labour) or drive its freight lines; with nothing to do they wait idle, still paid, and nobody else can hire them meanwhile.
 
-An order that **staffs the projects** sizes the crew for you each morning: enough to put in each project's remaining labour in about a month, no more than the materials on hand allow, and nobody once the projects are finished. The **Works** tab shows each town's crew, who is on which site, who drives and who is idle, and what each project is waiting for.`,
+Your people in a town have two kinds of place:
+
+- **The works crew** builds. It works on all of the Treasury's projects in its town at once — the builders' own hands take three projects at a time, your crew is not held to that — sharing out evenly, and a site that cannot use its share (waiting for wood, say) leaves it to the others. The crew can be sized **as the projects need** (enough to put in each project's remaining labour in about a month, no more than the materials on hand allow, and nobody once the projects are finished) or kept as **a set crew** of so many people, idle when there is nothing to build.
+- **Posts** are the drivers of your freight lines: named people posted to one line, who drive only for it and are never sent to a building site. A line keeps them **as needed** (when the wagons stand idle, its spare drivers join the works crew) or **permanently**, one a wagon, kept on even while the line is paused. When the works crew shrinks, drivers are the last to be let go.
+
+The **Works** tab shows each town's crew, each line's drivers by name, who is on which site and who is idle, and what each project is waiting for.`,
       },
     ],
   },
@@ -238,7 +243,7 @@ A carry neither buys nor sells. To keep a town supplied from another, place a bu
         body: `A **freight line** (in Build) is a carrying service the Treasury runs between two towns, both ways. Nothing about it is make-believe:
 
 - **Wagons** are tools the Treasury owns (three tool sets a wagon). They are kept in the first town you name; the line takes any tools you hold there and buys the rest in that town's market, and replaces them as they wear out on the road.
-- **Drivers** are Treasury workers of that town, paid a carter's wage from the Purse. Workers you employ with a labour order are kept for your projects first; the line hires as many more as it has loads for.
+- **Drivers** are Treasury workers of that town posted to the line, paid a carter's wage from the Purse. Choose **as needed** (as many as the loads call for; spare drivers join the town's works crew) or **permanent, one a wagon** (kept on whatever the loads, even while the line is paused). Either way the same people keep driving it, and a line's drivers are hired before the building crews.
 - **Oil** is bought in that town as the wagons use it: every loaded trip burns it, like any wagon's.
 
 The trading houses of both towns use the line whenever it is cheaper than their own wagons, and pay its fare to the Purse. You choose the fare: a **fixed** amount per unit, **at cost** (what the line's recent trips cost per unit carried — part-full wagons cost more a unit, wagons that meet a load coming back cost less), or **free**. Goods of several traders share a wagon, so a small consignment costs no more a unit than a full wagon.

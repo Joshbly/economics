@@ -12,6 +12,7 @@ import { policyBeginDay, playerOrders, playerAfterClear, playerBeforeSession, pl
 import { stockLevies, levyMonthRollover } from './policy/levies';
 import { householdsBeginDay, householdOrders, householdPortfolioOrders, householdsConsume } from './agents/households';
 import { laborMarket } from './agents/labor';
+import { staffLines } from './policy/lines';
 import { housingStep } from './agents/housing';
 import { demographyStep } from './agents/demography';
 import { firmsPlan, firmsProduce, firmsPayWages, firmOrders, firmsEndDay } from './agents/firms';
@@ -36,6 +37,7 @@ export function stepDay(s: SimState): void {
   firmsPlan(s); // employment targets, wages, vacancies
   constructionPlan(s); // builders' workforce targets
   laborMarket(s); // layoffs, search, matching
+  staffLines(s); // Treasury freight lines: drivers posted from their town's crew
   firmsProduce(s); // production, tool wear
   constructionProgress(s); // projects advance, completions
   firmsPayWages(s); // wages (+ wage levies)

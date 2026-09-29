@@ -1,5 +1,6 @@
 // Drive the Works tab: commission a road with "staff it automatically" on, run the clock,
-// check the town's crew, who is where, the projects list, set-number staffing and letting go.
+// check the town's crew, who is where, the projects list, a set crew and letting go; then
+// several projects in one town worked at once, and a freight line's permanent drivers.
 //   node scripts/qa/works.mjs
 import { open, report } from './lib.mjs';
 
@@ -44,7 +45,7 @@ const crew = await q.s(`(() => { const f = s.firms.find(f => f.alive && f.sector
 check('the town has a Treasury crew', crew > 0, `crew ${crew}`);
 check('card shows who is building which project, by name', /Paved road .* — \d+/.test(txt) && (await page.locator(`${card} .wk-who .ent-link`).count()) > 0, txt.slice(0, 300));
 check('card lists the project with its crew and progress', /Treasury projects here/i.test(txt) && /Treasury crew today: about \d+/.test(txt), txt.slice(0, 500));
-check('staffing control shows automatic staffing', (await page.locator(`${card} .seg-btn.on`).first().textContent()) === 'Staff projects');
+check('works crew control shows automatic staffing', (await page.locator(`${card} .seg-btn.on`).first().textContent()) === 'As projects need');
 await q.shot('works-auto');
 
 // clicking a name inspects the person
@@ -56,7 +57,7 @@ await page.evaluate(() => window.__realm.setTab('works'));
 await page.waitForTimeout(300);
 
 // switch to a set number of 3 and apply
-await page.locator(`${card} .seg-btn:text-is("Set number")`).click();
+await page.locator(`${card} .seg-btn:text-is("A set crew")`).click();
 const qin = page.locator(`${card} .wk-ctl input`).first();
 await qin.fill('3');
 await qin.press('Tab');
@@ -87,6 +88,41 @@ await page.waitForTimeout(300);
 const o4 = await q.s(`s.policy.orders.filter(o => o.market.kind === 'labor' && o.staff === 'projects').length`);
 check('staff every town: one automatic order per town', o4 === (await q.s('s.towns.length')), String(o4));
 await q.shot('works-all');
+
+// several Treasury projects in one town: the crew works on all of them at once
+const town = await q.s(`s.towns.find(t => t.kind === 'capital').id`);
+for (let i = 0; i < 5; i++) await page.evaluate((t) => window.__realm.ui.game.dispatch({ type: 'build', kind: 'house', town: t }), town);
+let most = 0;
+for (let k = 0; k < 8; k++) {
+  await q.s(`R.setSpeed(3)`);
+  await page.waitForTimeout(700);
+  await q.s(`R.setSpeed(0)`);
+  const n = await q.s(`s.projects.filter(p => p.owner === -1 && p.town === ${town} && (p.crewToday ?? 0) > 0).length`);
+  most = Math.max(most, n);
+}
+check('the crew works on more than three projects in one town at once', most > 3, `most sites on one day: ${most}`);
+await page.evaluate(() => window.__realm.setTab('works'));
+await page.waitForTimeout(500);
+await q.shot('works-parallel');
+
+// a freight line from that town with permanent drivers: its own named posts
+const other = await q.s(`s.towns.find(t => t.id !== ${town} && t.kind === 'farm').id`);
+const lr = await page.evaluate(([a, b]) => window.__realm.ui.game.dispatch({ type: 'openLine', a, b, wagons: 2, fare: 'cost', staffing: 'permanent' }), [town, other]);
+check('line opened with permanent drivers', lr.ok && /each with its own driver/.test(lr.message), lr.message.slice(0, 160));
+await q.s(`R.setSpeed(3)`);
+await page.waitForTimeout(2500);
+await q.s(`R.setSpeed(0)`);
+const posted = await q.s(`s.policy.lines[0].staff.length`);
+check('two drivers posted to the line', posted === 2, `posted ${posted}`);
+await page.waitForTimeout(500);
+const tcard = `.wk-town[data-town="${town}"]`;
+const ttxt = (await page.locator(tcard).innerText()).replace(/\s+/g, ' ');
+check('Works card names the line’s drivers', /Driving to \S+ — 2/.test(ttxt), ttxt.slice(0, 400));
+check('permanent marked on the line’s row', ((await page.locator(`${tcard} .wk-post .lv-chip.on`).first().textContent()) ?? '').startsWith('permanent'));
+await q.shot('works-posts');
+await page.locator(`${tcard} .wk-post .lv-chip:text-is("as needed")`).first().click();
+await page.waitForTimeout(300);
+check('switching the line to drivers as needed', (await q.s(`s.policy.lines[0].staffing`)) === 'asNeeded');
 
 console.log(`\nFAILS: ${fails.length ? fails.join(', ') : 'none'}`);
 report(q, 'works');

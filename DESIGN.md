@@ -268,9 +268,18 @@ dividends to their owner, invest, and can go bankrupt.
 One Builders' Yard firm per town with a project queue. A project needs
 labour-days, wood, iron and tools. Builders hire workers for queued work, buy
 materials in the local market, progress projects, and bill the owner daily
-(cost × 1.12). Treasury workers (`stateworks`) in the same town add their
-labour to Treasury-owned projects for free. Private and Treasury projects
-compete for the same labour and materials (crowding out emerges naturally).
+(cost × 1.12). A builder's own hands work on its first MAX_ACTIVE_PROJECTS
+financed projects. Treasury workers (`stateworks`) in the same town add their
+labour to Treasury-owned projects for free — to *all* of the town's Treasury
+projects at once (construction.workList: beyond the builder's slots, up to
+STATE_PARALLEL_MAX a builder): each day the town's Treasury labour is shared
+equally among them, each taking no more than it can use (its remaining labour,
+no further than LABOR_AHEAD_MAX ahead of its materials), what a full site cannot
+take going to the others (shareOut, water-filling). A Treasury project beyond the
+builder's slots moves only with Treasury workers; the builder buys materials for
+those too while the town has a Treasury crew, and sizes its own crew net of the
+share of its Treasury projects' work the crew will cover. Private and Treasury
+projects compete for the same labour and materials (crowding out emerges naturally).
 
 ### 3.4 Traders (shipping)
 One Trading House per town. Owns wagons (capital = tools), employs drivers for
@@ -416,7 +425,8 @@ that pay ¤5 per year each, forever). Seven primitives:
    Treasury construction projects in that town, or idle; the wage is fixed or
    `follow` = the town's going wage (average posted wage) + band, re-set each
    morning; `staff: 'projects'` re-sets the headcount each morning to what the
-   town's Treasury projects can use — each active, financed, unstalled project's
+   town's Treasury projects can use — each financed, unstalled project the crew
+   works on (all of them at once, see §3.3)'s
    remaining labour over AUTO_CREW_DAYS, no more than its materials on hand allow,
    ÷ STATEWORKS_BUILD_EFF (construction.treasuryCrewWanted), capped by `qty` — so
    the crew is let go as the projects finish), the IOU market
@@ -536,11 +546,18 @@ that pay ¤5 per year each, forever). Seven primitives:
      (TOOLS_PER_WAGON each; taken from the Treasury's stores in `a` when it opens or
      grows, then bought in `a`'s market by an exempt Treasury bid at the going price +
      LINE_BUY_BAND, at most LINE_TOOLS_DAY wagons a day, keeping LINE_WEAR_BUFFER
-     spare); *drivers* are the Treasury crew of `a` (policyBeginDay adds the line's
-     drivers — wagons asked for (EMA) × LINE_DRIVER_SLACK, within [1, wagons], never
-     fewer than on the road — to the crew's target after the labour orders, and offers
-     at least the going carters' wage of `a` + LINE_WAGE_PREMIUM; drivers do not count
-     as labour on Treasury projects); *fuel* is oil bought in `a` (exempt bid) into the
+     spare); *drivers* are Treasury workers of `a` posted to the line (`staff`, named
+     people): policyBeginDay adds the drivers it wants to the crew's target and offers
+     at least the going carters' wage of `a` + LINE_WAGE_PREMIUM — `staffing:
+     'permanent'` one per wagon of the fleet, kept on while the line runs or is paused;
+     `'asNeeded'` (the default) wagons asked for (EMA) × LINE_DRIVER_SLACK, within [1,
+     wagons] (only those on the road while paused) — never fewer than on the road.
+     After the labour market, lines.staffLines posts them: each line keeps the people
+     already posted to it (an 'asNeeded' line hands its spare drivers back to the works
+     crew, the longest-serving stay) and fills what it lacks from the crew's unposted
+     workers, newest hires first — posts come before the building sites, drivers never
+     count as labour on Treasury projects, and when the crew shrinks (labor.ts) its
+     posted drivers are the last let go. Closing a line ends its posts; *fuel* is oil bought in `a` (exempt bid) into the
      line's store — LINE_FUEL_DAYS of expected legs — and burnt per loaded leg
      (OIL_PER_TILE × tiles); *wear* is WAGON_WEAR_DAY per wagon-day on the road +
      idle wear. Room today = (free wagons, drivers not on the road, fuel for a leg:
@@ -557,7 +574,8 @@ that pay ¤5 per year each, forever). Seven primitives:
      card: fares in, drivers, fuel & wear, result). The Treasury's own cargo
      between the two towns (carry rules, and goods carried once) rides the line first,
      without a fare (the cargo's basis counts the line's cost per unit), the rest with the trading house
-     as before. Paused: no loads, no purchases, only the drivers on the road kept.
+     as before. Paused: no loads, no purchases; only the drivers on the road kept
+     (permanent drivers: all of them).
      Closing hands the line's tools and oil to the Treasury's stores in `a` (cargo on
      the road still arrives).
 7. **Transfer** — a one-off lump-sum payment to (or seizure from) a group
@@ -591,7 +609,8 @@ bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisatio
 tradersBeginDay     shipments arrive (the Treasury's cargo due by the opening lands in its stores), wagons return
 firmsPlan           employment targets, wage adjustments, vacancies
 constructionPlan    builders' workforce targets
-laborMarket         layoffs, job search, matching, Treasury workers
+laborMarket         layoffs, job search, matching, Treasury workers (freight-line drivers let go last)
+staffLines          Treasury freight lines: drivers posted from their town's crew (their own stay)
 firmsProduce        production, tools wear
 constructionProgress
 firmsPayWages       wages (+ wage levies); Treasury workers paid from the Purse

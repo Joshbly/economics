@@ -440,6 +440,9 @@ export const EXIT_MAX_PER_TRADE = 1;
 export const BUILD_MARGIN = 1.12; // builders bill cost × this
 export const BUILD_TARGET_DAYS = 60; // builders size workforce to clear queue in this many days
 export const MAX_ACTIVE_PROJECTS = 3;
+/** Treasury crews work on every Treasury project in their town at once (not only on the builders'
+ *  MAX_ACTIVE_PROJECTS): up to this many projects a builder in all. */
+export const STATE_PARALLEL_MAX = 8;
 export const STALL_CANCEL_DAYS = 120;
 // -- added by firms engineer --
 /** Labour on a project may run at most this share ahead of its least-supplied material. */

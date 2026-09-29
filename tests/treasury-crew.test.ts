@@ -76,3 +76,51 @@ describe('orders for Treasury workers', () => {
     expect(o.qty).toBe(2);
   });
 });
+
+describe('Treasury crews on several projects in one town at once', () => {
+  it('shares out equally, and what a full site cannot take goes to the others', async () => {
+    const { shareOut } = await import('../src/sim/agents/construction');
+    expect(shareOut(9, [10, 10, 10])).toEqual([3, 3, 3]);
+    const r = shareOut(9, [1, 10, 10]);
+    expect(r[0]).toBeCloseTo(1, 9);
+    expect(r[1]).toBeCloseTo(4, 9);
+    expect(r[2]).toBeCloseTo(4, 9);
+    const all = shareOut(100, [2, 3, 0]);
+    expect(all).toEqual([2, 3, 0]); // never more than the sites can take
+    expect(shareOut(0, [5, 5])).toEqual([0, 0]);
+  });
+
+  it('works on every Treasury project in the town, beyond the builders’ three at a time', () => {
+    const s = world();
+    const town = 0;
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const r = dispatch(s, { type: 'build', kind: 'house', town });
+      expect(r.ok, r.message).toBe(true);
+      ids.push(r.id!);
+    }
+    dispatch(s, { type: 'placeOrder', market: { kind: 'labor', town }, side: 'buy', price: 0, qty: 30, priceMode: 'follow', band: 0.25 });
+    const worked = new Map<number, number>();
+    let most = 0; // most sites with the crew on the same day
+    for (let d = 0; d < 25; d++) {
+      stepDay(s);
+      let today = 0;
+      for (const id of ids) {
+        const p = s.projects.find((x) => x.id === id);
+        if (p && (p.crewToday ?? 0) > 0) {
+          worked.set(id, (worked.get(id) ?? 0) + 1);
+          today++;
+        }
+      }
+      most = Math.max(most, today);
+    }
+    // all five had the Treasury crew on them — more than the builders' three on the same day
+    expect(ids.filter((id) => (worked.get(id) ?? 0) > 0).length).toBe(5);
+    expect(most).toBeGreaterThan(3);
+    // on a day the crew is on several sites, it is spread across them (no site takes it all)
+    const c = treasuryCrew(s, town);
+    const sites = c.sites.filter((x) => x.people.length > 0);
+    if (sites.length > 1) expect(Math.max(...sites.map((x) => x.people.length))).toBeLessThan(c.workers.length);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-3);
+  });
+});

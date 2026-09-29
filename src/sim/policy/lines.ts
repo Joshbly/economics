@@ -7,10 +7,13 @@
 //   wagons  = tools the line holds (TOOLS_PER_WAGON each), taken from the Treasury's
 //             stores in the depot town `a` when the line opens or grows, and bought there
 //             (an exempt Treasury bid, visible in the market) as they wear out;
-//   drivers = Treasury workers of `a` (the town's stateworks crew: policyBeginDay adds the
-//             line's drivers to the crew's target and offers at least the line's wage;
-//             workers go to the Treasury's labour orders first, the rest drive), paid from
-//             the Purse with the rest of the crew (firms.firmsPayWages);
+//   drivers = Treasury workers of `a` posted to the line (FreightLine.staff): policyBeginDay
+//             adds the line's drivers to the town crew's target and offers at least the
+//             line's wage; after the labour market staffLines posts people to each line (its
+//             own drivers stay; newcomers first) — posts come before the building sites, and
+//             the crew's layoffs take the posted drivers last. 'permanent' lines keep one
+//             driver per wagon; 'asNeeded' lines what their use asks for. Paid from the Purse
+//             with the rest of the crew (firms.firmsPayWages);
 //   fuel    = oil bought in `a`'s market (an exempt Treasury bid) into the line's own store
 //             and burnt per loaded leg (OIL_PER_TILE × tiles), like any wagon;
 //   wear    = WAGON_WEAR_DAY per wagon-day on the road + idle wear, like any wagon.
@@ -63,7 +66,7 @@ import { G, N_GOODS } from '../goods';
 import { addBid, bookFor, marketOf, type Books } from '../market/markets';
 import { rt, type Route } from '../runtime';
 import { STATE } from '../types';
-import type { Firm, FreightLine, LineFare, Order, SimState, TownId } from '../types';
+import type { Firm, FreightLine, LineFare, LineStaffing, Order, SimState, TownId } from '../types';
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 
@@ -72,7 +75,7 @@ import { routeBetweenTowns } from '../world/paths';
 // ---------------------------------------------------------------------------
 
 /** A fresh line record (no wagons yet, all counters zero). */
-export function newLine(id: number, a: TownId, b: TownId, wagons: number, fare: LineFare, farePrice: number, day: number, label: string): FreightLine {
+export function newLine(id: number, a: TownId, b: TownId, wagons: number, fare: LineFare, farePrice: number, day: number, label: string, staffing: LineStaffing = 'asNeeded'): FreightLine {
   return {
     id,
     label,
@@ -92,6 +95,8 @@ export function newLine(id: number, a: TownId, b: TownId, wagons: number, fare: 
     busy: [],
     drivers: 0,
     crew: 0,
+    staffing,
+    staff: [],
     // A new line expects half its fleet to be asked for (so it hires drivers at once).
     useEma: 0.5 * wagons,
     costEma: 0,
@@ -180,30 +185,19 @@ export function stateworksIn(s: SimState, town: TownId): Firm | undefined {
   return undefined;
 }
 
-/** Workers the Treasury's labour orders in a town ask for (they have the first claim on the crew). */
-function labourHeads(s: SimState, town: TownId): number {
-  let n = 0;
-  for (const o of s.policy.orders) {
-    if (!o.enabled || o.market.kind !== 'labor' || o.market.town !== town || o.side !== 'buy') continue;
-    if (o.total >= 0 && o.filled >= o.total - 1e-9) continue;
-    const want = o.staff === 'projects' ? (o.staffToday ?? 0) : o.qty; // an order staffing projects: today's number
-    n += o.total >= 0 ? Math.min(want, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : want;
-  }
-  return n;
+/** Is person `pid` one of the Treasury workers of `sw` today? */
+function employedBy(s: SimState, sw: Firm, pid: number): boolean {
+  const p = s.people[pid];
+  return !!p && p.alive && p.job === sw.id;
 }
 
-/** Drivers the line has right now: its share of the depot's crew beyond the labour orders (lines in list order). */
+/** Drivers the line has right now: the people posted to it who still work for the depot's Treasury crew. */
 export function crewOf(s: SimState, L: FreightLine): number {
   const sw = stateworksIn(s, L.a);
-  if (!sw || sw.status !== 'active') return 0;
-  let free = Math.max(0, sw.workers.length - labourHeads(s, L.a));
-  for (const x of s.policy.lines) {
-    if (x.a !== L.a) continue;
-    const c = Math.min(Math.max(0, x.drivers), free);
-    if (x === L) return c;
-    free -= c;
-  }
-  return 0;
+  if (!sw || sw.status !== 'active' || !L.staff?.length) return 0;
+  let n = 0;
+  for (const pid of L.staff) if (employedBy(s, sw, pid)) n++;
+  return n;
 }
 
 /** Treasury workers of a town driving for its lines today (not available for construction). */
@@ -213,6 +207,50 @@ export function lineCrewIn(s: SimState, town: TownId): number {
   let n = 0;
   for (const L of ls) if (L.a === town) n += crewOf(s, L);
   return n;
+}
+
+/** Person ids posted to the freight lines based in a town (for the crew's layoffs and the Works panel). */
+export function postedIn(s: SimState, town: TownId): Set<number> {
+  const out = new Set<number>();
+  for (const L of s.policy.lines ?? []) if (L.a === town) for (const pid of L.staff ?? []) out.add(pid);
+  return out;
+}
+
+/**
+ * After the labour market (engine): post drivers to every line from its depot town's Treasury
+ * crew. Each line keeps the people already posted to it (those who left the crew drop off),
+ * down to what it wants today — an 'asNeeded' line hands its spare drivers back to the works
+ * crew, newest first — and fills what it lacks from the crew's unposted workers, newest hires
+ * first (the crew hired them for the line). Lines come before the building sites.
+ */
+export function staffLines(s: SimState): void {
+  const ls = s.policy.lines;
+  if (!ls || !ls.length) return;
+  const tenure = (pid: number) => s.people[pid]?.tenure ?? 0;
+  const towns = new Set<number>();
+  for (const L of ls) towns.add(L.a);
+  for (const town of towns) {
+    const sw = stateworksIn(s, town);
+    const lines = ls.filter((L) => L.a === town);
+    if (!sw || sw.status !== 'active') {
+      for (const L of lines) L.staff = [];
+      continue;
+    }
+    const taken = new Set<number>();
+    for (const L of lines) {
+      const keep = (L.staff ?? []).filter((pid) => employedBy(s, sw, pid) && !taken.has(pid));
+      const want = Math.max(0, Math.round(fin(L.drivers)));
+      if (keep.length > want) keep.sort((x, y) => tenure(y) - tenure(x)).length = want; // the longest-serving stay
+      for (const pid of keep) taken.add(pid);
+      L.staff = keep;
+    }
+    const free = sw.workers.filter((pid) => !taken.has(pid)).sort((x, y) => tenure(x) - tenure(y) || y - x);
+    let k = 0;
+    for (const L of lines) {
+      const want = Math.max(0, Math.round(fin(L.drivers)));
+      while (L.staff.length < want && k < free.length) L.staff.push(free[k++]);
+    }
+  }
 }
 
 /** Drivers the lines based in a town want today, and the highest wage they offer (policyBeginDay). */
@@ -455,8 +493,9 @@ export function noteFare(L: FreightLine, paid: number): void {
  * Morning (policyBeginDay, before the Treasury crews are set): wagons whose trip is over are
  * free; wear (WAGON_WEAR_DAY per wagon on the road + idle wear on the tools, valued at the
  * tools price in `a`); fleet = floor(tools / TOOLS_PER_WAGON); the drivers' wage; today's
- * fare; drivers wanted = wagons asked for (EMA) × LINE_DRIVER_SLACK, within [1, wagons]
- * (only those on the road while paused), never fewer than the wagons on the road.
+ * fare; drivers wanted = 'permanent': one per wagon of the fleet (paused or not); 'asNeeded':
+ * wagons asked for (EMA) × LINE_DRIVER_SLACK, within [1, wagons] (only those on the road while
+ * paused) — never fewer than the wagons on the road.
  */
 export function linesBeginDay(s: SimState): void {
   const ls = s.policy.lines;
@@ -483,7 +522,9 @@ export function linesBeginDay(s: SimState): void {
     L.fareToday = fareFor(s, L);
     const onRoad = L.busy.length;
     let want = 0;
-    if (L.enabled && L.wagons > 0) want = clamp(Math.ceil(Math.max(0, fin(L.useEma)) * LINE_DRIVER_SLACK - 0.05), 1, L.wagons);
+    // permanent: one driver per wagon of the fleet, kept while paused; as needed: what the use asks for
+    if (L.staffing === 'permanent') want = Math.max(0, Math.round(L.wagonsWanted));
+    else if (L.enabled && L.wagons > 0) want = clamp(Math.ceil(Math.max(0, fin(L.useEma)) * LINE_DRIVER_SLACK - 0.05), 1, L.wagons);
     L.drivers = Math.max(want, onRoad);
   }
 }
@@ -681,6 +722,7 @@ export function windUpLine(s: SimState, L: FreightLine): [number, number] {
   L.wagons = 0;
   L.busy = [];
   L.drivers = 0;
+  L.staff = [];
   L.enabled = false;
   return [tools, oil];
 }

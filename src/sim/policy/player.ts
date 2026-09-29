@@ -1571,7 +1571,7 @@ export function describeLine(s: SimState, L: FreightLine): string {
   const n = L.wagonsWanted;
   const paused = L.enabled ? '' : ' It is paused: it takes no loads until it is resumed.';
   return (
-    `The Treasury runs a freight line between ${A} and ${B}: ${qtyText(n)} wagon${n === 1 ? '' : 's'} kept in ${A}, driven by Treasury workers hired there and burning oil bought there. ` +
+    `The Treasury runs a freight line between ${A} and ${B}: ${qtyText(n)} wagon${n === 1 ? '' : 's'} kept in ${A}, ${L.staffing === 'permanent' ? `each with its own driver, a Treasury worker hired there and kept on,` : 'driven by Treasury workers hired there as the loads need them,'} burning oil bought there. ` +
     `Trading houses of both towns may load their goods onto it and pay ${fareText(L)}; the Treasury's own goods between the two towns ride it too.${paused}`
   );
 }
@@ -1586,6 +1586,11 @@ function checkFare(fare: unknown, price: unknown): { ok: true; fare: LineFare; p
   if (fare !== 'fixed') return { ok: true, fare: fare as LineFare, price: 0 };
   if (!isNum(price) || price < 0 || price > LINE_MAX_FARE) return { ok: false, message: `The fare per unit must be a number between ${moneyText(0)} and ${moneyText(LINE_MAX_FARE)}.` };
   return { ok: true, fare: 'fixed', price };
+}
+
+function checkStaffing(x: unknown): string | null {
+  if (x !== undefined && x !== 'asNeeded' && x !== 'permanent') return 'A line keeps its drivers either as the loads need them or permanently, one a wagon.';
+  return null;
 }
 
 function checkWagons(n: unknown): string | null {
@@ -1603,10 +1608,12 @@ function openLine(s: SimState, a: Extract<PlayerAction, { type: 'openLine' }>): 
   if (we) return fail(we);
   const fc = checkFare(a.fare, a.farePrice);
   if (!fc.ok) return fail(fc.message);
+  const se = checkStaffing(a.staffing);
+  if (se) return fail(se);
   if (lineBetween(s, a.a, a.b)) return fail(`A Treasury freight line already runs between ${townName(s, a.a)} and ${townName(s, a.b)}; change its wagons or its fare instead.`);
   if (!s.policy.lines) s.policy.lines = [];
   const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : lineLabel(s, a.a, a.b);
-  const L = newLine(s.ids.policy++, a.a, a.b, a.wagons, fc.fare, fc.price, s.day, label);
+  const L = newLine(s.ids.policy++, a.a, a.b, a.wagons, fc.fare, fc.price, s.day, label, a.staffing === 'permanent' ? 'permanent' : 'asNeeded');
   s.policy.lines.push(L);
   const took = takeStoredTools(s, L);
   L.fareToday = fareFor(s, L);
@@ -1638,6 +1645,8 @@ function updateLine(s: SimState, a: Extract<PlayerAction, { type: 'updateLine' }
     if (!fc.ok) return fail(fc.message);
     fare = fc;
   }
+  const se = checkStaffing(p.staffing);
+  if (se) return fail(se);
   const before = describeLine(s, L);
   const notes: string[] = [];
   if (p.wagons !== undefined && p.wagons !== L.wagonsWanted) {
@@ -1652,6 +1661,7 @@ function updateLine(s: SimState, a: Extract<PlayerAction, { type: 'updateLine' }
     L.farePrice = fare.price;
     L.fareToday = fareFor(s, L);
   }
+  if (p.staffing !== undefined) L.staffing = p.staffing;
   if (p.enabled !== undefined) L.enabled = !!p.enabled;
   if (p.enabled !== undefined && Object.keys(p).length === 1) {
     policyNews(

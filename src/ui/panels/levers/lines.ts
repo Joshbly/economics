@@ -15,7 +15,7 @@
 import { freightPerUnit } from '../../../sim/agents/traders';
 import { costPerUnit, lineResult, wagonsOut } from '../../../sim/policy/lines';
 import { describeLine } from '../../../sim/policy/player';
-import type { FreightLine, SimState } from '../../../sim/types';
+import type { FreightLine, LineStaffing, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
 import { fmtNum, fmtPrice, plural } from '../../format';
 import { centerMap } from '../../uiState';
@@ -77,6 +77,7 @@ interface Card {
   result: ReturnType<typeof statEl>;
   fareBtns: HTMLButtonElement[];
   less: HTMLButtonElement;
+  staffBtns: HTMLButtonElement[];
 }
 
 function card(L: FreightLine, state: () => SimState | null, compact: boolean): Card {
@@ -152,7 +153,26 @@ function card(L: FreightLine, state: () => SimState | null, compact: boolean): C
     if (x) run({ type: 'updateLine', id, patch: { wagons: x.wagonsWanted + 1 } }, null);
   }, 'Keep one wagon more (bought as tools in the depot town)');
   for (const b of [less, more]) b.classList.add('chip');
-  const controls = h('div', { class: 'lv-if-opts lv-ln-ctl' }, h('span', { class: 'lv-if-opts-k' }, 'Fare:'), ...fareBtns, h('span', { class: 'lv-ln-gap' }), less, more);
+  const staffBtn = (label: string, title: string, staffing: LineStaffing) => {
+    const b = chip(label, () => run({ type: 'updateLine', id, patch: { staffing } }, null), title);
+    b.classList.add('chip');
+    return b;
+  };
+  const staffBtns = [
+    staffBtn('as needed', 'Drivers as the loads need them; when the wagons stand idle they join the town’s works crew', 'asNeeded'),
+    staffBtn('permanent', 'One driver per wagon, kept on (even while the line is paused): never moved to the building sites, the last let go', 'permanent'),
+  ];
+  const controls = h(
+    'div',
+    { class: 'lv-if-opts lv-ln-ctl' },
+    h('span', { class: 'lv-if-opts-k' }, 'Fare:'),
+    ...fareBtns,
+    h('span', { class: 'lv-ln-gap' }),
+    less,
+    more,
+    h('span', { class: 'lv-if-opts-k' }, 'Drivers:'),
+    ...staffBtns,
+  );
   const el = h(
     'div',
     { class: 'lv-rt lv-ln', dataset: { line: String(id) } },
@@ -162,7 +182,7 @@ function card(L: FreightLine, state: () => SimState | null, compact: boolean): C
     h('div', { class: 'lv-rt-money' }, fares.el, drivers.el, running.el, result.el),
     compact ? null : controls,
   );
-  return { el, sw, path, status, terms, cells, fares, drivers, running, result, fareBtns, less };
+  return { el, sw, path, status, terms, cells, fares, drivers, running, result, fareBtns, less, staffBtns };
 }
 
 function paint(s: SimState, v: Card, L: FreightLine): void {
@@ -208,6 +228,8 @@ function paint(s: SimState, v: Card, L: FreightLine): void {
   v.fareBtns[0].classList.toggle('on', L.fare === 'free');
   v.fareBtns[1].classList.toggle('on', L.fare === 'cost');
   v.less.disabled = L.wagonsWanted <= 1;
+  v.staffBtns[0].classList.toggle('on', L.staffing !== 'permanent');
+  v.staffBtns[1].classList.toggle('on', L.staffing === 'permanent');
 }
 
 export interface LineList {

@@ -4,6 +4,7 @@
 // traders.test.ts); the save/load round trip uses a generated world.
 import { describe, expect, it } from 'vitest';
 import { firmsPayWages } from '../src/sim/agents/firms';
+import { laborMarket } from '../src/sim/agents/labor';
 import { freightPerUnit, traderOrders, tradersBeginDay, tradersDispatch } from '../src/sim/agents/traders';
 import { LINE_WEAR_BUFFER, OIL_PER_TILE, TOOLS_PER_WAGON, WAGON_CAPACITY } from '../src/sim/config';
 import { newFirm, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
@@ -12,7 +13,7 @@ import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, reconcileBank } from '../src/sim/ledger';
 import { addAsk, bookFor, clearAll, marketOf, openBooks, type Books } from '../src/sim/market/markets';
 import { describeLine, dispatch, playerAfterClear, playerOrders, policyBeginDay } from '../src/sim/policy/player';
-import { costPerUnit, crewOf, lineById, lineRoom } from '../src/sim/policy/lines';
+import { costPerUnit, crewOf, lineById, lineRoom, staffLines } from '../src/sim/policy/lines';
 import { rt, type Route } from '../src/sim/runtime';
 import { deserialize } from '../src/sim/save';
 import { activeLines, routeLabel } from '../src/ui/map/routes';
@@ -95,6 +96,7 @@ function world(): World {
 function day(w: World, orders?: (books: Books) => void): void {
   const { s, farm } = w;
   policyBeginDay(s);
+  staffLines(s); // drivers posted from the crew (the engine: after the labour market)
   tradersBeginDay(s);
   firmsPayWages(s);
   const books = openBooks(s);
@@ -143,7 +145,7 @@ describe('freight lines — opening', () => {
     s.treasury.goods[0][G.tools] = 5;
     const r = dispatch(s, { ...ok, fare: 'fixed', farePrice: 0.4 });
     expect(r.ok, r.message).toBe(true);
-    expect(r.message).toMatch(/^The Treasury runs a freight line between Millbrook and Kingsbridge: 3 wagons kept in Millbrook, driven by Treasury workers hired there and burning oil bought there\. Trading houses of both towns may load their goods onto it and pay ¤0\.40 a unit carried/);
+    expect(r.message).toMatch(/^The Treasury runs a freight line between Millbrook and Kingsbridge: 3 wagons kept in Millbrook, driven by Treasury workers hired there as the loads need them, burning oil bought there\. Trading houses of both towns may load their goods onto it and pay ¤0\.40 a unit carried/);
     expect(r.message).toMatch(/takes 5 sets of tools from the Treasury's stores in Millbrook/);
     const L = line(s, r.id!);
     expect(L).toMatchObject({ a: 0, b: 1, wagonsWanted: 3, fare: 'fixed', farePrice: 0.4, enabled: true, tools: 5, wagons: 1, carried: 0, fares: 0 });
@@ -189,22 +191,64 @@ describe('freight lines — opening', () => {
     expect(L.drivers).toBeLessThanOrEqual(L.wagons);
     expect(crew.target).toBe(L.drivers);
     expect(crew.wage).toBeCloseTo(Math.max(9, L.wage), 9);
+    staffLines(s);
     expect(crewOf(s, L)).toBe(L.drivers);
+    expect(L.staff.length).toBe(L.drivers);
     // the rest of the wagons' tools come on the following days (a spare half wagon against wear)
     for (let i = 0; i < 3; i++) day(w, (b) => addAsk(bookFor(b, 0, G.tools), FIRM_BASE + farm.id, 15, 50));
     expect(L.tools).toBeCloseTo((2 + LINE_WEAR_BUFFER) * TOOLS_PER_WAGON, 1);
     ledgerOk(s);
   });
 
-  it('labour orders keep the first claim on the Treasury crew', () => {
+  it('its drivers are posted first and kept: a labour order gets the rest, and a smaller works crew never costs the line its drivers', () => {
     const w = world();
     const { s, crew } = w;
     const L = openStocked(w, 'free', undefined, 4);
-    dispatch(s, { type: 'placeOrder', market: { kind: 'labor', town: 0 }, side: 'buy', price: 12, qty: 5 });
+    const oid = dispatch(s, { type: 'placeOrder', market: { kind: 'labor', town: 0 }, side: 'buy', price: 12, qty: 5 }).id!;
     policyBeginDay(s);
     expect(crew.target).toBe(5 + L.drivers);
     expect(crew.wage).toBe(12); // one wage for the crew: the highest offered
-    expect(crewOf(s, L)).toBe(1); // 6 workers: 5 for the labour order, 1 left to drive
+    staffLines(s);
+    expect(crewOf(s, L)).toBe(L.drivers); // 6 workers: the line's drivers first, the rest on the works
+    const drivers = L.staff.slice();
+    // the same people stay posted day after day
+    policyBeginDay(s);
+    staffLines(s);
+    expect(L.staff).toEqual(drivers);
+    // the works crew is withdrawn: the crew shrinks to the line's drivers, and they are the ones kept
+    dispatch(s, { type: 'cancelOrder', id: oid });
+    policyBeginDay(s);
+    laborMarket(s);
+    staffLines(s);
+    expect(crew.workers.length).toBe(L.drivers);
+    expect(L.staff.slice().sort()).toEqual(drivers.slice().sort());
+  });
+
+  it('permanent drivers: one a wagon, kept while the line is paused', () => {
+    const w = world();
+    const { s } = w;
+    w.s.treasury.goods[0][G.tools] = 100;
+    expect(dispatch(s, { type: 'openLine', a: 0, b: 1, wagons: 3, fare: 'free', staffing: 'sometimes' as never }).ok).toBe(false);
+    const r = dispatch(s, { type: 'openLine', a: 0, b: 1, wagons: 3, fare: 'free', staffing: 'permanent' });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.message).toMatch(/each with its own driver, a Treasury worker hired there and kept on/);
+    const L = line(s, r.id!);
+    policyBeginDay(s);
+    staffLines(s);
+    expect(L.drivers).toBe(3);
+    expect(L.staff.length).toBe(3);
+    dispatch(s, { type: 'updateLine', id: L.id, patch: { enabled: false } });
+    policyBeginDay(s);
+    staffLines(s);
+    expect(L.staff.length).toBe(3); // paused, still kept on
+    expect(dispatch(s, { type: 'updateLine', id: L.id, patch: { staffing: 'asNeeded', enabled: true } }).ok).toBe(true);
+    policyBeginDay(s);
+    staffLines(s);
+    expect(L.staff.length).toBe(L.drivers);
+    expect(L.drivers).toBeLessThanOrEqual(3);
+    // closing lets its posts go
+    dispatch(s, { type: 'closeLine', id: L.id });
+    expect(L.staff).toEqual([]);
   });
 });
 
@@ -278,6 +322,7 @@ describe('freight lines — carrying', () => {
     const L = openStocked(w, 'free', undefined, 1);
     L.oil = 1.6; // fuel for one leg (40 tiles)
     policyBeginDay(s);
+    staffLines(s);
     expect(lineRoom(s, L, 0)).toBeCloseTo(WAGON_CAPACITY, 9);
     L.oil = 1.5;
     expect(lineRoom(s, L, 0)).toBe(0);
@@ -307,6 +352,7 @@ describe('freight lines — carrying', () => {
     const { s, trader } = w;
     const L = openStocked(w, 'fixed', 0.5);
     policyBeginDay(s); // wagons, drivers
+    staffLines(s);
     s.treasury.goods[0][G.bread] = 50;
     const cash0 = trader.cash;
     const purse0 = s.treasury.purse - s.treasury.minted;

@@ -358,6 +358,8 @@ function fillLines(s: SimState): void {
     if (L.fare !== 'fixed' && L.fare !== 'cost' && L.fare !== 'free') L.fare = 'cost';
     if (typeof L.enabled !== 'boolean') L.enabled = true;
     if (typeof L.label !== 'string') L.label = 'Freight line';
+    if (L.staffing !== 'asNeeded' && L.staffing !== 'permanent') L.staffing = 'asNeeded';
+    L.staff = Array.isArray(L.staff) ? (L.staff as unknown[]).filter((x): x is number => isNum(x) && x >= 0 && Math.floor(x) === x) : [];
     L.busy = Array.isArray(L.busy) ? (L.busy as unknown[]).filter(isNum) : [];
     if (!(L.wagonsWanted as number >= 1)) L.wagonsWanted = 1;
     out.push(L as unknown as SimState['policy']['lines'][number]);

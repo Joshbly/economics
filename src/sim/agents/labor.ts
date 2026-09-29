@@ -232,6 +232,13 @@ function wantLower(f: Firm): number {
   return Math.max(0, Math.floor(fin(f.target) + 0.5));
 }
 
+/** Person ids posted as drivers to the Treasury freight lines based in a town. */
+function postedDrivers(s: SimState, town: number): Set<number> {
+  const out = new Set<number>();
+  for (const L of s.policy.lines) if (L.a === town) for (const pid of L.staff ?? []) out.add(pid);
+  return out;
+}
+
 /** Max hires per firm per day. Treasury Works (huge nominal capacity) scale with their target instead. */
 function hireCap(f: Firm): number {
   const base = f.sector === 'stateworks' ? Math.max(20, fin(f.target)) : Math.max(1, f.capacity);
@@ -249,7 +256,7 @@ let _bestValue = -1;
 /**
  * Daily, after firmsPlan set firm.target and firm.wage:
  *  1. Layoffs: firms with workers > target fire up to max(1, FIRE_RATE·workers) (lowest tenure first).
- *     Stateworks with target below workers release them the same way.
+ *     Stateworks with target below workers release the excess at once, freight-line drivers last.
  *  2. Vacancies = target − workers for active firms (incl. builders, traders, stateworks).
  *  3. Unemployed people sample JOB_SAMPLE vacancies (weighted to their own town; other
  *     towns within MAX_COMMUTE_TILES of their home) and accept the best offer by
@@ -328,8 +335,10 @@ export function laborMarket(s: SimState): void {
       if (f.sector !== 'stateworks') excess = Math.max(overCap, Math.min(excess, Math.max(1, Math.floor(FIRE_RATE * n))));
     }
     if (excess <= 0) continue;
-    // Last in, first out.
-    const order = f.workers.slice().sort((a, b) => (people[a].tenure - people[b].tenure) || (a - b));
+    // Last in, first out — except that the Treasury crew lets its freight-line drivers go last
+    // (they are posted to a line: FreightLine.staff; a smaller works crew never costs a line its drivers).
+    const posted = f.sector === 'stateworks' && s.policy.lines?.length ? postedDrivers(s, f.town) : null;
+    const order = f.workers.slice().sort((a, b) => (posted ? Number(posted.has(a)) - Number(posted.has(b)) : 0) || (people[a].tenure - people[b].tenure) || (a - b));
     for (let j = 0; j < excess && j < order.length; j++) fire(s, f, people[order[j]]);
   }
 

@@ -2,11 +2,14 @@
 // Works panel — the Treasury's own workforce and what it is doing, town by town.
 //
 //   summary tiles · "staff every town's projects" · one card per town:
-//     staffing (none / staff the projects automatically / a set number) and the
-//     wage (the going wage + a margin) — composed from an ordinary labour order;
-//     who is where: on each building site, driving the freight lines, idle
-//     (names; click one to inspect); the town's Treasury projects with progress,
-//     today's crew and what they wait for; lines based there; the stores held.
+//     the works crew (none / as the projects need / a set crew) and its wage (the
+//     going wage + a margin) — composed from an ordinary labour order; it works on
+//     all the town's Treasury projects at once;
+//     the posts: each freight line based there with its own named drivers, kept
+//     as the loads need them or permanently (one a wagon) — an updateLine;
+//     who is where: on each building site, idle (names; click one to inspect);
+//     the town's Treasury projects with progress, today's crew and what they wait
+//     for; the stores held.
 // Everything shown is read from the sim (policy/crews.treasuryCrew); every change
 // is a placeOrder / updateOrder / cancelOrder on the town's order for workers.
 // ============================================================================
@@ -143,8 +146,8 @@ function townCard(town: number): TownCard {
   card.mode = segmented<Mode>({
     options: [
       { value: 'off', label: 'None', title: 'Employ no Treasury workers here (the freight lines keep their drivers)' },
-      { value: 'auto', label: 'Staff projects', title: 'Each morning, employ as many people as the Treasury’s projects here can use; let them go as the projects finish' },
-      { value: 'fixed', label: 'Set number', title: 'Employ a set number of people, whatever there is to do' },
+      { value: 'auto', label: 'As projects need', title: 'Each morning, employ as many people as the Treasury’s projects here can use — all of them at once — and let them go as the projects finish' },
+      { value: 'fixed', label: 'A set crew', title: 'Employ a set number of people, kept on whatever there is to do: on the building sites when there is work, idle when there is none' },
     ],
     value: 'off',
     size: 'sm',
@@ -196,7 +199,7 @@ function townCard(town: number): TownCard {
     h(
       'div',
       { class: 'wk-ctl' },
-      h('div', { class: 'wk-ctl-row' }, h('span', { class: 'wk-lab' }, 'Staffing'), card.mode.el, card.qtyLab, card.qty.el),
+      h('div', { class: 'wk-ctl-row' }, h('span', { class: 'wk-lab' }, 'Works crew'), card.mode.el, card.qtyLab, card.qty.el),
       h('div', { class: 'wk-ctl-row' }, h('span', { class: 'wk-lab' }, 'Wage'), card.wage.el, card.wageHint, h('span', { class: 'spacer' }), card.apply),
       card.hint,
     ),
@@ -256,7 +259,7 @@ function paintCard(s: SimState, c: TownCard, crew: TownCrew): void {
   const fixedWage = o && o.priceMode !== 'follow' ? ` It now pays a fixed ${fmtMoney(o.price)} a day; applying switches it to the going wage.` : '';
   const hint =
     mode === 'auto'
-      ? `Hires what the projects here can use — ${fmtInt(o?.staffToday ?? 0)} today — and lets people go as the work runs out.`
+      ? `Hires what the projects here can use — ${fmtInt(o?.staffToday ?? 0)} today, spread over all of them at once — and lets people go as the work runs out.`
       : mode === 'fixed'
         ? crew.canUse > 0
           ? `The projects here could use about ${fmtInt(crew.canUse)} today.`
@@ -281,15 +284,45 @@ function paintCard(s: SimState, c: TownCard, crew: TownCrew): void {
   setText(c.legend, parts.length ? parts.join(' · ') : 'Nobody employed.');
 
   // who is where (rebuilt only when it changes)
-  const whoSig = [crew.sites.map((x) => x.project.id + ':' + x.people.join(',')).join(';'), crew.drivers.join(','), crew.idle.join(',')].join('|');
+  const whoSig = [
+    crew.sites.map((x) => x.project.id + ':' + x.people.join(',')).join(';'),
+    crew.lines.map((l) => `${l.line.id}:${l.line.staffing ?? ''}:${l.line.enabled}:${l.line.drivers}:${l.people.join(',')}`).join(';'),
+    crew.idle.join(','),
+  ].join('|');
   if (whoSig !== c.whoSig) {
     c.whoSig = whoSig;
     const rows: HTMLElement[] = [];
+    for (const { line, people } of crew.lines) {
+      const other = line.a === c.town ? line.b : line.a;
+      const perm = line.staffing === 'permanent';
+      const pick = (v: 'asNeeded' | 'permanent', label: string, title: string) => {
+        const b = h('button', { class: 'lv-chip' + ((v === 'permanent') === perm ? ' on' : ''), type: 'button', title }, label);
+        b.addEventListener('click', () => {
+          run({ type: 'updateLine', id: line.id, patch: { staffing: v } });
+          c.whoSig = '';
+          update();
+        });
+        return b;
+      };
+      rows.push(
+        h(
+          'div',
+          { class: 'wk-who-row' },
+          h('span', { class: 'wk-who-t drive' }, `Driving to ${townName(s, other)} — ${people.length}${line.drivers > people.length ? ` of ${fmtInt(line.drivers)}` : ''}${line.enabled ? '' : ' (line paused)'}`),
+          people.length ? nameList(s, people) : h('span', { class: 'wk-hint' }, 'no drivers yet'),
+          h(
+            'span',
+            { class: 'wk-post' },
+            pick('asNeeded', 'as needed', 'Drivers as the loads need them; when the wagons stand idle they join the works crew here'),
+            pick('permanent', `permanent · ${fmtInt(line.wagonsWanted)}`, 'One driver per wagon, kept on (even while the line is paused): never sent to the building sites, the last let go'),
+          ),
+        ),
+      );
+    }
     for (const site of crew.sites) {
       if (!site.people.length) continue;
       rows.push(h('div', { class: 'wk-who-row' }, h('span', { class: 'wk-who-t site' }, `${site.project.label || 'Project'} — ${site.people.length}`), nameList(s, site.people)));
     }
-    if (crew.drivers.length) rows.push(h('div', { class: 'wk-who-row' }, h('span', { class: 'wk-who-t drive' }, `Driving the freight lines — ${crew.drivers.length}`), nameList(s, crew.drivers)));
     if (crew.idle.length) {
       const letGo = h('button', { class: 'lv-chip', type: 'button', title: 'Keep only the people with work to do' }, 'Let the idle go');
       letGo.addEventListener('click', () => {
@@ -361,10 +394,6 @@ function paintCard(s: SimState, c: TownCard, crew: TownCrew): void {
 
   // lines and stores
   const extras: HTMLElement[] = [];
-  for (const { line, crew: dr } of crew.lines) {
-    const other = line.a === c.town ? line.b : line.a;
-    extras.push(h('div', { class: 'wk-proj-m' }, `Freight line to ${townName(s, other)}: ${fmtInt(dr)} of ${fmtInt(line.drivers)} drivers, ${fmtInt(line.wagons)} wagons${line.enabled ? '' : ' (paused)'}`));
-  }
   const held: string[] = [];
   const inv = s.treasury.goods?.[c.town] ?? [];
   for (let g = 0; g < N_GOODS; g++) if ((inv[g] ?? 0) >= 0.5) held.push(`${fmtInt(inv[g])} ${GOODS[g].name.toLowerCase()}`);
@@ -457,7 +486,7 @@ export const worksPanel: Panel = {
     cardsHost = h('div', { class: 'wk-towns' });
     el.classList.add('wk-panel');
     el.replaceChildren(
-      h('div', { class: 'panel-head' }, h('div', { class: 'panel-title' }, 'Works'), h('div', { class: 'card-sub' }, 'Your workers, your building sites, your freight lines — town by town.')),
+      h('div', { class: 'panel-head' }, h('div', { class: 'panel-title' }, 'Works'), h('div', { class: 'card-sub' }, 'Your workers town by town: the works crew on your building sites (all at once), and the drivers posted to your freight lines.')),
       kpiGrid([tiles.workers, tiles.sites, tiles.idle], 3),
       h('div', { class: 'wk-actions' }, allAuto, allOff, h('span', { class: 'spacer' }), build),
       cardsHost,

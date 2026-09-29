@@ -40,3 +40,6 @@
 .wk-proj-m { font-size: 11.5px; color: var(--ink-2); line-height: 1.45; }
 .wk-proj-m .warn { color: var(--warn); }
 .wk-extra { margin-top: 6px; }
+.wk-post { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }
+.wk-post .lv-chip { margin-left: 0; }
+.wk-post .lv-chip.on { color: var(--gold-hi); border-color: var(--gold); background: var(--gold-wash); }

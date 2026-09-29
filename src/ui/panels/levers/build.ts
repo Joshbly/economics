@@ -11,7 +11,7 @@
 import { LINE_MAX_FARE, LINE_MAX_WAGONS, PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED, TOOLS_PER_WAGON, WAGON_CAPACITY } from '../../../sim/config';
 import { freightPerUnit } from '../../../sim/agents/traders';
 import { estimateLine, lineBetween } from '../../../sim/policy/lines';
-import type { LineFare } from '../../../sim/types';
+import type { LineFare, LineStaffing } from '../../../sim/types';
 import { estimateCost, projectNeed } from '../../../sim/agents/construction';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
 import { roadPlan } from '../../../sim/world/paths';
@@ -83,6 +83,7 @@ export function buildLever(): Lever {
   let firmId = -1;
   let wagons = 4;
   let fare: LineFare = 'cost';
+  let staffing: LineStaffing = 'asNeeded';
   let farePrice = 0.2;
   let last: SimState | null = null;
   let planKey = '';
@@ -127,7 +128,17 @@ export function buildLever(): Lever {
     onChange: (v) => ((fare = v), changed()),
   });
   const fareIn = numberInput({ value: farePrice, min: 0, max: LINE_MAX_FARE, prefix: '¤', unit: 'a unit', width: '120px', onChange: (v) => ((farePrice = v), changed()) });
+  const staffSeg = segmented<LineStaffing>({
+    options: [
+      { value: 'asNeeded', label: 'As needed', title: 'As many drivers as the loads need; when the wagons stand idle they join the town’s works crew' },
+      { value: 'permanent', label: 'Permanent, one a wagon', title: 'One driver per wagon, kept on while the line runs (or is paused): never moved to the building sites, the last let go' },
+    ],
+    value: staffing,
+    size: 'sm',
+    onChange: (v) => ((staffing = v), changed()),
+  });
   const wagonsRow = row('Wagons', wagonsIn.el);
+  const staffRow = row('Drivers', staffSeg.el);
   const fareRow = row('Traders pay', fareSeg.el, fareIn.el);
   const townRow = dynRow('Town', townSel.el);
   const sectorRow = row('Trade', sectorSel.el);
@@ -153,7 +164,7 @@ export function buildLever(): Lever {
   const lineCount = h('span', { class: 'lv-sub-v' });
   const linesHead = subhead('Treasury freight lines', lineCount);
 
-  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, fareRow, townRow.el, sectorRow, firmRow, what, crewRow, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
+  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, staffRow, fareRow, townRow.el, sectorRow, firmRow, what, crewRow, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
   const body = h('div', { class: 'lv-body-in' }, form, h('div', { class: 'lv-sep' }), linesHead, lines.el, subhead('Treasury projects', projCount), projects.el);
 
   on('placing', () => last && paint());
@@ -211,6 +222,7 @@ export function buildLever(): Lever {
 
     show(routeRow, kind === 'road' || kind === 'line');
     show(wagonsRow, kind === 'line');
+    show(staffRow, kind === 'line');
     show(fareRow, kind === 'line');
     show(fareIn.el, fare === 'fixed');
     fareSeg.set(fare);
@@ -346,7 +358,7 @@ export function buildLever(): Lever {
       ok = false;
     } else {
       desc =
-        `The Treasury keeps ${plural(n, 'wagon')} in ${A} (${TOOLS_PER_WAGON} tool sets each, bought there), drives them with Treasury workers hired there and buys their oil there. ` +
+        `The Treasury keeps ${plural(n, 'wagon')} in ${A} (${TOOLS_PER_WAGON} tool sets each, bought there), ${staffing === 'permanent' ? `each with its own driver — ${plural(n, 'Treasury worker')} hired there and kept on, whatever the loads` : 'drives them with Treasury workers hired there as the loads need them'}, and buys their oil there. ` +
         `The trading houses of both towns load their goods onto it when it is cheaper than their own wagons, and pay ${fare === 'free' ? 'nothing' : fare === 'fixed' ? `${fmtM(farePrice)} a unit` : 'what its recent trips cost per unit carried'}. The Treasury’s own goods between the two towns ride it too.`;
     }
     setText(whatD, desc);
@@ -423,7 +435,7 @@ export function buildLever(): Lever {
       case 'line':
         if (!wagonsIn.valid) return msg.err(`The number of wagons must be a whole number from 1 to ${LINE_MAX_WAGONS}.`);
         if (fare === 'fixed' && !fareIn.valid) return msg.err('Set the fare per unit.');
-        r = run({ type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined }, msg, '✓ Line opened — see Treasury freight lines below.');
+        r = run({ type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined, staffing }, msg, '✓ Line opened — see Treasury freight lines below.');
         break;
     }
     if (r?.ok) {
