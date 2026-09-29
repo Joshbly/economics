@@ -73,7 +73,7 @@ import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownI
 import { STATE } from '../types';
 import { fin } from '../util';
 import { findSite } from '../world/layout';
-import { quoteRate, requestLoan } from './bank';
+import { quoted, quoteRate, requestLoan } from './bank';
 import { builderFor, estimateCost, startProject, cancelProject, type ProjectSpec } from './construction';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
 import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
@@ -109,7 +109,7 @@ function financing(kind: Project['kind'], owner: Ref): { purpose: LoanPurpose; t
 function screenRate(s: SimState): number {
   const q = quoteRate(s, -1, 0);
   const base = fin(s.bank.baseRate, 0.045) + ENTRY_SCREEN_SPREAD;
-  return q >= 0 ? Math.max(q, fin(s.bank.depositRate, 0)) : base;
+  return quoted(q) ? Math.max(q, fin(s.bank.depositRate, 0)) : base;
 }
 
 /** Total money a project needs: the works plus, for a new workshop, its tools and start-up working capital. */
@@ -369,12 +369,12 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   if (free < equity) return false;
   let loan = total - equity;
   let q = quoteRate(s, owner, loan);
-  while (q < 0 && equity < free - 1e-6) {
+  while (!quoted(q) && equity < free - 1e-6) {
     equity = Math.min(free, equity + 0.1 * total);
     loan = total - equity;
     q = loan > 1 ? quoteRate(s, owner, loan) : 0;
   }
-  const debtOk = q >= 0 && (loan <= 1 || roc >= q + hurdle);
+  const debtOk = quoted(q) && (loan <= 1 || roc >= q + hurdle);
   if (!debtOk) {
     if (free < total) return false; // this borrower's money is too dear (or refused)
     loan = 0;

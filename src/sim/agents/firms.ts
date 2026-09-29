@@ -158,7 +158,7 @@ import { STATE } from '../types';
 import { clamp, ema, fin } from '../util';
 import { siteMultiplier as layoutSiteMultiplier } from '../world/layout';
 import { firmName } from '../world/names';
-import { creditAppetite, quoteRate, requestLoan } from './bank';
+import { creditAppetite, quoted, quoteRate, requestLoan } from './bank';
 import { cancelProject } from './construction';
 import { fire, hasLevyBase } from './labor';
 import {
@@ -602,7 +602,8 @@ export function fairPrice(s: SimState, town: TownId, good: number, prices?: read
 /** Annual rate firms use to price the carrying cost of tools. */
 function carryRate(s: SimState): number {
   const r = fin(s.bank?.baseRate, 0.045);
-  return clamp(r, 0, 1);
+  // money may cost less than nothing, but holding tools still costs their wear
+  return clamp(r, -0.9 * TOOLS_IDLE_WEAR_DAY * DAYS_PER_YEAR, 1);
 }
 
 /** Employer's cost of one worker-day at gross wage w (employer-side wage levies included). */
@@ -1542,8 +1543,10 @@ function payOutExcess(s: SimState, f: Firm, costDay: number, debt: number): void
  */
 export function desiredFirmDebt(capital: number, profitDay: number, rate: number, term: number): number {
   if (!(capital > 0) || !(profitDay > 0)) return 0;
-  const r = Math.max(0, fin(rate));
-  const cap = (FIRM_DEBT_MAX_SERVICE * profitDay) / (1 / Math.max(1, term) + r / DAYS_PER_YEAR);
+  const r = fin(rate);
+  // (below zero the interest is paid to the borrower: a loan costs less than its repayments,
+  // and when it costs nothing at all only the leverage bound is left)
+  const cap = (FIRM_DEBT_MAX_SERVICE * profitDay) / Math.max(1e-9, 1 / Math.max(1, term) + r / DAYS_PER_YEAR);
   return Math.max(0, Math.min(FIRM_DEBT_LEV * creditAppetite(r) * capital, cap));
 }
 
@@ -1559,7 +1562,7 @@ function refinance(s: SimState, f: Firm, termDebt: number, debt: number): void {
   const capital = (b ? Math.max(0, fin(b.cost)) : 0) + Math.max(0, fin(f.tools)) * Math.max(0, fin(marketOf(s, f.town, G.tools).ema));
   if (!(capital > 0)) return;
   const r = quoteRate(s, fref, 0);
-  if (r < 0) return;
+  if (!quoted(r)) return;
   const want = desiredFirmDebt(capital, Math.max(0, fin(f.profitLong)) + (debt * r) / DAYS_PER_YEAR, r, FIRM_DEBT_TERM);
   const amount = want - termDebt;
   if (termDebt < FIRM_DEBT_TOPUP * want && amount >= Math.max(BANK_MIN_LOAN, 0.03 * capital)) {

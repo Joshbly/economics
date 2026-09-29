@@ -546,6 +546,12 @@ export const TREASURY_FREIGHT_PREMIUM = 0.1;
 export const LINE_MAX_WAGONS = 60;
 /** Highest fixed fare a line may charge (¤ per unit). */
 export const LINE_MAX_FARE = 1000;
+/** A freight line's 'cost' fare markup: from −90 % (the Purse pays most of the running cost) to +500 %. */
+export const LINE_MARGIN_MIN = -0.9;
+export const LINE_MARGIN_MAX = 5;
+/** An 'under' fare: how far below the trading houses' own freight (default 10 %, at most 90 %). */
+export const LINE_UNDER_DEFAULT = 0.1;
+export const LINE_UNDER_MAX = 0.9;
 /** Drivers hired = wagons wanted on the road (EMA) × this (never more than the wagons, never fewer than those on the road). */
 export const LINE_DRIVER_SLACK = 1.15;
 /** EMA speed of the wagons a line is asked for (busy + loads asked for today). */
@@ -683,8 +689,6 @@ export const BANK_IOU_TERM_PREMIUM = 0.01;
 /** IOU book capped at this share of deposits; this share of excess reserves bid per day. */
 export const BANK_IOU_MAX_SHARE = 0.3;
 export const BANK_IOU_BUY_FRACTION = 0.2;
-/** Loan rates never go below this (annual). */
-export const BANK_MIN_LOAN_RATE = 0;
 /** Days of news silence between repeated warnings of the same kind. */
 export const BANK_NEWS_GAP_DAYS = 30;
 /** A borrower more than this many days behind on any loan is refused new credit. */

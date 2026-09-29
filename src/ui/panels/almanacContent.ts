@@ -204,7 +204,9 @@ A Limit can cap the bank's loan rates (it then turns away the borrowers it would
       },
       {
         title: 'The window',
-        body: `You pay the bank a rate on the reserves it keeps with you. If its reserves run short it must borrow from you at your lending rate. The bank's own lending and deposit rates follow these two rates. Higher rates make borrowing dearer and saving more attractive — slowly, and through many channels at once.`,
+        body: `You pay the bank a rate on the reserves it keeps with you. If its reserves run short it must borrow from you at your lending rate. The bank's own lending and deposit rates follow these two rates. Higher rates make borrowing dearer and saving more attractive — slowly, and through many channels at once.
+
+Nothing stops at zero. If reserves earn less than nothing, the bank passes it on: depositors pay to keep their money there, and new loans can carry a rate below zero — the bank pays the borrower. A loan keeps the rate it was agreed at: if you raise rates again a few days later, the loans just made stay cheap for their whole life, and the bank carries the loss as its deposits reprice.`,
       },
       {
         title: 'IOUs',

@@ -1,7 +1,7 @@
 // Bank: interest, coupons, window, loan lifecycle, default, rationing, failure & bail-in.
 // Built from record factories only (no world generation).
 import { describe, expect, it } from 'vitest';
-import { bankBeginDay, bankEndDay, bankOrders, capitalRatio, debtOf, lastLoanDecisions, loansOf, quoteRate, requestLoan } from '../src/sim/agents/bank';
+import { bankBeginDay, bankEndDay, bankOrders, capitalRatio, debtOf, lastLoanDecisions, loansOf, quoted, quoteRate, requestLoan } from '../src/sim/agents/bank';
 import { DISTRESS_BANKRUPT_DAYS, IOU_COUPON, LOAN_DEFAULT_OVERDUE_DAYS } from '../src/sim/config';
 import { newFirm, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
@@ -239,7 +239,7 @@ describe('bank: loan lifecycle', () => {
     // A legal ceiling below the bank's risk-adjusted rate: credit is refused, not cheapened.
     s.policy.limits.push(limit({ kind: 'rateMax', value: 0.01 }));
     s.bank.rejected = 0;
-    expect(quoteRate(s, FIRM_BASE + good.id, 300)).toBe(-1);
+    expect(quoted(quoteRate(s, FIRM_BASE + good.id, 300))).toBe(false);
     requestLoan(s, { borrower: FIRM_BASE + good.id, amount: 300, term: 180, purpose: 'working', project: -1 });
     bankEndDay(s);
     expect(s.bank.rejected).toBe(1);
@@ -324,7 +324,7 @@ describe('bank: failure and bail-in', () => {
     bankEndDay(s);
     expect(loansOf(s, FIRM_BASE + f.id).length).toBe(1); // no new loan
     expect(lastLoanDecisions(s).items[0].reason).toBe('failed');
-    expect(quoteRate(s, FIRM_BASE + f.id, 100)).toBe(-1);
+    expect(quoted(quoteRate(s, FIRM_BASE + f.id, 100))).toBe(false);
 
     const cash0 = a.cash;
     const dep0 = deposits(s);

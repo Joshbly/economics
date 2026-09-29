@@ -61,7 +61,7 @@ import { FIRM_BASE, STATE } from '../types';
 import type { ActionResult, Firm, GoodId, Order, Ref, Sector, Shipment, SimState, TownId, TraderState, Wedge } from '../types';
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
-import { debtOf, quoteRate, requestLoan } from './bank';
+import { debtOf, quoted, quoteRate, requestLoan } from './bank';
 import { fairPrice } from './firms';
 import { FLOW_IN, FLOW_USED, noteFlow } from '../stats/flows';
 
@@ -434,7 +434,7 @@ function planFleet(s: SimState, f: Firm, tr: TraderState, c: TraderScratch): voi
   if (profitable && !young && f.cash < cost + reserve && (s.day + f.id) % 10 === 0) {
     const ref = FIRM_BASE + f.id;
     const ask = Math.max(cost, gap * limit);
-    if (debtOf(s, ref) < 4 * ask && quoteRate(s, ref, ask) >= 0) {
+    if (debtOf(s, ref) < 4 * ask && quoted(quoteRate(s, ref, ask))) {
       requestLoan(s, { borrower: ref, amount: ask, term: INVEST_LOAN_TERM, purpose: 'invest', project: -1 });
     }
   }

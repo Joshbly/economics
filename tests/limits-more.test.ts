@@ -3,7 +3,7 @@
 // limits on the IOU and gold markets — and the wording of every kind.
 // Built from record factories only (no world generation).
 import { describe, expect, it } from 'vitest';
-import { bankBeginDay, bankEndDay, capitalRuleSource, lastLoanDecisions, loansOf, minCapital, quoteRate, requestLoan } from '../src/sim/agents/bank';
+import { bankBeginDay, bankEndDay, capitalRuleSource, lastLoanDecisions, loansOf, minCapital, quoted, quoteRate, requestLoan } from '../src/sim/agents/bank';
 import { BANK_MIN_CAPITAL, BANK_OWN_MIN_CAPITAL, LIMIT_MOVE_MAX } from '../src/sim/config';
 import { newFirm, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
@@ -110,7 +110,7 @@ describe('capital rule: a Limit replaces the standing 8 %', () => {
     expect(low.reason).toBe('');
     expect(loansOf(low.s, FIRM_BASE + low.f.id).length).toBe(1);
     // quotes follow the rule too (firms and landlords plan their borrowing on them)
-    expect(quoteRate(standing.s, FIRM_BASE + standing.f.id, 300)).toBe(-1);
+    expect(quoted(quoteRate(standing.s, FIRM_BASE + standing.f.id, 300))).toBe(false);
     expect(quoteRate(low.s, FIRM_BASE + low.f.id, 300)).toBeGreaterThan(0);
     // a rule the bank falls short of binds, and is counted
     const tight = run(0.07);

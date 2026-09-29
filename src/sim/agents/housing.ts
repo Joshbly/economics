@@ -28,7 +28,7 @@ import type { Building, Firm, Person, Ref, SimState, TownId } from '../types';
 import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { commuteTiles, hasLevyBase, workX, workY } from './labor';
-import { creditAppetite, quoteRate, requestLoan } from './bank';
+import { creditAppetite, quoted, quoteRate, requestLoan } from './bank';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -459,10 +459,10 @@ function clampRent(s: SimState, rent: number, bd: { min: number; max: number } |
 export function desiredHouseDebt(value: number, rentDay: number, rate: number, term: number): number {
   if (!(value > 0) || !(rentDay > 0)) return 0;
   const { HOUSE_DEBT_LTV, HOUSE_DEBT_MAX_SERVICE, DAYS_PER_YEAR } = CFG;
-  const r = Math.max(0, fin(rate));
+  const r = fin(rate);
   if ((rentDay * DAYS_PER_YEAR) / value <= r) return 0; // nobody borrows against houses at more than they yield
   const m = creditAppetite(r);
-  const cap = (HOUSE_DEBT_MAX_SERVICE * rentDay) / (1 / Math.max(1, term) + r / DAYS_PER_YEAR);
+  const cap = (HOUSE_DEBT_MAX_SERVICE * rentDay) / Math.max(1e-9, 1 / Math.max(1, term) + r / DAYS_PER_YEAR);
   return Math.max(0, Math.min(HOUSE_DEBT_LTV * m * value, cap));
 }
 
@@ -493,11 +493,11 @@ function landlordFinance(s: SimState): void {
     let debt = 0;
     for (const ln of s.loans) if (ln.active && ln.borrower === ref && ln.purpose === 'house') debt += ln.principal;
     const r = quoteRate(s, ref, 0);
-    if (r < 0 && !(debt > 0)) continue;
-    const want = r < 0 ? debt : desiredHouseDebt(value, rentIn, r, HOUSE_LOAN_TERM);
+    if (!quoted(r) && !(debt > 0)) continue;
+    const want = !quoted(r) ? debt : desiredHouseDebt(value, rentIn, r, HOUSE_LOAN_TERM);
     if (debt < HOUSE_DEBT_TOPUP * want) {
       const amount = want - debt;
-      if (amount >= Math.max(BANK_MIN_LOAN, 0.02 * value) && quoteRate(s, ref, amount) >= 0) {
+      if (amount >= Math.max(BANK_MIN_LOAN, 0.02 * value) && quoted(quoteRate(s, ref, amount))) {
         requestLoan(s, { borrower: ref, amount, term: HOUSE_LOAN_TERM, purpose: 'house', project: -1 });
       }
     } else if (debt > HOUSE_DEBT_PAYDOWN * want) {

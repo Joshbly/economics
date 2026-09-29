@@ -105,7 +105,6 @@ const {
   BANK_IOU_TERM_PREMIUM,
   BANK_IOU_MAX_SHARE,
   BANK_IOU_BUY_FRACTION,
-  BANK_MIN_LOAN_RATE,
   BANK_NEWS_GAP_DAYS,
   BANK_LATE_REFUSE_DAYS,
   BANK_MAX_TERM,
@@ -232,8 +231,7 @@ function rateFor(base: number, spread: number, cap: number, floor = -1): number 
   let r = base + spread;
   if (floor >= 0 && r < floor) r = floor;
   if (cap >= 0 && r > cap) r = cap;
-  r = fin(r, base);
-  return r < BANK_MIN_LOAN_RATE ? BANK_MIN_LOAN_RATE : r;
+  return fin(r, base);
 }
 
 /** Risk spread from post-loan leverage (0..1+). */
@@ -341,41 +339,54 @@ function assetsOf(s: SimState, r: Ref): number {
  * cheaper (≤ CREDIT_MAX_MULT). Landlords (housing.ts) and firms (firms.ts) size their debt with it.
  */
 export function creditAppetite(rate: number): number {
-  return clamp(1 + (CFG.CREDIT_RATE_REF - Math.max(0, fin(rate))) / CFG.CREDIT_RATE_SCALE, 0, CFG.CREDIT_MAX_MULT);
+  return clamp(1 + (CFG.CREDIT_RATE_REF - fin(rate)) / CFG.CREDIT_RATE_SCALE, 0, CFG.CREDIT_MAX_MULT);
+}
+
+/**
+ * quoteRate's answer when the bank would refuse. Rates themselves may be below zero: when
+ * reserves earn less than nothing the bank's funding costs less than nothing too, and loans
+ * priced at funding + spread follow it down (the bank pays the borrower the interest).
+ */
+export const NO_QUOTE = Number.NEGATIVE_INFINITY;
+
+/** True if `r` is a rate the bank quoted (not a refusal). */
+export function quoted(r: number): boolean {
+  return r > NO_QUOTE && Number.isFinite(r);
 }
 
 /** Typical leverage assumed when a caller asks for a quote without a borrower. */
 const TYPICAL_LEVERAGE = 0.4;
 
 /**
- * Annual loan rate the bank would charge this borrower now (for planning); -1 if it would refuse.
+ * Annual loan rate the bank would charge this borrower now (for planning; it may be below zero);
+ * NO_QUOTE if it would refuse (test with `quoted`).
  * `extraDebt` is the size of the loan being considered (assumed to finance assets of the same value).
  * borrower < 0 → the rate for a typical sound borrower (e.g. for sector-wide entry decisions).
  */
 export function quoteRate(s: SimState, borrower: Ref, extraDebt: number): number {
   const b = s.bank;
-  if (b.failed) return -1;
+  if (b.failed) return NO_QUOTE;
   const extra = Math.max(0, fin(extraDebt));
   const stance = clamp(fin(b.stance, 0.3), 0, 1);
   const L = loansOutstanding(s);
   const capNeed = minCapital(s) + BANK_STANCE_CAPITAL * stance;
-  if (fin(b.equity) / Math.max(1, L + extra) < capNeed) return -1;
+  if (fin(b.equity) / Math.max(1, L + extra) < capNeed) return NO_QUOTE;
   let lev = TYPICAL_LEVERAGE;
   let premium = 0;
   if (borrower >= 0) {
-    if (!borrowerAlive(s, borrower)) return -1;
+    if (!borrowerAlive(s, borrower)) return NO_QUOTE;
     const debt = debtOf(s, borrower) + extra;
     const assets = assetsOf(s, borrower) + extra;
     lev = assets > 0 ? debt / assets : debt > 0 ? 9 : 0;
     const maxLev = BANK_MAX_LEVERAGE * (1 - BANK_STANCE_LEVERAGE * stance);
-    if (lev > maxLev) return -1;
+    if (lev > maxLev) return NO_QUOTE;
     if (isPerson(borrower)) premium += BANK_PERSON_PREMIUM;
   }
   const spread = riskSpread(lev) + BANK_STANCE_SPREAD * stance + premium;
   const raw = fin(b.baseRate) + spread;
   const { cap, floor } = rateLimits(s);
-  if (cap >= 0 && raw > cap) return -1;
-  return Math.max(BANK_MIN_LOAN_RATE, raw, floor);
+  if (cap >= 0 && raw > cap) return NO_QUOTE;
+  return floor >= 0 ? Math.max(raw, floor) : raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,8 +475,8 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
       // A fixed-rate loan keeps the rate agreed when it was made (later rules and rate changes do
       // not reach it) — unless the day's terms have fallen far enough below it that a borrower in
       // good standing refinances at them.
-      // (0 % is an agreed rate like any other — loans made at the floor while reserves earned less than nothing)
-      const locked = ln.rate >= 0 && Number.isFinite(ln.rate) ? ln.rate : offer;
+      // (0 % or below is an agreed rate like any other — loans made while reserves earned less than nothing)
+      const locked = Number.isFinite(ln.rate) ? ln.rate : offer;
       r = locked;
       if (ln.overdue === 0 && offer < locked - LOAN_REFI_GAP) {
         r = offer;
@@ -480,7 +491,8 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
     ln.rate = r;
     const interest = (ln.principal * r) / DAYS_PER_YEAR;
     const amort = ln.left > 1 ? ln.principal / ln.left : ln.principal;
-    const paidI = interest > 0 ? pay(s, who, BANK, interest, 'interest') : 0;
+    // below zero the bank pays the borrower
+    const paidI = interest > 0 ? pay(s, who, BANK, interest, 'interest') : interest < 0 ? -pay(s, BANK, who, -interest, 'interest') : 0;
     const paidP = repayPrincipal(s, who, amort);
     ln.principal -= paidP;
     if (ln.principal < 1e-9) ln.principal = 0;
@@ -930,7 +942,7 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number, fl
     const spread = riskSpread(lev) + premium;
     const raw = base + spread;
     if (cap >= 0 && raw > cap) return 'ratecap';
-    const r = Math.max(BANK_MIN_LOAN_RATE, raw, floor);
+    const r = floor >= 0 ? Math.max(raw, floor) : raw;
     // Coverage is judged on interest, with the yield the new money earns counted in: term credit
     // finances capital (BANK_PROJECT_YIELD or the rent yield), working capital finances the
     // stock and payroll a firm turns over — it pays for itself as the goods are sold. Judging a

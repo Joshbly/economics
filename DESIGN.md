@@ -332,7 +332,17 @@ One commercial bank (owned by a wealthy person). Balance sheet:
   terms when they fall LOAN_REFI_GAP (1 pt) below its rate. So a rise reaches new
   loans and credit lines at once and the fixed book only as it turns over, while
   deposits reprice daily (the bank's margin is squeezed); a cut reaches fixed
-  borrowers too, through refinancing. Deposit rate ≈ reserve rate − 1 % (floored near 0).
+  borrowers too, through refinancing. Deposit rate ≈ reserve rate − 1 %, or the reserve
+  rate itself once that is below zero (depositors then pay the bank: with no coin to flee
+  into, they can only spend, or hold IOUs or gold). **No floor at zero**: when reserves earn
+  less than nothing, funding costs less than nothing, and loans priced at funding + spread
+  follow it below zero — the bank pays the borrower the interest (a loan agreed at −4 %
+  keeps −4 % for life like any fixed rate). Borrowers' appetite (creditAppetite), the debt
+  they size to their income (desiredFirmDebt, desiredHouseDebt: when interest is paid to
+  them only the leverage bound is left) and firms' cost of holding tools (never below their
+  wear) all read the rate as it is. A refusal is `NO_QUOTE` (test with `quoted`), never a
+  rate. What does stay above zero is maths: IOUs are perpetual, so the bank never bids them
+  above the price of a 0.5 % yield.
 * Lending standards: debt-service coverage, leverage, capital ratio ≥ the capital
   rule in force (`bank.minCapital`): the realm's standing rule BANK_MIN_CAPITAL
   (8 %) — or, while a `capitalMin` Limit is in force, the Limit in its place,
