@@ -10,6 +10,8 @@
 //             bought today → on the road → waiting at B → sold today,
 //             lifetime shipped / sold / spent / freight / earned / result,
 //             pause / resume, withdraw
+//   Freight lines  one card per Treasury freight line (./lines.ts): wagons out,
+//             carried, fare, and its accounts (fares in, drivers, fuel & wear)
 //
 // Everything is keyed and updated in place, so update() is cheap at 4×/s.
 // ============================================================================
@@ -24,6 +26,7 @@ import { centerMap, ui } from '../../uiState';
 import { attachTip, icon, swatch, tipNote, tipTitle, toggle } from '../../widgets';
 import { bar, fin, flowTone, fmtM, fmtMS, fmtQ, goodName, keyedList, run, safe, signedMoney, townName, TONES, unitsOf } from './common';
 import { describeRoute, sellText } from './route';
+import { lineList } from './lines';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -408,6 +411,9 @@ export function flowsView(opts: { place: 'levers' | 'ledger' }): FlowsView {
 
   const grp = (title: string, n: HTMLElement, ...body: HTMLElement[]) => h('div', { class: 'lv-grp' }, h('div', { class: 'lv-grp-t' }, title, n), ...body);
   const gRoutes = grp('Supply routes', routeCount, routeList, routeEmpty);
+  const lines = lineList();
+  const lineCount = h('span', { class: 'lv-grp-n' });
+  const gLines = grp('Freight lines', lineCount, lines.el);
   const gShips = grp('On the road', shipCount, shipList, shipEmpty);
   const idle = h(
     'div',
@@ -421,6 +427,7 @@ export function flowsView(opts: { place: 'levers' | 'ledger' }): FlowsView {
     { class: 'lv-flows' + (opts.place === 'ledger' ? ' in-ledger' : '') },
     summary,
     idle,
+    gLines,
     gRoutes,
     gShips,
     grp('Stores', storeNote, holdTable, holdEmpty),
@@ -519,7 +526,10 @@ export function flowsView(opts: { place: 'levers' | 'ledger' }): FlowsView {
       setText(routeCount, routes.length ? String(routes.length) : '');
       show(routeList, routes.length > 0);
       show(routeEmpty, routes.length === 0);
-      const quiet = routes.length === 0 && ships.length === 0;
+      const nLines = lines.update(s);
+      setText(lineCount, nLines ? String(nLines) : '');
+      show(gLines, nLines > 0);
+      const quiet = routes.length === 0 && ships.length === 0 && nLines === 0;
       show(idle, quiet);
       show(gRoutes, !quiet);
       show(gShips, !quiet);

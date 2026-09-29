@@ -542,3 +542,15 @@
 /* Route cards: change the destination offer in place */
 .lv-rt-offer { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 11.5px; }
 .lv-rt-offer-k { color: var(--muted, #9aa0a6); margin-right: 2px; }
+
+/* Freight-line cards (levers/lines.ts): the route card's frame, a solid gold edge */
+.lv-lns { display: flex; flex-direction: column; gap: 6px; }
+.lv-lns[hidden], .lv-ln-list [hidden] { display: none; }
+.lv-ln { border-left: 2px solid var(--gold); }
+.lv-ln-tag { margin-right: 1px; }
+.lv-ln-path { font-weight: 600; }
+.lv-ln-ctl { margin-top: 4px; }
+.lv-ln-ctl .lv-chip.on { color: var(--gold-hi); border-color: var(--gold); background: var(--gold-wash); }
+.lv-ln-ctl .lv-chip:disabled { opacity: 0.45; cursor: default; }
+.lv-ln-gap { flex: 1; min-width: 6px; }
+.lv-ln-list + .lv-sub { margin-top: 14px; }

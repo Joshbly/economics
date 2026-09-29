@@ -909,7 +909,9 @@ function computeDaily(s: SimState, c: StatsCache, v: Record<string, number>): Re
   const freightNow = v.freight;
   const transport = freightNow > 0 && st.baseFreight > 0 ? (num(acc.freight_cost) * st.baseFreight) / freightNow : 0;
   const housing = tl.occupied * (st.baseRent > 0 ? st.baseRent : 0);
-  const govServices = Math.max(0, tl.stateWorkers - num(acc.build_labor_state)) * bw;
+  // Treasury workers not building: public services — except the drivers of its freight lines, whose
+  // carrying is counted with transport (freight_cost).
+  const govServices = Math.max(0, tl.stateWorkers - num(acc.build_labor_state) - num(acc.line_crew)) * bw;
   v.gdpReal = goodsVA + construction + transport + housing + govServices;
 
   // ---- nominal GDP (expenditure approach) ----

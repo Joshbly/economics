@@ -213,6 +213,12 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   giveSpend: { label: 'Treasury payments on levies ¤/day', fn: (s) => L(s, 'levyGive') },
   hhBreadRel: { label: 'bread price households pay ÷ CPI (mean of towns)', fn: (s) => meanOver(hhBreadPaid(s)) / Math.max(1e-9, L(s, 'cpi') / 100) },
   hhBreadSpread: { label: 'bread price households pay: spread across towns (max−min ÷ mean)', fn: (s) => spread(hhBreadPaid(s)) },
+  lineUnits: { label: 'freight line: units carried/day', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.carriedToday, 0) },
+  lineCost: { label: 'freight line: running cost ¤/day (drivers, fuel, wear)', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.costToday, 0) },
+  lineGap: { label: 'freight line: running cost less fares ¤/day (paid by the Purse)', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.costToday - l.faresToday, 0) },
+  carters: { label: 'carters employed by trading houses', fn: (s) => sumFirms(s, 'trader', -1, (f) => f.workers.length) },
+  capitalGrain: { label: 'grain price in the capital', fn: (s, c) => mkt(s, c.capital, G.grain)?.ema ?? 0 },
+  farmGrain: { label: 'grain price in the farm town', fn: (s, c) => mkt(s, c.farm, G.grain)?.ema ?? 0 },
 };
 
 /** What a household pays for bread in each town (smoothed auction price with every rule that reaches its purchases). */
@@ -592,6 +598,32 @@ const EXPERIMENTS: Experiment[] = [
       { label: 'bread price households pay closer across towns (days 15–120)', metric: 'hhBreadSpread', kind: 'down', tol: 0.05, window: () => [15, 120] },
     ],
     show: ['giveSpend', 'cpi'],
+  },
+  {
+    id: '15',
+    name: 'Treasury freight line farm town ↔ capital, free fares',
+    // The Treasury keeps wagons in the capital, drives them with its own workers and buys their
+    // oil, and carries the trading houses' goods between the two towns for nothing. Their freight
+    // on that road falls to zero (up to the line's room), so they buy grain in the farm town and
+    // sell it in the capital down to a smaller gap: the gap narrows through their arbitrage.
+    // The Purse pays the drivers, the fuel and the wagons' wear.
+    days: (o) => Math.max(o.days, 360),
+    arms: [
+      {
+        name: 'free freight line',
+        setup: (g, c) => {
+          // Room for about twice the grain the capital buys a day (whole wagons, round trips of a day or so).
+          const wagons = Math.max(3, Math.min(12, Math.round((2 * c.vol[c.capital][G.grain]) / 120) + 2));
+          act(g, { type: 'openLine', a: c.capital, b: c.farm, wagons, fare: 'free' }, 'freight line');
+        },
+      },
+    ],
+    checks: [
+      { label: 'grain price gap narrows', metric: 'grainGap', kind: 'down', tol: 0.05 },
+      { label: 'the line carries goods', metric: 'lineUnits', kind: 'persistent', level: 1 },
+      { label: 'the Purse pays its running costs', metric: 'lineGap', kind: 'positive' },
+    ],
+    show: ['capitalGrain', 'farmGrain', 'lineCost', 'carters', 'unemp', 'freight'],
   },
 ];
 

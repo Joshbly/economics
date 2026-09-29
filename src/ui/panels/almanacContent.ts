@@ -36,7 +36,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a loan rate above a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital.
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
-- **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects.
+- **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
 - **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank; or a one-off handout of goods you hold in a town.
 
 Everything else is up to you to discover.`,
@@ -195,13 +195,27 @@ The shipping rate on the top bar is what it costs to move one unit ten tiles.`,
       },
       {
         title: 'Your wagons and supply routes',
-        body: `The Treasury has no wagons of its own. To move goods it hires the trading house of the town they leave from: it pays the carters' wages, the oil and the wear for the round trip, plus a little more, for every wagon it needs. A wagon carries 120 units; a half-empty wagon costs as much as a full one.
+        body: `Unless it runs a freight line (below), the Treasury has no wagons of its own. To move goods it hires the trading house of the town they leave from: it pays the carters' wages, the oil and the wear for the round trip, plus a little more, for every wagon it needs. A wagon carries 120 units; a half-empty wagon costs as much as a full one.
 
 **Move goods** sends goods you already hold. You can keep them in store where they arrive, or offer them there: at a price you set, at what they cost (freight included) plus a margin, or for whatever they fetch.
 
 A **supply route** chains three ordinary steps every day: a buy order in one town, the wagons that carry what it bought, and an offer in the destination's market. The offer can be at a price you set, at landed cost (what each unit cost to buy and carry) plus a margin, or for whatever the goods fetch. Nothing is exempt from the markets: your purchases raise the price where you buy, your offers lower it where you sell, and goods that spoil go on spoiling on the road and while they wait.
 
 **Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town, every Treasury wagon on the road with its arrival, and each route's pipeline: bought today, on the road, waiting to sell, sold today — and what it has earned against what it cost.`,
+      },
+      {
+        title: 'Freight lines',
+        body: `A **freight line** (in Build) is a carrying service the Treasury runs between two towns, both ways. Nothing about it is make-believe:
+
+- **Wagons** are tools the Treasury owns (three tool sets a wagon). They are kept in the first town you name; the line takes any tools you hold there and buys the rest in that town's market, and replaces them as they wear out on the road.
+- **Drivers** are Treasury workers of that town, paid a carter's wage from the Purse. Workers you employ with a labour order are kept for your projects first; the line hires as many more as it has loads for.
+- **Oil** is bought in that town as the wagons use it: every loaded trip burns it, like any wagon's.
+
+The trading houses of both towns use the line whenever it is cheaper than their own wagons, and pay its fare to the Purse. You choose the fare: a **fixed** amount per unit, **at cost** (what the line's recent trips cost per unit carried — part-full wagons cost more a unit, wagons that meet a load coming back cost less), or **free**. Goods of several traders share a wagon, so a small consignment costs no more a unit than a full wagon.
+
+Cheaper hauling works through the traders: they can now carry more goods between the two towns at a profit, so they buy more where a good is cheap and sell more where it is dear, and the gap between the two prices narrows. The trading houses need fewer wagons and carters of their own. What the fares do not cover — drivers, oil, wear — comes out of the Purse; each line's card (in Build, In force, and Stores & wagons) shows its fares, its costs and its result so far.
+
+Your own goods between the two towns ride the line too, without a fare. Pausing a line stops it taking loads; closing it returns its wagons (as tools) and its oil to your stores in its town.`,
       },
       {
         title: 'Handing out goods',

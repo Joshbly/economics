@@ -40,6 +40,7 @@ const FLOW_LABEL: Record<string, string> = {
   transfer: 'Transfers',
   build: 'Construction bills',
   freight: 'Freight',
+  fare: 'Freight-line fares',
   estate: 'Estates',
   recap: 'Into the Bank’s capital',
   fee: 'Fees',

@@ -6,6 +6,8 @@
 //   Orders  : description, filled today / in all, value, on/off, inline price
 //             edit, cancel. Supply routes show their pipeline instead
 //             (bought today → on the road → waiting → sold today) and result.
+//   Lines   : Treasury freight lines (./lines.ts): wagons out, carried, accounts,
+//             pause, close
 //   Projects: Treasury construction with progress
 // Rows are keyed by id and updated in place (4×/s safe).
 // ============================================================================
@@ -22,6 +24,7 @@ import { baseDef, saleWhoOf, saleWhoWords } from './levyDefs';
 import { projectList, treasuryProjects } from './projects';
 import { pipeline, routeResult, routeWords, type Pipeline } from './flows';
 import { sellText } from './route';
+import { freightLines, lineList } from './lines';
 
 // ---------------------------------------------------------------------------
 // Inline number editor (a value pill that turns into an input on click)
@@ -410,17 +413,19 @@ export function inForce(): InForce {
   const limitList = h('div', { class: 'lv-if-list' });
   const orderList = h('div', { class: 'lv-if-list' });
   const projects = projectList({ compact: true });
+  const lines = lineList({ compact: true });
   const gLevy = group('Levies', levyList);
   const gLimit = group('Limits', limitList);
   const gOrder = group('Treasury orders', orderList);
   const gProj = group('Projects', projects.el);
+  const gLine = group('Freight lines', lines.el);
   const empty = h(
     'div',
     { class: 'lv-empty' },
     h('div', { class: 'lv-empty-t' }, 'Nothing is in force.'),
     h('div', null, 'The realm is running on its own. Pull any lever above — alone or in combination — and watch what the markets, the Ledger and the people do.'),
   );
-  const el = h('div', { class: 'lv-inforce' }, empty, gLevy.el, gLimit.el, gOrder.el, gProj.el);
+  const el = h('div', { class: 'lv-inforce' }, empty, gLevy.el, gLimit.el, gOrder.el, gLine.el, gProj.el);
 
   const recLevy = keyedList<Levy, LevyRow>(levyList, (l) => l.id, (l) => levyRow(l), (v, l) => state && paintLevy(state, v, l));
   const recLimit = keyedList<Limit, LimitRow>(limitList, (l) => l.id, (l) => limitRow(l), (v, l) => state && paintLimit(state, v, l));
@@ -429,7 +434,7 @@ export function inForce(): InForce {
   return {
     el,
     count(s) {
-      return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + treasuryProjects(s).filter((p) => p.status !== 'done').length;
+      return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + freightLines(s).length + treasuryProjects(s).filter((p) => p.status !== 'done').length;
     },
     update(s) {
       state = s;
@@ -438,6 +443,9 @@ export function inForce(): InForce {
       recLimit(P.limits);
       recOrder(P.orders);
       const np = projects.set(s);
+      const nl = lines.update(s);
+      show(gLine.el, nl > 0);
+      setText(gLine.count, nl ? String(nl) : '');
       show(gLevy.el, P.levies.length > 0);
       show(gLimit.el, P.limits.length > 0);
       show(gOrder.el, P.orders.length > 0);
@@ -450,7 +458,7 @@ export function inForce(): InForce {
       const nr = P.orders.filter((o) => !!o.route).length;
       setText(gOrder.count, nr ? `${P.orders.length} · ${plural(nr, 'route')}` : String(P.orders.length));
       setText(gProj.count, String(np));
-      show(empty, P.levies.length + P.limits.length + P.orders.length + np === 0);
+      show(empty, P.levies.length + P.limits.length + P.orders.length + np + nl === 0);
     },
   };
 }

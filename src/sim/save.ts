@@ -9,7 +9,7 @@
 // Runtime caches (runtime.ts) are never saved; modules rebuild them on demand.
 // ============================================================================
 import { SIM_VERSION } from './config';
-import { N_GOODS } from './goods';
+import { G, N_GOODS } from './goods';
 import { checkLedger, deposits, reconcileBank } from './ledger';
 import type { SimState } from './types';
 
@@ -255,6 +255,45 @@ function fillRoutes(s: SimState): void {
   for (const sh of s.shipments as unknown as Obj[]) if (isObj(sh) && !isNum(sh.order)) sh.order = -1;
 }
 
+const LINE_NUMS = [
+  'wagonsWanted', 'farePrice', 'fareToday', 'wage', 'created', 'tools', 'wagons', 'oil', 'oilBasis', 'drivers', 'crew', 'useEma', 'costEma', 'unitsEma',
+  'carriedToday', 'legsToday', 'faresToday', 'costToday', 'carried', 'legs', 'fares', 'wages', 'fuelCost', 'wear', 'oilSpent', 'toolsSpent',
+] as const;
+
+/**
+ * Saves from before freight lines: `policy.lines` defaults to [] and `Shipment.line` to −1. A
+ * damaged line is repaired (missing counters → 0, a bad fare rule → 'cost') or, when its towns are
+ * unusable, dropped — its wagons and fuel go to the Treasury's stores in its first town if that exists.
+ */
+function fillLines(s: SimState): void {
+  const nT = s.towns.length;
+  const raw = (s.policy as unknown as Obj).lines;
+  const out: SimState['policy']['lines'] = [];
+  const okTown = (x: unknown): x is number => isNum(x) && x >= 0 && x < nT && Math.floor(x) === x;
+  for (const L of Array.isArray(raw) ? (raw as unknown[]) : []) {
+    if (!isObj(L) || !isNum(L.id)) continue;
+    if (!okTown(L.a) || !okTown(L.b) || L.a === L.b) {
+      if (okTown(L.a)) {
+        const tg = s.treasury.goods[L.a as number];
+        if (Array.isArray(tg)) {
+          if (isNum(L.tools) && L.tools > 0) tg[G.tools] += L.tools;
+          if (isNum(L.oil) && L.oil > 0) tg[G.oil] += L.oil;
+        }
+      }
+      continue;
+    }
+    for (const k of LINE_NUMS) if (!isNum(L[k])) L[k] = 0;
+    if (L.fare !== 'fixed' && L.fare !== 'cost' && L.fare !== 'free') L.fare = 'cost';
+    if (typeof L.enabled !== 'boolean') L.enabled = true;
+    if (typeof L.label !== 'string') L.label = 'Freight line';
+    L.busy = Array.isArray(L.busy) ? (L.busy as unknown[]).filter(isNum) : [];
+    if (!(L.wagonsWanted as number >= 1)) L.wagonsWanted = 1;
+    out.push(L as unknown as SimState['policy']['lines'][number]);
+  }
+  s.policy.lines = out;
+  for (const sh of s.shipments as unknown as Obj[]) if (isObj(sh) && !isNum(sh.line)) sh.line = -1;
+}
+
 /** Fill optional bookkeeping that older or hand-edited saves may lack. */
 function fillDefaults(s: SimState): void {
   const st = s.stats;
@@ -279,6 +318,7 @@ function fillDefaults(s: SimState): void {
     if (!isNum(f.profitLong)) f.profitLong = 0;
   }
   fillRoutes(s);
+  fillLines(s);
   const set = s.settings;
   if (typeof set.events !== 'boolean') set.events = true;
   if (typeof set.scenario !== 'string') set.scenario = 'founding';

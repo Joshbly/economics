@@ -267,7 +267,7 @@ function palaceView(): View {
       rAuto.text(t.autoMint ? 'on' : 'off');
       rIou.text(`${fmtInt(t.iouOutstanding)} · ${fmtMoneyShort(t.iouOutstanding * IOU_COUPON)} a year`);
       rWin.text(`pays ${fmtRate(t.reserveRate)} · charges ${fmtRate(t.lendRate)}`);
-      const pol = s.policy ?? { levies: [], limits: [], orders: [] };
+      const pol = s.policy ?? { levies: [], limits: [], orders: [], lines: [] };
       const on = (a: { enabled: boolean }[]) => a.filter((x) => x.enabled).length;
       rPolicy.text(`${on(pol.levies)} levies · ${on(pol.limits)} limits · ${on(pol.orders)} orders`);
       warn.hidden = !t.givesSuspended;

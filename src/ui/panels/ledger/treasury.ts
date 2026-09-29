@@ -41,6 +41,7 @@ export const FLOW_INFO: { key: string; label: string; hint: string }[] = [
   { key: 'wage', label: 'Treasury workers', hint: 'Wages paid to the people the Treasury employs.' },
   { key: 'build', label: 'Construction', hint: 'Builders’ bills for the Treasury’s roads, houses, workshops and piers.' },
   { key: 'freight', label: 'Freight', hint: 'Carting the Treasury’s own goods between towns.' },
+  { key: 'fare', label: 'Freight-line fares', hint: 'Paid by trading houses whose goods ride the Treasury’s freight lines. The lines’ drivers, oil and wagons are paid under Treasury workers and Goods trades.' },
   { key: 'dividend', label: 'Dividends', hint: 'Profits paid out by Treasury-owned workshops (and by the Bank when it has no private owner).' },
   { key: 'rent', label: 'Rent', hint: 'Rent from the tenants of Treasury-owned houses.' },
   { key: 'estate', label: 'Estates', hint: 'Money left by people who died without an heir.' },

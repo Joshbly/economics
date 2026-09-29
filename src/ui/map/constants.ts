@@ -116,6 +116,9 @@ export const ROUTE_TRIM_MIN = 2;
 export const ROUTE_TRIM_R = 0.5;
 /** Pointer distance (CSS px) that counts as on a route line. */
 export const ROUTE_HIT_PX = 6;
+/** Treasury freight lines: solid line colour and the dot in their pill. */
+export const LINE_COLOR = 'rgba(250,226,160,0.8)';
+export const LINE_DOT = '#d4af37';
 /** Soft glow under Treasury wagons: radius (tiles, at least CSS px) and opacity. */
 export const TREASURY_GLOW_R = 0.7;
 export const TREASURY_GLOW_MIN_PX = 9;

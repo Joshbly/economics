@@ -216,7 +216,7 @@ export function newShipment(
   arrive: number,
   wagons: number,
 ): Shipment {
-  const sh: Shipment = { id: s.ids.shipment++, owner, from, to, good, qty, basis, depart, arrive, wagons, order: -1 };
+  const sh: Shipment = { id: s.ids.shipment++, owner, from, to, good, qty, basis, depart, arrive, wagons, order: -1, line: -1 };
   s.shipments.push(sh);
   return sh;
 }
@@ -372,7 +372,7 @@ export function newSimState(seed: number, map: MapData): SimState {
     bank: newBank(-1),
     treasury: newTreasury(0),
     foreign: newForeign(),
-    policy: { levies: [], limits: [], orders: [] },
+    policy: { levies: [], limits: [], orders: [], lines: [] },
     stats: newStats(),
     news: [],
     ids: { person: 0, firm: 0, building: 0, loan: 0, shipment: 0, project: 0, policy: 1 },

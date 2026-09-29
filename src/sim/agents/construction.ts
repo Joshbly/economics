@@ -57,6 +57,7 @@ import { G, HOUSE_COST, HOUSE_SLOTS, PIER_COST, ROAD_TILE_COST, SECTORS } from '
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, refName, repayPrincipal, writeOff } from '../ledger';
 import { addBid, bookFor, type Books } from '../market/markets';
 import { wageLevyRates } from '../policy/levies';
+import { lineCrewIn } from '../policy/lines';
 import { invalidateRoutes, rt, touchBuildings } from '../runtime';
 import { news } from '../stats/events';
 import type { Building, Firm, Materials, Project, ProjectKind, Ref, Sector, SimState, TownId } from '../types';
@@ -228,8 +229,11 @@ function stateLabor(s: SimState): { labor: Float64Array; heads: Float64Array } {
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.sector !== 'stateworks' || f.workers.length === 0) continue;
     if (f.town < 0 || f.town >= n) continue;
-    labor[f.town] += workforceEff(s, f) * STATEWORKS_BUILD_EFF * strikeFactor(s, f.town);
-    heads[f.town] += f.workers.length;
+    // Workers driving the Treasury's freight lines are not on the building sites.
+    const drivers = s.policy.lines?.length ? Math.min(f.workers.length, lineCrewIn(s, f.town)) : 0;
+    const share = (f.workers.length - drivers) / f.workers.length;
+    labor[f.town] += workforceEff(s, f) * share * STATEWORKS_BUILD_EFF * strikeFactor(s, f.town);
+    heads[f.town] += f.workers.length - drivers;
   }
   return { labor, heads };
 }
