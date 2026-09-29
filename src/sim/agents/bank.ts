@@ -464,7 +464,8 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
       // A fixed-rate loan keeps the rate agreed when it was made (later rules and rate changes do
       // not reach it) — unless the day's terms have fallen far enough below it that a borrower in
       // good standing refinances at them.
-      const locked = ln.rate > 0 && Number.isFinite(ln.rate) ? ln.rate : offer;
+      // (0 % is an agreed rate like any other — loans made at the floor while reserves earned less than nothing)
+      const locked = ln.rate >= 0 && Number.isFinite(ln.rate) ? ln.rate : offer;
       r = locked;
       if (ln.overdue === 0 && offer < locked - LOAN_REFI_GAP) {
         r = offer;
