@@ -13,6 +13,8 @@ import {
   IOU_COUPON,
   IOU_PAR,
   PLAYER_MAX_MONEY,
+  AIM_MAX_CAP,
+  AIM_MAX_DEFAULT,
   PLAYER_MAX_PCT,
   PLAYER_MAX_PRICE,
   PLAYER_MAX_QTY,
@@ -63,7 +65,7 @@ import type {
   TransferGroup,
 } from '../types';
 import { addAsk, addBid, type Books } from '../market/markets';
-import { bankClaimRoom, inGroup, isTargetedSale } from './levies';
+import { aimedRateAt, bankClaimRoom, inGroup, isAimed, isTargetedSale, primeAimedRates, rateIn, steerLevies } from './levies';
 import { heldAtOrigin, isRouteOrder, marketFloor, newRoute, routeBusy, routeFloor } from './routes';
 import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject } from '../agents/construction';
@@ -279,6 +281,38 @@ function targetedSaleBody(l: Levy, where: string): string {
   return pct ? `pays ${amt} of the price of ${gt} bought by ${who}${where}` : `pays ${amt} toward ${every} bought by ${who}${where}`;
 }
 
+/**
+ * Body of the sentence for an aimed sale rule, e.g. "pays part of the price of bread bought
+ * by households — re-set each morning in each town so that they pay about ¤2.50 a loaf, and
+ * never more than 50 % of the price".
+ */
+function aimedSaleBody(s: SimState, l: Levy, where: string): string {
+  const gt = goodLower(l.good);
+  const u = unitName(l.good, 1);
+  const who = isTargetedSale(l) ? saleTargetText(l) : l.payer === 'seller' ? 'sellers' : 'buyers';
+  const cap = pctText(l.aimMax ?? 0);
+  const each = l.town >= 0 ? 'each morning' : 'each morning in each town';
+  const aim = `about ${moneyText(l.aim ?? 0)} a ${u}`;
+  const take = l.dir === 1;
+  if (l.payer === 'seller') {
+    if (take) return `takes part of the price of ${gt} sold${isTargetedSale(l) ? ` by ${who}` : ''}${where}, out of what the sellers receive — re-set ${each} so that they receive ${aim}, and never more than ${cap} of the price`;
+    return `pays ${who} an extra part of the price of the ${gt} they sell${where} — re-set ${each} so that they receive ${aim}, and never more than ${cap} of the price`;
+  }
+  if (take) return `takes a part on top of the price of ${gt} bought by ${who}${where} — re-set ${each} so that they pay ${aim}, and never more than ${cap} of the price`;
+  return `pays part of the price of ${gt} bought by ${who}${where} — re-set ${each} so that they pay ${aim}, and never more than ${cap} of the price`;
+}
+
+/** Today's rates of an aimed rule, e.g. "Kingsbridge 12 %, Millbrook none, …". */
+export function aimedRatesText(s: SimState, l: Levy): string {
+  const parts: string[] = [];
+  for (let t = 0; t < s.towns.length; t++) {
+    if (l.town >= 0 && l.town !== t) continue;
+    const r = rateIn(l, t);
+    parts.push(`${townName(s, t)} ${r > 0 ? pctText(r) : 'none'}`);
+  }
+  return parts.join(', ');
+}
+
 function payerText(l: Levy): string {
   switch (l.payer) {
     case 'buyer':
@@ -371,7 +405,9 @@ export function describeLevy(s: SimState, l: Levy): string {
   const f = FILTERS_FOR[l.base];
   const where = f.town && l.town >= 0 && l.base !== 'shipment' ? ` in ${townName(s, l.town)}` : '';
   let body: string;
-  if (isTargetedSale(l)) {
+  if (isAimed(l)) {
+    body = aimedSaleBody(s, l, where);
+  } else if (isTargetedSale(l)) {
     body = targetedSaleBody(l, where);
   } else if (l.base === 'head') {
     body = take ? `takes ${moneyText(l.rate)} a day from ${GROUP_EACH[l.group] ?? 'every person'}` : `pays ${moneyText(l.rate)} a day to ${GROUP_EACH[l.group] ?? 'every person'}`;
@@ -407,7 +443,7 @@ export function levyShortLabel(s: SimState, l: Levy): string {
           : l.base === 'goods'
             ? '/unit/day'
             : '/unit';
-  const amt = l.unit === 'pct' ? pctText(l.rate) + (STOCK_BASES[l.base] ? '/yr' : '') : moneyText(l.rate) + per;
+  const amt = isAimed(l) ? `≤${pctText(l.aimMax ?? 0)}` : l.unit === 'pct' ? pctText(l.rate) + (STOCK_BASES[l.base] ? '/yr' : '') : moneyText(l.rate) + per;
   const g = l.good >= 0 ? goodLower(l.good) : 'all goods';
   const secP = sectorPlural(l.sector);
   const atSec = secP ? ` at ${secP}` : '';
@@ -456,6 +492,7 @@ export function levyShortLabel(s: SimState, l: Levy): string {
       what = l.base;
   }
   const where = l.town >= 0 && FILTERS_FOR[l.base]?.town ? ` · ${townName(s, l.town)}` : '';
+  if (isAimed(l)) return `${verb} ${amt} · ${what}${where} · aim ${moneyText(l.aim ?? 0)}`;
   return `${verb} ${amt} · ${what}${where}`;
 }
 
@@ -585,9 +622,10 @@ function ruleCount(s: SimState): number {
 // Validation of levies, limits and orders
 // ---------------------------------------------------------------------------
 type LevyDraft = Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total'>;
+type LevyRaw = Partial<LevyDraft>;
 type Checked<T> = { ok: true; value: T; note: string } | { ok: false; message: string };
 
-function checkLevy(s: SimState, raw: Partial<LevyDraft> | undefined): Checked<LevyDraft> {
+function checkLevy(s: SimState, raw: LevyRaw | undefined): Checked<LevyDraft> {
   if (!raw || typeof raw !== 'object') return { ok: false, message: 'No levy given.' };
   const notes: string[] = [];
   const base = raw.base as LevyBase;
@@ -600,6 +638,17 @@ function checkLevy(s: SimState, raw: Partial<LevyDraft> | undefined): Checked<Le
     if ((base === 'head' || base === 'building') && unit === 'perUnit') unit = 'flat';
     else if (base === 'money' && unit === 'perUnit') unit = 'flat';
     else return { ok: false, message: `A levy on ${base} can be set as: ${UNITS_FOR[base].map(unitWord).join(' or ')}.` };
+  }
+  // aimed rate: the rate follows a price (sale rules in %, on one good)
+  const aimed = raw.aim !== undefined && raw.aim !== null && !(isNum(raw.aim) && raw.aim <= 0);
+  if (aimed) {
+    if (!isNum(raw.aim) || raw.aim > PLAYER_MAX_PRICE) return { ok: false, message: `The price to aim at must be a number between ${moneyText(0.01)} and ${moneyText(PLAYER_MAX_PRICE)}.` };
+    if (base !== 'sale') return { ok: false, message: 'Only a rule on sales can aim at a price.' };
+    if (unit !== 'pct') return { ok: false, message: 'A rule that aims at a price is set as a percentage of the price.' };
+    if (!isInt(raw.good) || raw.good < 0 || raw.good >= N_GOODS) return { ok: false, message: 'Choose the good whose price the rule aims at.' };
+    const mx = raw.aimMax === undefined ? AIM_MAX_DEFAULT : raw.aimMax;
+    if (!isNum(mx) || mx <= 0 || mx > AIM_MAX_CAP) return { ok: false, message: `The most the rule may reach must be above 0 % and at most ${pctText(AIM_MAX_CAP)} of the price.` };
+    if (!isNum(raw.rate)) raw = { ...raw, rate: 0 };
   }
   if (!isNum(raw.rate)) return { ok: false, message: 'The rate must be a number.' };
   if (raw.rate < 0) return { ok: false, message: 'The rate must be zero or more — to pay instead of take, set the direction to "pay".' };
@@ -667,6 +716,11 @@ function checkLevy(s: SimState, raw: Partial<LevyDraft> | undefined): Checked<Le
     buildingKind,
     until,
   };
+  if (aimed) {
+    draft.aim = raw.aim as number;
+    draft.aimMax = raw.aimMax === undefined ? AIM_MAX_DEFAULT : (raw.aimMax as number);
+    draft.aimRates = Array.isArray(raw.aimRates) ? raw.aimRates.slice() : [];
+  }
   const lbl = typeof raw.label === 'string' ? raw.label.trim().slice(0, 80) : '';
   draft.label = lbl || levyShortLabel(s, draft as Levy);
   return { ok: true, value: draft, note: notes.join('; ') };
@@ -897,6 +951,7 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       const c = checkLevy(s, a.levy);
       if (!c.ok) return fail(c.message);
       const levy: Levy = { id: s.ids.policy++, created: s.day, today: 0, month: 0, lastMonth: 0, total: 0, ...c.value };
+      if (isAimed(levy)) primeAimedRates(s, levy);
       s.policy.levies.push(levy);
       const text = describeLevy(s, levy);
       if (levy.enabled) policyNews(s, text, levy.town);
@@ -918,6 +973,12 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       if (!c.ok) return fail(c.message);
       const before = describeLevy(s, l);
       Object.assign(l, c.value);
+      if (c.value.aim === undefined) {
+        delete l.aim;
+        delete l.aimMax;
+        delete l.aimRates;
+      }
+      if (isAimed(l)) primeAimedRates(s, l);
       const after = describeLevy(s, l);
       if (after !== before && l.enabled) policyNews(s, after, l.town);
       return { ok: true, message: c.note ? `${after} (Note: ${c.note}.)` : after, id: l.id };
@@ -1596,6 +1657,7 @@ export function policyBeginDay(s: SimState): void {
     }
     if (keep.length !== P.levies.length) P.levies = keep;
     for (const l of P.levies) l.today = 0;
+    steerLevies(s); // aimed rules: today's rate in each town
   }
   if (P.limits.length) {
     const keep: Limit[] = [];

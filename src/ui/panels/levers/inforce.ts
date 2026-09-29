@@ -11,7 +11,8 @@
 // ============================================================================
 import { PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
 import { GOODS } from '../../../sim/goods';
-import { describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
+import { isAimed } from '../../../sim/policy/levies';
+import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
 import type { Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
 import { fmtDay, fmtPct, fmtPrice, plural } from '../../format';
@@ -187,6 +188,8 @@ interface LevyRow {
   lastM: ReturnType<typeof stat>;
   rate: InlineEdit;
   dir: HTMLElement;
+  /** The rule aims at a price: the pill shows (and edits) the price, not the rate. */
+  mode: { aimed: boolean };
 }
 
 function levyRow(l: Levy): LevyRow {
@@ -197,7 +200,8 @@ function levyRow(l: Levy): LevyRow {
   const today = stat('Today');
   const month = stat('This month');
   const lastM = stat('Last month');
-  const rate = inlineEdit('Change the rate', (v) => run({ type: 'updateLevy', id, patch: { rate: v } }, null));
+  const mode = { aimed: isAimed(l) };
+  const rate = inlineEdit('Change the rate', (v) => run({ type: 'updateLevy', id, patch: mode.aimed ? { aim: v } : { rate: v } }, null));
   const dir = h('span', { class: 'lv-dir' });
   const rm = removeBtn('Remove this rule', () => run({ type: 'removeLevy', id }, null));
   const el = h(
@@ -207,7 +211,7 @@ function levyRow(l: Levy): LevyRow {
     h('div', { class: 'lv-if-main' }, h('div', { class: 'lv-if-head' }, dir, title, h('span', { class: 'spacer' }), rate.el), desc, h('div', { class: 'lv-if-stats' }, today.el, month.el, lastM.el)),
     h('div', { class: 'lv-if-act' }, rm),
   );
-  return { el, sw, title, desc, today, month, lastM, rate, dir };
+  return { el, sw, title, desc, today, month, lastM, rate, dir, mode };
 }
 
 function paintLevy(s: SimState, v: LevyRow, l: Levy): void {
@@ -216,7 +220,9 @@ function paintLevy(s: SimState, v: LevyRow, l: Levy): void {
   setText(v.dir, l.dir === 1 ? 'Take' : 'Pay');
   setTone(v.dir, TONES, l.dir === 1 ? 'good' : 'bad');
   setText(v.title, levyTitle(s, l));
-  setText(v.desc, tersely(safe(() => describeLevy(s, l), l.label)));
+  v.mode.aimed = isAimed(l);
+  const words = tersely(safe(() => describeLevy(s, l), l.label));
+  setText(v.desc, v.mode.aimed ? `${words} Today: ${safe(() => aimedRatesText(s, l), '')}.` : words);
   const put = (x: ReturnType<typeof stat>, n: number) => {
     const v = fin(n);
     setText(x.v, Math.abs(v) >= 1000 ? (v > 0 ? '+' : '−') + fmtMS(Math.abs(v)) : signedMoney(v));
@@ -226,7 +232,8 @@ function paintLevy(s: SimState, v: LevyRow, l: Levy): void {
   put(v.today, l.today);
   put(v.month, l.month);
   put(v.lastM, l.lastMonth);
-  v.rate.refresh(levyRate(l), l.rate, l.unit === 'pct', l.unit === 'pct' ? PLAYER_MAX_PCT : PLAYER_MAX_UNIT_RATE);
+  if (v.mode.aimed) v.rate.refresh(`aim ${fmtPrice(l.aim ?? 0)}`, l.aim ?? 0, false, PLAYER_MAX_PRICE);
+  else v.rate.refresh(levyRate(l), l.rate, l.unit === 'pct', l.unit === 'pct' ? PLAYER_MAX_PCT : PLAYER_MAX_UNIT_RATE);
 }
 
 interface LimitRow {

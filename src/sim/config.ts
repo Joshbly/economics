@@ -888,3 +888,9 @@ export const ORDER_BAND_MAX = 1; // at most 100 % above/below the going price
 export const ORDER_ANY_MULT = 25;
 /** ...and the Purse is budgeted as if they fill at this multiple (settlement scales fills that cannot be paid). */
 export const ORDER_ANY_BUDGET_MULT = 1.5;
+
+// Aimed levy rates (Levy.aim): a sale rule whose rate re-sets each morning, town by town,
+// to move what the payer pays (or receives) toward a price.
+export const AIM_SMOOTH = 0.35; // share of the gap to the rate that would hit the aim (at yesterday's auction price) closed each morning
+export const AIM_MAX_DEFAULT = 0.5; // default ceiling on an aimed rate
+export const AIM_MAX_CAP = 0.9; // highest ceiling a player may set

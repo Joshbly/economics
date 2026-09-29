@@ -68,22 +68,39 @@ const L = (s: SimState, k: string): number => {
 const D = (s: SimState, k: string): number[] => s.stats?.daily?.[k] ?? [];
 
 /** Real output indexed to 100 over the first 30 days of the player's reign (30-day means). */
-export function outputIndex(series: ArrayLike<number>): { index: number; prev: number } {
+/**
+ * Output index: the latest week's average over the reign's first week (× 100), so it moves
+ * from the first days on (early in the reign both windows shrink to half the days so far).
+ * `prev` is the same measure 30 days ago — or 100 (the start) before 30 days have passed;
+ * `since` says which.
+ */
+export function outputIndex(series: ArrayLike<number>): { index: number; prev: number; since: 'month' | 'start' } {
   const n = series.length;
-  if (!n) return { index: NaN, prev: NaN };
+  if (!n) return { index: NaN, prev: NaN, since: 'start' };
+  const w = n >= 14 ? 7 : Math.max(1, Math.floor(n / 2));
   let base = 0;
   let k = 0;
-  for (let i = 0; i < Math.min(30, n); i++) {
+  for (let i = 0; i < n && k < w; i++) {
     if (Number.isFinite(series[i])) {
       base += series[i];
       k++;
     }
   }
   base = k ? base / k : NaN;
-  if (!(base > 0)) return { index: NaN, prev: NaN };
-  const now = tailMean(series, 30);
-  const prev = n > 30 ? tailMean(series, 30, 30) : NaN;
-  return { index: (now / base) * 100, prev: (prev / base) * 100 };
+  if (!(base > 0)) return { index: NaN, prev: NaN, since: 'start' };
+  const now = tailMean(series, w);
+  if (n > 30 + w) return { index: (now / base) * 100, prev: (tailMean(series, w, 30) / base) * 100, since: 'month' };
+  return { index: (now / base) * 100, prev: n >= 2 ? 100 : NaN, since: 'start' };
+}
+
+/** Change of the price index over the last 30 days (or since the reign began, before that). */
+export function priceChange(series: ArrayLike<number>): { change: number; since: 'month' | 'start' } {
+  const n = series.length;
+  if (n < 2) return { change: NaN, since: 'start' };
+  const last = series[n - 1];
+  const ref = n > 30 ? series[n - 31] : series[0];
+  const c = ref > 0 && Number.isFinite(last) ? last / ref - 1 : NaN;
+  return { change: c, since: n > 30 ? 'month' : 'start' };
 }
 
 const toneOf = (d: number, good: 'up' | 'down' | null, eps: number): Tone => {
@@ -99,26 +116,29 @@ const INDICATORS: IndDef[] = [
     series: 'cpi',
     title: 'Prices',
     explain:
-      'What a typical household basket costs — bread, fish, ale, coal, furniture and rent — as an index: 100 is the level when you took charge. The small figure is inflation: the change over the last 30 days, expressed per year.',
+      'What a typical household basket costs — bread, fish, ale, coal, furniture and rent — as an index: 100 is the level when you took charge. The small figure is how much it has changed over the last 30 days (before that, since you took charge).',
     read(s) {
       const cpi = L(s, 'cpi');
-      // Until a month of the reign has passed there is no inflation of the player's own to show
-      // (the figure would only echo the founding year settling).
+      const pc = priceChange(D(s, 'cpi'));
+      // The per-year rate (for the warning tone) only once a month of the reign has passed:
+      // before that it would mostly echo the founding year settling.
       const young = s.day - s.startDay < REIGN_INFL_DAYS;
       const inf = young ? NaN : L(s, 'infl30');
       const hot = Number.isFinite(inf) && (inf > 0.06 || inf < -0.03);
       return {
         value: fmtIndex(cpi),
-        delta: Number.isFinite(inf) ? fmtPctSigned(inf) + '/yr' : undefined,
-        dir: Number.isFinite(inf) ? inf : 0,
+        delta: Number.isFinite(pc.change) ? fmtPctSigned(pc.change) + (pc.since === 'month' ? ' /30d' : ' so far') : undefined,
+        dir: Number.isFinite(pc.change) ? pc.change : 0,
         tone: hot ? 'bad' : null,
       };
     },
     detail(s) {
       const days = s.day - s.startDay;
+      const pc = priceChange(D(s, 'cpi'));
+      const change = Number.isFinite(pc.change) ? fmtPctSigned(pc.change) : '—';
       const month = days < REIGN_INFL_DAYS ? 'measured after your first month' : fmtPctSigned(L(s, 'infl30'));
       const year = days < 360 ? 'measured after your first year' : fmtPctSigned(L(s, 'inflYoY'));
-      return [tipKV('Last 30 days (per year)', month), tipKV('Last 12 months', year)];
+      return [tipKV(pc.since === 'month' ? 'Change, last 30 days' : `Change since you took charge (${days} d)`, change), tipKV('Last 30 days, per year', month), tipKV('Last 12 months', year)];
     },
   },
   {
@@ -150,19 +170,19 @@ const INDICATORS: IndDef[] = [
     series: 'gdpReal',
     title: 'Output',
     explain:
-      'Everything the realm produces in a day, valued at fixed founding prices so that only quantities count. 30-day average, indexed to 100 when you took charge. Harvests make it swing with the seasons.',
+      'Everything the realm produces in a day, valued at fixed founding prices so that only quantities count. The latest week’s average, indexed to 100 for your first week. The small figure is the change over the last 30 days (before that, since you took charge). Harvests make it swing with the seasons.',
     read(s) {
       const o = outputIndex(D(s, 'gdpReal'));
       const d = o.index - o.prev;
       return {
         value: fmtIndex(o.index),
-        delta: Number.isFinite(d) ? fmtSigned(d / (o.prev || 1), (x) => fmtPct(x)) : undefined,
+        delta: Number.isFinite(d) ? fmtSigned(d / (o.prev || 1), (x) => fmtPct(x)) + (o.since === 'month' ? ' /30d' : ' so far') : undefined,
         dir: d,
         tone: toneOf(d, 'up', 0.05),
       };
     },
     detail(s) {
-      return [tipKV('Today, at founding prices', fmtMoneyShort(L(s, 'gdpReal')) + '/day'), tipKV('Today, at current prices', fmtMoneyShort(L(s, 'gdpNominal')) + '/day')];
+      return [tipKV('Today, at founding prices', fmtMoneyShort(L(s, 'gdpReal')) + '/day'), tipKV('Today, at current prices', fmtMoneyShort(L(s, 'gdpNominal')) + '/day'), tipKV('Last 7 days, at founding prices', fmtMoneyShort(tailMean(D(s, 'gdpReal'), 7)) + '/day')];
     },
   },
   {

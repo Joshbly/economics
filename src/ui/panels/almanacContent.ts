@@ -33,7 +33,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
         title: 'Your seven levers',
         body: `- **Mint** — create money in the Purse, or destroy money you hold.
 - **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. You can also move goods you hold between towns, and set up supply routes: buy in one town, carry by wagon, offer in another.
-- **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow.
+- **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a loan rate above a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital.
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
 - **Build** — commission roads, houses, workshops of any trade, or piers. You pay the builders; your own workers help for free on your projects.

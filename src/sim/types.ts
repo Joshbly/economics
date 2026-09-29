@@ -536,12 +536,25 @@ export interface Levy {
   buildingKind: BuildingKind | 'any';
   created: number;
   until: number; // day it expires, -1 never
+  /**
+   * Aimed rate (sale rules in %, on one good). Each morning the rate is re-set, town by
+   * town, so that what the payer pays (buyers: auction price + the rate) or receives
+   * (sellers: auction price − the rate) moves toward `aim` (¤ per unit), never above
+   * `aimMax`. 0 or less = a fixed rate. While aimed, `rate` holds today's highest town rate
+   * and `aimRates` the rate in each town (length = number of towns). Absent on fixed rules.
+   */
+  aim?: number;
+  aimMax?: number;
+  aimRates?: number[];
   // accounting (¤, positive = collected, negative = paid out)
   today: number;
   month: number;
   lastMonth: number;
   total: number;
 }
+
+/** A levy as the player states it (the aimed-rate fields are optional; see Levy.aim). */
+export type LevyInput = Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total' | 'aimRates'>;
 
 export type LimitKind =
   | 'priceMax'
@@ -682,7 +695,7 @@ export type PlayerAction =
       /** Optionally offer the goods at the destination once they arrive (a sell order capped at qty). */
       sell?: { mode: OrderRoute['sell']; price?: number; margin?: number };
     }
-  | { type: 'addLevy'; levy: Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total'> }
+  | { type: 'addLevy'; levy: LevyInput }
   | { type: 'updateLevy'; id: number; patch: Partial<Levy> }
   | { type: 'removeLevy'; id: number }
   | { type: 'addLimit'; limit: Omit<Limit, 'id' | 'created' | 'binding'> }

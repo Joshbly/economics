@@ -450,6 +450,18 @@ that pay ¤5 per year each, forever). Seven primitives:
    more output; a share of the oil trading houses buy lowers their trip cost (and
    the freight the Treasury pays them). Builders bid with it but plan on market
    prices (their demand follows their projects, not prices).
+
+   *Aimed sale rules.* A `sale` rule in % on one good may aim at a price instead of
+   a fixed rate (`Levy.aim` ¤ per unit, `aimMax` ceiling ≤ AIM_MAX_CAP, `aimRates`
+   one rate per town). Each morning (policyBeginDay → levies.steerLevies) the rate
+   in each town moves AIM_SMOOTH of the way to the rate that would bring the payer's
+   price to the aim at yesterday's auction price — buyers pay p·(1 + dir·r), sellers
+   receive p·(1 − dir·r) — within [0, aimMax]; `rate` holds the highest town rate.
+   Everything downstream (the book's wedge, targeted extras, attribution, plans) reads
+   the town's rate (levies.rateIn). So a give on bread bought by households, aimed at
+   ¤2.50, pays more where bread is dearer and nothing where it is already cheaper:
+   what households pay converges on the aim across towns — until the payments (if
+   minted) lift every price and the rates reach their ceiling.
 4. **Limit** — legal bounds: max/min price of a good, min/max wage, max/min
    rent, max loan rate, import/export/shipment quotas (0 = ban), minimum bank
    reserve ratio, minimum bank capital ratio.

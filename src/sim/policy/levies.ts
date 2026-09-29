@@ -35,6 +35,10 @@
 // trading house's merchandise bids (bought for resale, OrderOpts.resale) do not carry
 // buyer-side rules — only what it uses (fuel, wagons) does.
 //
+// Aimed sale rules (Levy.aim > 0) carry one rate per town (aimRates); rateIn() is
+// the rate a rule applies in a town, and steerLevies() re-sets those rates each
+// morning from yesterday's auction prices (policyBeginDay).
+//
 // Per-rule accounting (levy.today/month/lastMonth/total) is signed:
 // + collected by the Treasury, − paid out by it. Every ¤ is also summed into
 // stats.acc: levy_take, levy_give (both positive) and levyb_<base> (signed net).
@@ -43,6 +47,7 @@
 // firm.wageBill/otherCosts); stockLevies (owned here) does its own.
 // ============================================================================
 import {
+  AIM_SMOOTH,
   DAYS_PER_YEAR,
   HUNGRY_BELOW,
   WEDGE_BPCT_MAX,
@@ -66,6 +71,89 @@ export interface LevyCtx {
 
 /** Bases whose rules distinguish payer roles (the payer filter matters only for these). */
 const MULTI_PAYER: Partial<Record<LevyBase, true>> = { sale: true, wage: true, rent: true };
+
+/**
+ * The rate a rule applies in `town`: its fixed rate, or — for an aimed sale rule — that
+ * town's rate today (the highest town rate when no town is given).
+ */
+export function rateIn(l: Levy, town: number): number {
+  if (!((l.aim ?? 0) > 0) || !(town >= 0) || !l.aimRates) return l.rate;
+  const r = l.aimRates[town];
+  return r > 0 && Number.isFinite(r) ? r : 0;
+}
+
+/** Is this an aimed rule (its rate follows a price, town by town)? */
+export function isAimed(l: Levy): boolean {
+  return (l.aim ?? 0) > 0 && l.base === 'sale' && l.unit === 'pct' && l.good >= 0;
+}
+
+/**
+ * The rate an aimed rule needs so the payer's price comes to `aim` at auction price `p`:
+ * buyers pay p·(1 + dir·r), sellers receive p·(1 − dir·r). 0 when the price is already on
+ * the right side of the aim.
+ */
+export function aimedRateAt(l: Levy, p: number): number {
+  const aim = l.aim ?? 0;
+  if (!(p > 0) || !(aim > 0)) return 0;
+  const k = aim / p;
+  // effect of the rate on the payer's price: + for a take on buyers or a give to sellers
+  const up = (l.payer === 'seller' ? -l.dir : l.dir) > 0;
+  const r = up ? k - 1 : 1 - k;
+  const cap = (l.aimMax ?? 0) > 0 ? (l.aimMax as number) : 0;
+  return r > 0 ? Math.min(cap, r) : 0;
+}
+
+/**
+ * Morning: move each aimed rule's town rates toward the rate that would bring the payer's
+ * price to the aim at yesterday's auction price (a share AIM_SMOOTH of the gap per day, so
+ * a rule does not chase one day's noise), within [0, aimMax]. `rate` becomes the highest.
+ */
+export function steerLevies(s: SimState): void {
+  const nt = s.towns.length;
+  for (const l of s.policy.levies) {
+    if (!isAimed(l)) continue;
+    const rates = !Array.isArray(l.aimRates) || l.aimRates.length !== nt ? resizeRates(l.aimRates, nt) : l.aimRates;
+    l.aimRates = rates;
+    const mx = l.aimMax ?? 0;
+    let hi = 0;
+    for (let t = 0; t < nt; t++) {
+      let r = 0;
+      if (l.town < 0 || l.town === t) {
+        const m = s.markets[t * N_GOODS + l.good];
+        const p = m && m.price > 0 ? m.price : m ? m.ema : 0;
+        const want = aimedRateAt(l, p);
+        const cur = rates[t] > 0 && Number.isFinite(rates[t]) ? rates[t] : 0;
+        r = cur + AIM_SMOOTH * (want - cur);
+        if (!(r > 1e-4)) r = 0;
+        if (r > mx) r = mx;
+      }
+      rates[t] = r;
+      if (r > hi) hi = r;
+    }
+    l.rate = hi;
+  }
+}
+
+/** Set the town rates of an aimed rule straight to what today's prices call for (on enactment). */
+export function primeAimedRates(s: SimState, l: Levy): void {
+  const nt = s.towns.length;
+  const rates = resizeRates(l.aimRates, nt);
+  l.aimRates = rates;
+  let hi = 0;
+  for (let t = 0; t < nt; t++) {
+    const m = s.markets[t * N_GOODS + l.good];
+    const r = l.town < 0 || l.town === t ? aimedRateAt(l, m ? m.ema : 0) : 0;
+    rates[t] = r;
+    if (r > hi) hi = r;
+  }
+  l.rate = hi;
+}
+
+function resizeRates(a: number[] | undefined, n: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) out.push(a && a[i] > 0 && Number.isFinite(a[i]) ? a[i] : 0);
+  return out;
+}
 
 /** Is the levy switched on and not expired today (and does it have a rate)? */
 export function levyActive(s: SimState, l: Levy): boolean {
@@ -167,7 +255,7 @@ export function saleWedgeInto(s: SimState, town: TownId, good: number, out: Wedg
     if (isTargetedSale(l)) continue; // rides on the matching orders (targetedExtrasFrom)
     if (l.town >= 0 && l.town !== town) continue;
     if (l.good >= 0 && l.good !== good) continue;
-    const r = l.dir * l.rate;
+    const r = l.dir * rateIn(l, town);
     if (l.payer === 'buyer') {
       if (l.unit === 'pct') bPct += r;
       else if (l.unit === 'perUnit') bUnit += r;
@@ -193,10 +281,11 @@ export function saleWedge(s: SimState, town: TownId, good: number): Wedge {
   return saleWedgeInto(s, town, good, { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 });
 }
 
-/** Theoretical signed amount one sale rule levies on `qty` units at `basePrice`. */
-function saleRuleAmount(l: Levy, basePrice: number, qty: number): number {
-  if (l.unit === 'pct') return l.dir * l.rate * basePrice * qty;
-  if (l.unit === 'perUnit') return l.dir * l.rate * qty;
+/** Theoretical signed amount one sale rule levies on `qty` units at `basePrice` (in `town`). */
+function saleRuleAmount(l: Levy, basePrice: number, qty: number, town: number): number {
+  const rate = rateIn(l, town);
+  if (l.unit === 'pct') return l.dir * rate * basePrice * qty;
+  if (l.unit === 'perUnit') return l.dir * rate * qty;
   return 0;
 }
 
@@ -292,15 +381,15 @@ export function tradeMatches(l: Levy, sector: Sector): boolean {
   return !l.group || l.group === 'all' || l.group === 'firms';
 }
 
-/** Sum into `out` the extras that the rules of a precomputed list (targetedSaleRules) put on the orders of `who` (a trader's ref, or a trade). */
-export function targetedExtrasFrom(s: SimState, rules: readonly Levy[], who: Ref | Sector, out: Extras): Extras {
+/** Sum into `out` the extras that the rules of a precomputed list (targetedSaleRules for `town`) put on the orders of `who` (a trader's ref, or a trade). */
+export function targetedExtrasFrom(s: SimState, rules: readonly Levy[], who: Ref | Sector, out: Extras, town: number): Extras {
   let pct = 0;
   let unit = 0;
   const trade = typeof who === 'string';
   for (let i = 0; i < rules.length; i++) {
     const l = rules[i];
     if (trade ? !tradeMatches(l, who) : !targetMatches(s, l, who)) continue;
-    const r = l.dir * l.rate;
+    const r = l.dir * rateIn(l, town);
     if (l.unit === 'pct') pct += r;
     else if (l.unit === 'perUnit') unit += r;
   }
@@ -323,7 +412,7 @@ export function targetedExtrasFor(s: SimState, town: TownId, good: number, payer
   if (s.policy.levies.length === 0) return out;
   _tRules.length = 0;
   targetedSaleRules(s, town, good, payer, _tRules);
-  if (_tRules.length) targetedExtrasFrom(s, _tRules, who, out);
+  if (_tRules.length) targetedExtrasFrom(s, _tRules, who, out, town);
   _tRules.length = 0;
   return out;
 }
@@ -333,7 +422,7 @@ export function targetedExtrasFor(s: SimState, town: TownId, good: number, payer
  * `qty` units at base price `basePrice` to the rules of `rules` that match `ref`, pro rata to
  * their theoretical amounts (this absorbs wedge clamps and a Purse that could not pay in full).
  */
-export function attributeTargetedActual(s: SimState, rules: readonly Levy[], ref: Ref, basePrice: number, qty: number, total: number): void {
+export function attributeTargetedActual(s: SimState, rules: readonly Levy[], ref: Ref, basePrice: number, qty: number, total: number, town: number): void {
   if (!(qty > 0) || !total || !Number.isFinite(total)) return;
   let th = 0;
   let any = false;
@@ -341,14 +430,14 @@ export function attributeTargetedActual(s: SimState, rules: readonly Levy[], ref
     const l = rules[i];
     if (!targetMatches(s, l, ref)) continue;
     any = true;
-    th += saleRuleAmount(l, basePrice, qty);
+    th += saleRuleAmount(l, basePrice, qty, town);
   }
   if (!any) return;
   const k = Math.abs(th) > 1e-12 ? total / th : 0;
   if (!k) return;
   for (let i = 0; i < rules.length; i++) {
     const l = rules[i];
-    if (targetMatches(s, l, ref)) noteRule(s, l, saleRuleAmount(l, basePrice, qty) * k);
+    if (targetMatches(s, l, ref)) noteRule(s, l, saleRuleAmount(l, basePrice, qty, town) * k);
   }
 }
 
@@ -377,16 +466,16 @@ export function attributeSaleActual(
   for (const l of s.policy.levies) {
     if (!saleRuleMatches(s, l, town, good)) continue;
     any = true;
-    if (l.payer === 'buyer') thB += saleRuleAmount(l, basePrice, buyQty);
-    else if (l.payer === 'seller') thS += saleRuleAmount(l, basePrice, sellQty);
+    if (l.payer === 'buyer') thB += saleRuleAmount(l, basePrice, buyQty, town);
+    else if (l.payer === 'seller') thS += saleRuleAmount(l, basePrice, sellQty, town);
   }
   if (!any) return;
   const kB = Number.isNaN(buyerTotal) ? 1 : Math.abs(thB) > 1e-12 ? buyerTotal / thB : 1;
   const kS = Number.isNaN(sellerTotal) ? 1 : Math.abs(thS) > 1e-12 ? sellerTotal / thS : 1;
   for (const l of s.policy.levies) {
     if (!saleRuleMatches(s, l, town, good)) continue;
-    if (l.payer === 'buyer') noteRule(s, l, saleRuleAmount(l, basePrice, buyQty) * kB);
-    else if (l.payer === 'seller') noteRule(s, l, saleRuleAmount(l, basePrice, sellQty) * kS);
+    if (l.payer === 'buyer') noteRule(s, l, saleRuleAmount(l, basePrice, buyQty, town) * kB);
+    else if (l.payer === 'seller') noteRule(s, l, saleRuleAmount(l, basePrice, sellQty, town) * kS);
   }
 }
 
@@ -768,12 +857,12 @@ export function attributePortActual(s: SimState, side: 'import' | 'export', good
   for (const l of s.policy.levies) {
     if (!portRuleMatches(s, l, side, good, port)) continue;
     any = true;
-    th += saleRuleAmount(l, basePrice, qty);
+    th += saleRuleAmount(l, basePrice, qty, port);
   }
   if (!any) return;
   const k = Math.abs(th) > 1e-12 ? total / th : 1;
   for (const l of s.policy.levies) {
     if (!portRuleMatches(s, l, side, good, port)) continue;
-    noteRule(s, l, saleRuleAmount(l, basePrice, qty) * k);
+    noteRule(s, l, saleRuleAmount(l, basePrice, qty, port) * k);
   }
 }

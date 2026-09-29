@@ -9,9 +9,10 @@ import { PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED } from '../../../sim/config';
 import { estimateCost, projectNeed } from '../../../sim/agents/construction';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
 import { roadPlan } from '../../../sim/world/paths';
+import { paveEffect } from '../../../sim/world/roadEffect';
 import { STATE, type Materials, type ProjectKind, type Sector, type SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
-import { fmtNum, fmtPct, plural } from '../../format';
+import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { centerMap, on, setPlacing, ui, type PrefillRequest } from '../../uiState';
 import { button, icon, segmented, selectInput, townOptions, type Option } from '../../widgets';
 import { banner, dynRow, fin, fmtM, formEl, formFoot, msgLine, row, run, safe, subhead, submitButton, townName, type Lever } from './common';
@@ -41,6 +42,27 @@ function matText(m: Materials): string {
   if (m.iron > 0) parts.push(`${fmtNum(m.iron)} iron bars`);
   if (m.tools > 0) parts.push(`${fmtNum(m.tools)} tool sets`);
   return parts.join(' · ');
+}
+
+/** What paving the planned tiles does: the track it upgrades, and the trips it speeds up. */
+function roadText(s: SimState, plan: readonly number[]): string {
+  const fresh = plan.filter((i) => !(s.map.road[i] >= 1)).length;
+  const upgraded = plan.length - fresh;
+  const what =
+    fresh === 0
+      ? `Upgrades the existing dirt track in place: ${plural(plan.length, 'tile')} become paving.`
+      : upgraded > 0
+        ? `Upgrades ${plural(upgraded, 'tile')} of the existing dirt track in place and lays ${plural(fresh, 'tile')} of new paving.`
+        : `Lays ${plural(fresh, 'tile')} of new paving.`;
+  const fx = safe(() => paveEffect(s, plan), []);
+  const trips = fx.slice(0, 4).map((e) => {
+    const via = e.via.length ? ` (via ${e.via.map((t) => townName(s, t)).join(', ')})` : '';
+    const fr = e.freightNow > 0 && e.freightPaved >= 0 ? `, freight ${fmtPrice(e.freightNow)} → ${fmtPrice(e.freightPaved)} a unit` : '';
+    return `${townName(s, e.a)}–${townName(s, e.b)}${via} ${e.daysNow.toFixed(2)} → ${e.daysPaved.toFixed(2)} days${fr}`;
+  });
+  const speed = `Wagons and walkers cover about ${SPEED_PAVED} tiles a day on paving against ${SPEED_DIRT} on dirt.`;
+  if (!trips.length) return `${what} ${speed}`;
+  return `${what} ${speed} Trips it speeds up: ${trips.join('; ')}. Cheaper carrying lets the trading houses move more between these towns, so their prices draw closer.`;
 }
 
 export function buildLever(): Lever {
@@ -179,7 +201,7 @@ export function buildLever(): Lever {
         } else if (c.tiles === 0) {
           desc = 'This road is already paved all the way (or there is no route).';
           ok = false;
-        } else desc = `Paves ${plural(c.tiles, 'tile')} of track. Wagons and walkers cover about ${SPEED_PAVED} tiles a day on paving against ${SPEED_DIRT} on dirt, so carrying goods gets quicker and cheaper.`;
+        } else desc = roadText(s, plan);
         break;
       case 'house':
         title = `Treasury houses in ${townName(s, town)}`;

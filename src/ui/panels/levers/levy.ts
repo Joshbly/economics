@@ -2,23 +2,40 @@
 // Lever III — Levy: attach a signed rate to any flow, composed like a sentence:
 //   [Take|Pay] [rate] [unit] on [flow] of [good] in [town], charged to [payer]
 // plus the conditions that mean something for that flow (group, trade,
-// threshold, expiry). The rule is previewed with the sim's own neutral wording
+// threshold, expiry). A rule on sales of one good may instead aim at a price:
+// its rate then re-sets each morning, town by town (levies.steerLevies). The rule is previewed with the sim's own neutral wording
 // (describeLevy) and a rough estimate of today's base and yield.
 // ============================================================================
-import { PLAYER_MAX_PCT, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
-import { G, SECTORS } from '../../../sim/goods';
-import { inGroup } from '../../../sim/policy/levies';
+import { AIM_MAX_CAP, AIM_MAX_DEFAULT, PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
+import { G, GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
+import { inGroup, primeAimedRates } from '../../../sim/policy/levies';
 import { describeLevy } from '../../../sim/policy/player';
 import type { BuildingKind, Group, Levy, LevyBase, LevyPayer, LevyUnit, Sector, SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
-import { plural } from '../../format';
+import { fmtPct, fmtPrice, plural } from '../../format';
 import type { PrefillRequest } from '../../uiState';
 import { goodOptions, numberInput, segmented, selectInput, townOptions, type Option } from '../../widgets';
-import { fin, formEl, formFoot, hint, msgLine, run, safe, signedMoney, submitButton, type Lever } from './common';
+import { fin, formEl, formFoot, hint, msgLine, run, safe, signedMoney, submitButton, unitOf, type Lever } from './common';
 import { estimateLevy, type LevyDraft, type LevyEstimate } from './estimate';
 import { BASES, baseDef, groupsFor, PAYER_WORD, saleTargeted, saleWhoFilters, saleWhoOf, saleWhoOptions, saleWhoWords, thresholdMeaning, unitLabel, type SaleWho } from './levyDefs';
 
 const SECTOR_KEYS = (Object.keys(SECTORS) as Sector[]).filter((k) => k !== 'stateworks');
+
+const GOODS_NAME = (g: number) => (GOODS[g]?.name ?? 'goods').toLowerCase();
+
+/** Average going price of a good across the towns (0 if none). */
+function avgPrice(s: SimState, g: number): number {
+  let sum = 0;
+  let n = 0;
+  for (let t = 0; t < s.towns.length; t++) {
+    const m = s.markets[t * N_GOODS + g];
+    if (m && m.ema > 0) {
+      sum += m.ema;
+      n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
 
 function sectorOptions(anyLabel: string, producersOnly = false): Option<Sector | 'any'>[] {
   const out: Option<Sector | 'any'>[] = [{ value: 'any', label: anyLabel }];
@@ -39,6 +56,7 @@ export function levyLever(): Lever {
   let kind: BuildingKind | 'any' = 'any';
   let ends: 'never' | 'after' = 'never';
   let who: SaleWho = 'all'; // sale levies: who the rule applies to
+  let rateMode: 'fixed' | 'aim' = 'fixed'; // sale levies on one good: a fixed rate, or aim at a price
   let last: SimState | null = null;
   let estKey = '';
   let est: LevyEstimate | null = null;
@@ -60,6 +78,7 @@ export function levyLever(): Lever {
   });
   const ratePct = numberInput({ value: 0.1, percent: true, unit: '', min: 0, max: PLAYER_MAX_PCT, width: '66px', onChange: changed, title: 'Rate in percent' });
   const rateMoney = numberInput({ value: 0.5, prefix: '¤', min: 0, max: PLAYER_MAX_UNIT_RATE, width: '80px', onChange: changed, title: 'Rate in ¤' });
+  const aimWord = h('span', { class: 'lv-w lv-w-strong' }, 'part of the price');
   const unitSel = selectInput<LevyUnit>({ options: [{ value: 'pct', label: '% of value' }], value: unit, onChange: (v) => ((unit = v), changed()) });
   const unitStatic = h('span', { class: 'lv-w lv-w-strong' });
   const conn = h('span', { class: 'lv-w' }, 'on');
@@ -97,7 +116,7 @@ export function levyLever(): Lever {
     'div',
     { class: 'lv-sentence' },
     h('span', { class: 'lv-frag' }, dirSeg.el),
-    h('span', { class: 'lv-frag' }, ratePct.el, rateMoney.el, unitSel.el, unitStatic),
+    h('span', { class: 'lv-frag' }, ratePct.el, rateMoney.el, aimWord, unitSel.el, unitStatic),
     h('span', { class: 'lv-frag' }, conn, baseSel.el),
     h('span', { class: 'lv-frag' }, wGroup, groupSelInline.el),
     h('span', { class: 'lv-frag' }, wGood, goodSel.el),
@@ -108,6 +127,43 @@ export function levyLever(): Lever {
     h('span', { class: 'lv-frag' }, wPayer, payerSlot),
   );
   const explain = hint();
+
+  // ---- rate mode (sale rules on one good): fixed, or aimed at a price ---------------
+  const modeSeg = segmented<'fixed' | 'aim'>({
+    options: [
+      { value: 'fixed', label: 'Fixed rate', title: 'The same rate every day' },
+      { value: 'aim', label: 'Aim at a price', title: 'Each morning the rate re-sets, town by town, so that the price paid (or received) moves toward the price you set' },
+    ],
+    value: rateMode,
+    size: 'sm',
+    onChange: (v) => {
+      rateMode = v;
+      if (v === 'aim') {
+        unit = 'pct';
+        const s = last;
+        if (s && !aimTouched) {
+          const avg = avgPrice(s, good);
+          if (avg > 0) aimPrice.set(Math.round(avg * (dir === -1 ? 0.85 : 1.15) * 100) / 100);
+        }
+      }
+      changed();
+    },
+  });
+  let aimTouched = false;
+  const aimPrice = numberInput({
+    value: 2.5,
+    prefix: '¤',
+    min: 0.01,
+    max: PLAYER_MAX_PRICE,
+    width: '84px',
+    onChange: () => ((aimTouched = true), changed()),
+    title: 'The price to aim at',
+  });
+  const aimMax = numberInput({ value: AIM_MAX_DEFAULT, percent: true, min: 0.01, max: AIM_MAX_CAP, width: '66px', onChange: changed, title: 'The most the rate may reach, as a share of the price' });
+  const aimWho = h('span', { class: 'lv-w' });
+  const aimUnit = h('span', { class: 'lv-w' });
+  const aimFields = h('span', { class: 'lv-aim-f' }, aimWho, aimPrice.el, aimUnit, aimMax.el, h('span', { class: 'lv-w' }, 'of the price'));
+  const aimRow = h('div', { class: 'lv-aim' }, h('span', { class: 'lv-w' }, 'Rate'), modeSeg.el, aimFields);
 
   // ---- conditions ----------------------------------------------------------------
   const groupSel = selectInput<Group>({ options: groupsFor('wage'), value: group, onChange: (v) => ((group = v), changed()) });
@@ -135,7 +191,7 @@ export function levyLever(): Lever {
   const preview = h('div', { class: 'lv-preview' }, estLine);
   const enact = submitButton('Enact', 'Put this rule in force (Enter)');
 
-  const form = formEl(() => submit(), sentence, explain, conds, decree, formFoot(preview, msg, enact));
+  const form = formEl(() => submit(), sentence, aimRow, explain, conds, decree, formFoot(preview, msg, enact));
   const body = h('div', { class: 'lv-body-in' }, form);
 
   // ---- logic -------------------------------------------------------------------------
@@ -192,13 +248,14 @@ export function levyLever(): Lever {
       g = f.group;
       sec = f.sector;
     }
-    return {
+    const aiming = canAim() && rateMode === 'aim';
+    const out: LevyDraft = {
       label: '',
       enabled: true,
       dir,
       base,
-      unit,
-      rate: fin(rate, NaN),
+      unit: aiming ? 'pct' : unit,
+      rate: aiming ? 0 : fin(rate, NaN),
       payer,
       threshold: fin(thr),
       good: d.good ? good : -1,
@@ -209,6 +266,29 @@ export function levyLever(): Lever {
       buildingKind: bk,
       until: ends === 'after' && endDays.value >= 1 ? s.day + Math.round(endDays.value) - 1 : -1,
     };
+    if (aiming) {
+      out.aim = fin(aimPrice.value, NaN);
+      out.aimMax = fin(aimMax.value, NaN);
+    }
+    return out;
+  }
+
+  /** Can this rule aim at a price? (a rule on sales of one good) */
+  function canAim(): boolean {
+    return base === 'sale' && good >= 0 && good < N_GOODS;
+  }
+
+  /** The rate an aimed draft would apply in each town today (and the price there). */
+  function aimedToday(s: SimState, dr: LevyDraft): { town: number; price: number; rate: number }[] {
+    const pseudo: Levy = { ...dr, id: 0, created: s.day, today: 0, month: 0, lastMonth: 0, total: 0 };
+    primeAimedRates(s, pseudo);
+    const out: { town: number; price: number; rate: number }[] = [];
+    for (let t = 0; t < s.towns.length; t++) {
+      if (dr.town >= 0 && dr.town !== t) continue;
+      const m = s.markets[t * N_GOODS + dr.good];
+      out.push({ town: t, price: m ? fin(m.ema) : 0, rate: fin(pseudo.aimRates?.[t]) });
+    }
+    return out;
   }
 
   /** Live count of who a sale rule would reach ("5 bakeries in Millbrook"). */
@@ -223,6 +303,21 @@ export function levyLever(): Lever {
     return `${plural(n, w.startsWith('f:') ? (f.sector === 'any' ? 'workshop' : (SECTORS[f.sector]?.name ?? 'workshop').toLowerCase()) : 'household', w.startsWith('f:') ? (f.sector === 'any' ? 'workshops' : saleWhoWords(w)) : 'households')}${where}. Only their ${payer === 'seller' ? 'sales' : 'purchases'} are charged; everyone else trades at the auction price.`;
   }
 
+  /** Today's yield of an aimed draft: the fixed-rate estimate, town by town, at the rate each town would start at. */
+  function estimateAimed(s: SimState, dr: LevyDraft): LevyEstimate | null {
+    let amount = 0;
+    let any = false;
+    for (const r of aimedToday(s, dr)) {
+      if (!(r.rate > 0)) continue;
+      const e = estimateLevy(s, { ...dr, aim: undefined, aimMax: undefined, rate: r.rate, town: r.town });
+      if (!e) continue;
+      any = true;
+      amount += fin(e.amount);
+    }
+    if (!any) return { baseText: `the ${GOODS_NAME(dr.good)} price is already on your side of the aim everywhere`, amount: 0, per: 'day', rough: true };
+    return { baseText: `each town’s starting rate on today’s ${GOODS_NAME(dr.good)} trade`, amount, per: 'day', rough: true };
+  }
+
   function paint(): void {
     const s = last;
     if (!s) return;
@@ -234,12 +329,19 @@ export function levyLever(): Lever {
       d.units.map((u) => ({ value: u, label: unitLabel(base, u, d.good ? good : -1) })),
       unit,
     );
+    const aimOk = canAim();
+    const aiming = aimOk && rateMode === 'aim';
+    if (aiming) unit = 'pct';
     const multiUnit = d.units.length > 1;
-    show(unitSel.el, multiUnit);
-    show(unitStatic, !multiUnit);
+    show(unitSel.el, multiUnit && !aiming);
+    show(unitStatic, !multiUnit && !aiming);
     setText(unitStatic, unitLabel(base, unit, d.good ? good : -1));
-    show(ratePct.el, unit === 'pct');
-    show(rateMoney.el, unit !== 'pct');
+    show(ratePct.el, unit === 'pct' && !aiming);
+    show(rateMoney.el, unit !== 'pct' && !aiming);
+    show(aimWord, aiming);
+    show(aimRow, aimOk);
+    show(aimFields, aiming);
+    modeSeg.set(rateMode);
     setText(conn, base === 'head' ? (dir === 1 ? 'from' : 'to') : 'on');
 
     const frag = (w: HTMLElement) => w.parentElement as HTMLElement;
@@ -269,6 +371,8 @@ export function levyLever(): Lever {
     const targeted = isSale && who !== 'all';
     const whoW = saleWhoWords(who);
     const buyer = payer !== 'seller';
+    setText(aimWho, `so that ${whoW || (buyer ? 'buyers' : 'sellers')} ${buyer ? 'pay' : 'receive'} about`);
+    setText(aimUnit, `a ${unitOf(good)}, and at most`);
     setText(whoHint, isSale ? whoCount(s, who, town) : '');
     setText(
       explain,
@@ -276,6 +380,14 @@ export function levyLever(): Lever {
         ? `Charged only on what ${whoW} ${buyer ? 'buy' : 'sell'}: ${dir === 1 ? (buyer ? 'they pay the auction price plus the rate' : 'they receive the auction price less the rate') : buyer ? 'they pay the auction price less the rate' : 'they receive the auction price plus the rate'}. Treasury orders are exempt.`
         : d.explain + (d.stock && unit === 'pct' ? ' The rate is per year.' : ''),
     );
+    if (aiming) {
+      const dr0 = draft(s);
+      const rows = dr0.aim && dr0.aim > 0 && dr0.aimMax && dr0.aimMax > 0 ? safe(() => aimedToday(s, dr0), []) : [];
+      const parts = rows.map((r) => `${s.towns[r.town]?.name ?? ''} ${fmtPrice(r.price)} → ${r.rate > 0 ? fmtPct(r.rate) : 'none'}`);
+      const intro = h('div', null, `Each morning the rate re-sets in each ${dr0.town >= 0 ? 'market' : 'town'} from the day before’s auction price, closing about a third of the gap each day, so the rule does not chase one day’s noise. Where the price is already on your side of the aim, it pays or takes nothing.${dir === -1 ? ' Payments made with newly created money push every price up, and the rates climb with them toward the ceiling you set.' : ''}`);
+      if (parts.length) explain.replaceChildren(intro, h('div', { class: 'lv-aim-now' }, 'Going price now → rate it would start at: ', parts.join(' · ')));
+      else explain.replaceChildren(intro);
+    }
 
     // conditions
     show(cWho, isSale);
@@ -292,15 +404,15 @@ export function levyLever(): Lever {
     // decree + estimate
     const dr = draft(s);
     const sameRoute = base === 'shipment' && dr.town >= 0 && dr.town === dr.toTown;
-    const valid = Number.isFinite(dr.rate) && dr.rate > 0 && !sameRoute;
+    const valid = aiming ? fin(dr.aim) > 0 && fin(dr.aimMax) > 0 && aimPrice.valid && aimMax.valid : Number.isFinite(dr.rate) && dr.rate > 0 && !sameRoute;
     const pseudo: Levy = { ...dr, id: 0, created: s.day, today: 0, month: 0, lastMonth: 0, total: 0 };
     let words = valid ? safe(() => describeLevy(s, pseudo), '') : '';
     if (valid && base === 'sale' && saleTargeted(dr.group, dr.sector) && whoW && !words.toLowerCase().includes(whoW)) words = words.replace(/\.$/, '') + ` — only when ${whoW} ${payer === 'seller' ? 'sell' : 'buy'}.`;
-    setText(decree, valid ? words : sameRoute ? 'Choose two different towns for the route (or “any town” at one end).' : 'Set a rate above zero to see the rule in words.');
+    setText(decree, valid ? words : sameRoute ? 'Choose two different towns for the route (or “any town” at one end).' : aiming ? 'Set the price to aim at, and the most the rate may reach.' : 'Set a rate above zero to see the rule in words.');
     const key = JSON.stringify(dr) + '|' + s.day;
     if (key !== estKey) {
       estKey = key;
-      est = valid ? safe(() => estimateLevy(s, dr), null) : null;
+      est = valid ? safe(() => (aiming ? estimateAimed(s, dr) : estimateLevy(s, dr)), null) : null;
     }
     const B = (x: string, cls = '') => h('b', { class: cls || null }, x);
     if (est && valid) {
@@ -326,6 +438,11 @@ export function levyLever(): Lever {
     const s = last;
     if (!s) return;
     const dr = draft(s);
+    if (dr.aim !== undefined) {
+      if (!(fin(dr.aim) > 0)) return msg.err(aimPrice.error ?? 'Set the price to aim at.');
+      if (!(fin(dr.aimMax) > 0)) return msg.err(aimMax.error ?? 'Set the most the rate may reach.');
+      return void run({ type: 'addLevy', levy: dr }, msg, '✓ Enacted — the rule is listed under In force, with its rate in each town.');
+    }
     if (!(dr.rate > 0)) return msg.err((unit === 'pct' ? ratePct.error : rateMoney.error) ?? 'Set a rate above zero.');
     run({ type: 'addLevy', levy: dr }, msg, '✓ Enacted — the rule is listed under In force.');
   }

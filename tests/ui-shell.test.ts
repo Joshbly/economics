@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { advanceClock, MAX_DT } from '../src/ui/loop';
-import { outputIndex } from '../src/ui/topbar';
+import { outputIndex, priceChange } from '../src/ui/topbar';
 import { packSave, unpackSave } from '../src/ui/app';
 import { PANELS } from '../src/ui/panels/index';
 
@@ -95,5 +95,24 @@ describe('panel registry', () => {
       expect(typeof p.update).toBe('function');
       expect(p.title.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('output index and price change early in the reign', () => {
+  it('moves from the first days (no longer flat at 100 for a month)', () => {
+    const o = outputIndex([100, 100, 100, 110, 110]);
+    expect(o.index).toBeCloseTo(110);
+    expect(o.since).toBe('start');
+    expect(o.prev).toBe(100);
+    expect(outputIndex([100]).index).toBeCloseTo(100);
+  });
+  it('price change: since the start, then over 30 days', () => {
+    expect(priceChange([100, 101, 102]).change).toBeCloseTo(0.02);
+    expect(priceChange([100, 101, 102]).since).toBe('start');
+    const long = Array.from({ length: 40 }, (_, i) => 100 + i);
+    const pc = priceChange(long);
+    expect(pc.since).toBe('month');
+    expect(pc.change).toBeCloseTo(139 / 109 - 1);
+    expect(Number.isNaN(priceChange([100]).change)).toBe(true);
   });
 });

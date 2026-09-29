@@ -208,7 +208,7 @@ function addOrder(book: Book, side: 0 | 1, ref: Ref, limit: number, qty: number,
   if (sim && !o.exempt && ref !== STATE_REF && !(side === 0 && opts?.resale)) {
     const rules = side === 0 ? pb.tBuy : pb.tSell;
     if (rules.length) {
-      targetedExtrasFrom(sim, rules, ref, _xo);
+      targetedExtrasFrom(sim, rules, ref, _xo, book.town);
       if (_xo.pct) o.xPct += _xo.pct;
       if (_xo.unit) o.xUnit += _xo.unit;
     }
@@ -519,7 +519,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
         if (ref === FOREIGN_REF) {
           expTotal += extraPart * got * kk;
           expQty += got;
-        } else if (tBuy && tBuy.length) attributeTargetedActual(s, tBuy, ref, p, got, extraPart * got * kk);
+        } else if (tBuy && tBuy.length) attributeTargetedActual(s, tBuy, ref, p, got, extraPart * got * kk, town);
       }
     }
     if (isGoods && !o.exempt) buyQtyNE += got;
@@ -585,7 +585,7 @@ function settle(s: SimState, book: Book, p: number, kind: Kind): SettleOut {
           if (o.ref === FOREIGN_REF) {
             impTotal += extraPart * c * kk;
             impQty += c;
-          } else if (tSell && tSell.length) attributeTargetedActual(s, tSell, o.ref, p, c, extraPart * c * kk);
+          } else if (tSell && tSell.length) attributeTargetedActual(s, tSell, o.ref, p, c, extraPart * c * kk, town);
         }
       }
       if (!o.exempt) sellQtyNE += c;

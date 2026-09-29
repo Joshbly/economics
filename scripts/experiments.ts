@@ -23,6 +23,7 @@ import { WARMUP_DAYS } from '../src/sim/config';
 import { G, GOODS, N_GOODS, TRADABLE_GOODS } from '../src/sim/goods';
 import { Game } from '../src/sim/game';
 import { takeHomeWage } from '../src/sim/stats/stats';
+import { expectedGrossFor } from '../src/sim/market/markets';
 import { roadPlan } from '../src/sim/world/paths';
 import type { Levy, Limit, PlayerAction, SimState, TownKind } from '../src/sim/types';
 
@@ -210,7 +211,24 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   miningCoalSpend: { label: 'the mining town’s coal mines’ market spending ¤/day (their tools)', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.spent) },
   toolsElsewhere: { label: 'tools price outside the mining town (mean)', fn: (s, c) => meanOver(s.towns.filter((t) => t.id !== c.mining).map((t) => mkt(s, t.id, G.tools)?.ema ?? 0)) },
   giveSpend: { label: 'Treasury payments on levies ¤/day', fn: (s) => L(s, 'levyGive') },
+  hhBreadRel: { label: 'bread price households pay ÷ CPI (mean of towns)', fn: (s) => meanOver(hhBreadPaid(s)) / Math.max(1e-9, L(s, 'cpi') / 100) },
+  hhBreadSpread: { label: 'bread price households pay: spread across towns (max−min ÷ mean)', fn: (s) => spread(hhBreadPaid(s)) },
 };
+
+/** What a household pays for bread in each town (smoothed auction price with every rule that reaches its purchases). */
+function hhBreadPaid(s: SimState): number[] {
+  const out: number[] = [];
+  for (let t = 0; t < s.towns.length; t++) {
+    const p = s.people.find((x) => x && x.alive && x.town === t);
+    out.push(p ? expectedGrossFor(s, t, G.bread, p.id) : mkt(s, t, G.bread)?.ema ?? 0);
+  }
+  return out;
+}
+
+function spread(a: readonly number[]): number {
+  const m = meanOver(a);
+  return m > 0 ? (Math.max(...a) - Math.min(...a)) / m : 0;
+}
 
 /** Σ over the living, active firms of a trade (in a town, or −1 everywhere) of fn(firm). */
 function sumFirms(s: SimState, sector: string, town: number, fn: (f: SimState['firms'][number]) => number): number {
@@ -550,6 +568,30 @@ const EXPERIMENTS: Experiment[] = [
       { label: 'their own tools purchases down (month)', metric: 'miningCoalSpend', kind: 'down', tol: 0.05, window: () => [2, 32] },
       { label: 'coal output unchanged (±2 %: not short of tools)', metric: 'miningCoalOut', kind: 'similar', tol: 0.02 },
     ],
+  },
+  {
+    id: '14',
+    name: 'Aim what households pay for bread at 90% of today’s price, town by town',
+    // An aimed sale rule: each morning its rate re-sets in each town so that households pay about
+    // the aim there (the dearer the town, the higher its rate). Bread gets cheaper for households
+    // relative to everything else, and the price they pay converges across towns. The payments are
+    // minted (auto-mint), so every price drifts up and the rates follow it to their ceiling.
+    arms: [
+      {
+        name: 'aimed bread rule',
+        setup: (g, c) => {
+          const avg = meanOver(c.price.map((row) => row[G.bread]));
+          act(g, { type: 'addLevy', levy: { ...levy({ base: 'sale', unit: 'pct', dir: -1, rate: 0, payer: 'buyer', good: G.bread, group: 'persons' }), aim: Math.round(avg * 0.9 * 100) / 100, aimMax: 0.3 } }, 'aimed bread rule');
+        },
+      },
+    ],
+    checks: [
+      { label: 'bread cheaper for households (÷ CPI)', metric: 'hhBreadRel', kind: 'down', tol: 0.05 },
+      // Judged over the first months: later the minted payments lift every price and the rates
+      // reach their 30 % ceiling in every town, where one rate for all no longer closes the gaps.
+      { label: 'bread price households pay closer across towns (days 15–120)', metric: 'hhBreadSpread', kind: 'down', tol: 0.05, window: () => [15, 120] },
+    ],
+    show: ['giveSpend', 'cpi'],
   },
 ];
 

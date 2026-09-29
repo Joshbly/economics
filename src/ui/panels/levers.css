@@ -233,6 +233,11 @@
   background: linear-gradient(180deg, #1a2029, #151a21);
 }
 .lv-frag { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.lv-aim { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 8px; margin-top: 8px; }
+.lv-aim[hidden] { display: none; }
+.lv-aim-f { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lv-aim-f[hidden] { display: none; }
+.lv-aim-now { margin-top: 4px; color: var(--ink-2, #c9d1d9); }
 .lv-frag[hidden] { display: none; }
 .lv-frag .select-wrap { flex: none; max-width: 200px; }
 .lv-frag .select { padding-right: 24px; }
