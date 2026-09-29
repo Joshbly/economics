@@ -265,6 +265,10 @@
 .lv-est-base { color: var(--ink-3); }
 .lv-bite { color: var(--ink-2); }
 .lv-bite:not(:empty) { padding-left: 9px; border-left: 2px solid var(--warn); }
+/* Limit → a price limit in every town: each town's price and whether it would bind */
+.lv-lim-towns { margin: 2px 0 4px; }
+.lv-lim-towns[hidden] { display: none; }
+.lv-lim-towns .lv-hold-r > span.bind { color: var(--warn); }
 
 /* ---------- Window: rate ladder --------------------------------------------------- */
 .lv-ladder { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; padding: 9px 10px; border-radius: var(--r-md); border: 1px solid var(--line-1); background: #12161c; }

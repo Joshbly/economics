@@ -4,6 +4,7 @@
 // Bank and the Port.
 // ============================================================================
 import { BANK_MIN_CAPITAL, IOU_COUPON } from '../../../sim/config';
+import { capitalRuleSource, minCapital } from '../../../sim/agents/bank';
 import { GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
 import { STATE, type Building, type SimState } from '../../../sim/types';
 import { h } from '../../dom';
@@ -325,10 +326,19 @@ function bankView(): View {
       hr.title('The Bank');
       hr.sub.node('o' + b.owner, () => ['Owned by ', personLink(s, b.owner)]);
       const cap = fin(L.capRatio, NaN);
-      hr.chips(b.failed ? [['bad', `Failed · ${b.failedDays} d`]] : cap < BANK_MIN_CAPITAL ? [['warn', 'Below its capital floor']] : [['good', 'Lending']]);
+      // the capital rule in force: the standing one, or a Limit in its place (never below the Bank's own floor)
+      let floor = BANK_MIN_CAPITAL;
+      let src: ReturnType<typeof capitalRuleSource> = 'standing';
+      try {
+        floor = minCapital(s);
+        src = capitalRuleSource(s);
+      } catch {
+        /* keep the standing rule */
+      }
+      hr.chips(b.failed ? [['bad', `Failed · ${b.failedDays} d`]] : cap < floor ? [['warn', 'Below its capital floor']] : [['good', 'Lending']]);
       tDep.set(fmtMoneyShort(L.money));
       tLoans.set(fmtMoneyShort(L.credit));
-      tCap.set(fmtPct(cap, 1), `floor ${fmtPct(BANK_MIN_CAPITAL, 0)}`, cap < BANK_MIN_CAPITAL ? 'bad' : undefined);
+      tCap.set(fmtPct(cap, 1), `floor ${fmtPct(floor, floor < 0.1 && Math.abs(floor * 100 - Math.round(floor * 100)) > 1e-6 ? 1 : 0)}${src === 'standing' ? '' : src === 'limit' ? ' · Limit' : ' · own'}`, cap < floor ? 'bad' : undefined);
       rOwner.node('o' + b.owner, () => personLink(s, b.owner));
       rRes.text(fmtMoney(b.reserves), b.reserves < 0 ? 'bad' : undefined);
       rIou.text(b.iou > 0 ? `${fmtInt(b.iou)} · book ${fmtMoneyShort(b.iouBook)}` : 'none');

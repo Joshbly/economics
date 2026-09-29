@@ -33,13 +33,16 @@ import {
   ORDER_ANY_BUDGET_MULT,
   ORDER_ANY_MULT,
   ORDER_BAND_MAX,
+  BANK_MIN_CAPITAL,
+  BANK_OWN_MIN_CAPITAL,
+  LIMIT_MOVE_MAX,
 } from '../config';
 import { dateLabel } from '../calendar';
 import { fin } from '../util';
 import { GOODS, N_GOODS, SECTORS } from '../goods';
 import { burn, mint, pay } from '../ledger';
 import { rt } from '../runtime';
-import { BANK, FIRM_BASE, STATE } from '../types';
+import { BANK, FIRM_BASE, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
 import type {
   ActionResult,
   BuildingKind,
@@ -77,7 +80,24 @@ const LEVY_BASES: LevyBase[] = ['sale', 'wage', 'profit', 'money', 'goods', 'hea
 const LEVY_UNITS: LevyUnit[] = ['pct', 'perUnit', 'flat'];
 const GROUPS: Group[] = ['all', 'employed', 'unemployed', 'homeless', 'owners', 'nonowners', 'hungry', 'persons', 'firms'];
 const BUILDING_KINDS: BuildingKind[] = ['house', 'firm', 'market', 'bank', 'palace', 'port'];
-const LIMIT_KINDS: LimitKind[] = ['priceMax', 'priceMin', 'wageMin', 'wageMax', 'rentMax', 'rentMin', 'rateMax', 'importMax', 'exportMax', 'shipMax', 'reserveMin', 'capitalMin'];
+const LIMIT_KINDS: LimitKind[] = [
+  'priceMax',
+  'priceMin',
+  'priceMove',
+  'wageMin',
+  'wageMax',
+  'rentMax',
+  'rentMin',
+  'rateMax',
+  'rateMin',
+  'importMax',
+  'exportMax',
+  'shipMax',
+  'reserveMin',
+  'capitalMin',
+];
+/** Price limits: they bind in the auction, and may also name the IOU or gold market. */
+const PRICE_LIMIT_KINDS: LimitKind[] = ['priceMax', 'priceMin', 'priceMove'];
 const ALL_SECTOR_KEYS = Object.keys(SECTORS) as Sector[];
 
 /** Units that make sense for each base (first = default). */
@@ -461,19 +481,32 @@ export function levyShortLabel(s: SimState, l: Levy): string {
 
 /** Plain sentence describing a limit. */
 export function describeLimit(s: SimState, l: Limit): string {
-  const where = l.town >= 0 ? ` in ${townName(s, l.town)}` : '';
-  const g = l.good >= 0 ? goodLower(l.good) : 'any good';
+  const inst = l.good === IOU_GOOD || l.good === GOLD_GOOD;
+  const where = l.town >= 0 && !inst ? ` in ${townName(s, l.town)}` : '';
+  const g = l.good === IOU_GOOD ? 'IOUs' : l.good === GOLD_GOOD ? 'gold' : l.good >= 0 ? goodLower(l.good) : 'any good';
+  // Price of an instrument: per IOU / per ounce; goods prices are before levies.
+  const per = l.good === IOU_GOOD ? ' each' : l.good === GOLD_GOOD ? ' an ounce' : ' (before levies)';
   // Quantity limits with no good count each good separately: "No goods may…", "N units of each good…".
   const qNone = l.good >= 0 ? g : 'goods';
   const qSome = l.good >= 0 ? g : 'each good';
   let t: string;
   switch (l.kind) {
     case 'priceMax':
-      t = `No one may trade ${g}${where} above ${moneyText(l.value)} (before levies)`;
+      t = `No one may trade ${g}${where} above ${moneyText(l.value)}${per}`;
       break;
     case 'priceMin':
-      t = `No one may trade ${g}${where} below ${moneyText(l.value)} (before levies)`;
+      t = `No one may trade ${g}${where} below ${moneyText(l.value)}${per}`;
       break;
+    case 'priceMove': {
+      const what =
+        l.good === GOLD_GOOD
+          ? 'The gold price'
+          : l.good === IOU_GOOD
+            ? 'The price of IOUs'
+            : `The price of ${l.good >= 0 ? g : 'every good'}${inst ? '' : where || ' in every town'}`;
+      t = l.value <= 0 ? `${what} is held where it stands: it may not move from one day to the next` : `${what} may move at most ${pctText(l.value)} a day, up or down`;
+      break;
+    }
     case 'wageMin':
       t = `No one${where || ' in the realm'} may be paid less than ${moneyText(l.value)} a day`;
       break;
@@ -488,6 +521,9 @@ export function describeLimit(s: SimState, l: Limit): string {
       break;
     case 'rateMax':
       t = `The Bank may not charge more than ${pctText(l.value)} a year on its loans`;
+      break;
+    case 'rateMin':
+      t = `The Bank may not charge less than ${pctText(l.value)} a year on its loans`;
       break;
     case 'importMax':
       t = l.value <= 0 ? `No ${qNone} may come in through the port` : `At most ${qtyText(l.value)} units of ${qSome} may come in through the port each day`;
@@ -514,6 +550,8 @@ export function describeLimit(s: SimState, l: Limit): string {
       break;
     case 'capitalMin':
       t = `The Bank's own capital must stay above ${pctText(l.value)} of its loans`;
+      if (Math.abs(l.value - BANK_MIN_CAPITAL) > 1e-9) t += `, in place of the standing ${pctText(BANK_MIN_CAPITAL)}`;
+      if (l.value < BANK_OWN_MIN_CAPITAL) t += ` — though the Bank itself never lets it fall below ${pctText(BANK_OWN_MIN_CAPITAL)}`;
       break;
     default:
       t = 'A new rule applies';
@@ -687,7 +725,8 @@ function checkLimit(s: SimState, raw: Partial<LimitDraft> | undefined): Checked<
   let good = raw.good ?? -1;
   let town = raw.town ?? -1;
   let toTown = raw.toTown ?? -1;
-  if (!isInt(good) || good < -1 || good >= N_GOODS) return { ok: false, message: 'Unknown good.' };
+  const instrument = PRICE_LIMIT_KINDS.includes(kind) && (good === IOU_GOOD || good === GOLD_GOOD);
+  if (!isInt(good) || good < -1 || (good >= N_GOODS && !instrument)) return { ok: false, message: 'Unknown good.' };
   if (!isInt(town) || town < -1 || town >= s.towns.length) return { ok: false, message: 'Unknown town.' };
   if (!isInt(toTown) || toTown < -1 || toTown >= s.towns.length) return { ok: false, message: 'Unknown destination town.' };
   let v = value;
@@ -697,6 +736,13 @@ function checkLimit(s: SimState, raw: Partial<LimitDraft> | undefined): Checked<
       if (good < 0) return { ok: false, message: 'Choose which good the price bound applies to.' };
       if (v > PLAYER_MAX_PRICE) return { ok: false, message: `A price can be at most ${moneyText(PLAYER_MAX_PRICE)}.` };
       if (kind === 'priceMax' && v < PRICE_MIN) v = PRICE_MIN;
+      if (instrument) town = -1; // the IOU and gold markets are national
+      toTown = -1;
+      break;
+    case 'priceMove':
+      // a share of yesterday's price (any good, or every good; one town or every town)
+      if (v > LIMIT_MOVE_MAX) return { ok: false, message: `A daily move can be at most ${pctText(LIMIT_MOVE_MAX)}.` };
+      if (instrument) town = -1;
       toTown = -1;
       break;
     case 'wageMin':
@@ -708,7 +754,8 @@ function checkLimit(s: SimState, raw: Partial<LimitDraft> | undefined): Checked<
       toTown = -1;
       break;
     case 'rateMax':
-      if (v > PLAYER_MAX_RATE) return { ok: false, message: `A rate cap can be at most ${pctText(PLAYER_MAX_RATE)} a year.` };
+    case 'rateMin':
+      if (v > PLAYER_MAX_RATE) return { ok: false, message: `A loan-rate bound can be at most ${pctText(PLAYER_MAX_RATE)} a year.` };
       good = -1;
       town = -1;
       toTown = -1;
@@ -754,6 +801,14 @@ function checkLimit(s: SimState, raw: Partial<LimitDraft> | undefined): Checked<
       if (kind === 'priceMin' && o.kind === 'priceMax' && o.value < v) note = 'it sits above an existing upper bound, which will prevail';
     }
   }
+  if (kind === 'rateMax' || kind === 'rateMin') {
+    for (const o of s.policy.limits) {
+      if (!o.enabled) continue;
+      if (kind === 'rateMax' && o.kind === 'rateMin' && o.value > v) note = 'it sits below an existing lowest loan rate, so the highest will prevail';
+      if (kind === 'rateMin' && o.kind === 'rateMax' && o.value < v) note = 'it sits above an existing highest loan rate, which will prevail';
+    }
+  }
+  if (kind === 'capitalMin' && v < BANK_OWN_MIN_CAPITAL) note = `the Bank never lets its own capital fall below ${pctText(BANK_OWN_MIN_CAPITAL)} of its loans, so that is the least it will keep`;
   return { ok: true, value: draft, note };
 }
 

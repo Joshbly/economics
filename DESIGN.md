@@ -301,10 +301,18 @@ One commercial bank (owned by a wealthy person). Balance sheet:
 
 * Funding cost = Treasury reserve rate if reserves ≥ requirement, else the
   window lending rate. Loan rate = funding cost + base spread + risk premium
-  (leverage-based), floating daily, capped by any rate Limit (then risky loans
-  are rationed instead). Deposit rate ≈ reserve rate − 1 % (floored near 0).
-* Lending standards: debt-service coverage, leverage, capital ratio ≥ max(8 %,
-  Limit), and a stance that tightens after defaults (pro-cyclical credit).
+  (leverage-based), floating daily, raised to any rate floor Limit (`rateMin`)
+  and capped by any rate ceiling Limit (`rateMax`; then risky loans are rationed
+  instead; a floor above the ceiling is cut to it). Deposit rate ≈ reserve rate
+  − 1 % (floored near 0).
+* Lending standards: debt-service coverage, leverage, capital ratio ≥ the capital
+  rule in force (`bank.minCapital`): the realm's standing rule BANK_MIN_CAPITAL
+  (8 %) — or, while a `capitalMin` Limit is in force, the Limit in its place,
+  higher or lower, but never below the bank's own prudence BANK_OWN_MIN_CAPITAL
+  (2 %) — and a stance that tightens after defaults and when capital runs thin
+  relative to that rule (pro-cyclical credit). A lower rule matters only when
+  capital is scarce: a well-capitalised bank is held back by its borrowers'
+  leverage and coverage, not by the rule.
   Coverage is judged on interest, counting the yield of what the new money
   finances (term credit: the capital's yield; working capital:
   BANK_WORKING_YIELD on the stock and payroll it turns over) — and a working
@@ -354,7 +362,14 @@ day by a **uniform-price call auction** (`market/auction.ts`):
    imbalance, (c) market pressure, (d) closest to the reference price.
 4. Apply price Limits: a ceiling/floor overrides the price; the long side is
    **rationed pro-rata** (shortages and surpluses are real and reported).
-   Without limits, the long side is filled by price priority.
+   Without limits, the long side is filled by price priority. The day's
+   ceiling/floor (`limits.auctionBounds`, set in openBooks) are the fixed bounds
+   (`priceMax`/`priceMin`, the ceiling winning a conflict) tightened by any
+   `priceMove` limit: yesterday's price × (1 ± X). If that band lies wholly
+   outside the fixed bounds, the fixed bound prevails and the price is held at it.
+   The limit that set the binding side is credited (`limit.binding`); a limit that
+   holds an indicative (no-trade) price counts as binding too. Price limits that
+   name the IOU or gold market (good IOU_GOOD / GOLD_GOOD) apply there as well.
 5. Settle through the ledger: buyer pays `base·(1+bPct)+bUnit` per unit,
    seller receives `base·(1−sPct)−sUnit`, the Treasury collects (or pays, if the
    rate is negative) the difference. Goods move between inventories.
@@ -451,8 +466,13 @@ that pay ¤5 per year each, forever). Seven primitives:
    the freight the Treasury pays them). Builders bid with it but plan on market
    prices (their demand follows their projects, not prices).
 4. **Limit** — legal bounds: max/min price of a good, min/max wage, max/min
-   rent, max loan rate, import/export/shipment quotas (0 = ban), minimum bank
-   reserve ratio, minimum bank capital ratio.
+   rent, max/min loan rate, import/export/shipment quotas (0 = ban), minimum bank
+   reserve ratio, and the bank's capital ratio (it *replaces* the standing 8 %
+   rule, higher or lower; the bank never goes below 2 % of its own accord).
+   Price limits may also name the IOU or gold market, and `priceMove` bounds how
+   far a price may move in a day: X of yesterday's price, up or down, for one good
+   or every good, one town or every town, or the IOU / gold market (0 holds the
+   price where it stands).
 5. **Window** — the rate the Treasury pays on the bank's reserves and the rate
    it charges when the bank borrows from it.
 6. **Build** — commission construction paid from the Purse: pave a road
@@ -576,6 +596,12 @@ Layout (dark, native-feeling on macOS, system font, tabular numerals):
   --warmup`): after the warm-up, unemployment mean 3–10 % and never above 20 %,
   every producer sector operating, CPI within ×0.7–×1.5, population ≥ 95 % of
   start with hunger < 5 %, carters ≲ 10 % of employment.
+* Limits beyond fixed price lines (experiments 15–17): 15. bread's price may
+  move at most 2 % a day → day-to-day bread price moves smaller, none above
+  2 %, shortages at the bound; 16. the bank's capital thinned (the Treasury takes
+  60 % of it) — a 3 % capital rule in place of the standing 8 % → looser
+  standards and more credit than under the standing rule; 17. a floor under loan
+  rates 3 points above today's → loan rates up, credit down.
 * Founding calibration (`world/init.ts`) is built to be close to the model's own
   steady state: prices include spoilage and BASE_MARKUP over marginal cost, route
   loads and part-load freight follow the traders' own dispatch history, founding

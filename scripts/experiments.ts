@@ -186,9 +186,14 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   fishQty: { label: 'fish bought by households/day', fn: (s) => L(s, 'cons_' + G.fish) },
   levyTake: { label: 'levy revenue ¤/day', fn: (s) => L(s, 'levyTake') },
   breadShort: { label: 'bread demand turned away/day', fn: (s) => L(s, 'shortage_' + G.bread) },
+  breadMove: { label: 'bread price move from the day before (mean over towns, |Δ|/p)', fn: (s) => meanOver(s.towns.map((t) => dayMove(mkt(s, t.id, G.bread)))) },
+  breadMoveMax: { label: 'largest bread price move from the day before (any town)', fn: (s) => Math.max(0, ...s.towns.map((t) => dayMove(mkt(s, t.id, G.bread)))) },
   hunger: { label: 'share of households hungry', fn: (s) => L(s, 'hunger') },
   unemp: { label: 'unemployment rate', fn: (s) => L(s, 'unemp') },
   credit: { label: 'bank credit', fn: (s) => L(s, 'credit') },
+  bankStance: { label: 'bank lending standards (stance, 0 loose … 1 tight)', fn: (s) => s.bank.stance },
+  capRatio: { label: 'bank capital ÷ loans', fn: (s) => L(s, 'capRatio') },
+  loanRate: { label: 'average loan rate', fn: (s) => L(s, 'loanRate') },
   inv: { label: 'investment ¤/day', fn: (s) => L(s, 'inv') },
   toolsPrice: { label: 'tools price (capital)', fn: (s, c) => mkt(s, c.capital, G.tools)?.ema ?? 0 },
   grainGap: { label: 'grain price gap farm↔capital', fn: (s, c) => Math.abs((mkt(s, c.capital, G.grain)?.ema ?? 0) - (mkt(s, c.farm, G.grain)?.ema ?? 0)) },
@@ -223,6 +228,15 @@ function meanOver(a: readonly number[]): number {
   return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 }
 
+/** |p_today / p_yesterday − 1| of a market's recorded daily (base) price. */
+function dayMove(m: SimState['markets'][number] | undefined): number {
+  const hs = m?.hist;
+  if (!hs || hs.length < 2) return 0;
+  const a = hs[hs.length - 2];
+  const b = hs[hs.length - 1];
+  return a > 0 && b > 0 ? Math.abs(b / a - 1) : 0;
+}
+
 function safe(f: () => number): number {
   try {
     const v = f();
@@ -246,7 +260,7 @@ interface Arm {
   hook?: (g: Game, c: Ctx, d: number) => void;
 }
 
-type CheckKind = 'up' | 'down' | 'notDown' | 'similar' | 'positive' | 'persistent';
+type CheckKind = 'up' | 'down' | 'notDown' | 'similar' | 'positive' | 'persistent' | 'atMost';
 
 interface Check {
   label: string;
@@ -260,7 +274,7 @@ interface Check {
   tol?: number;
   /** Absolute threshold on |Δ| for up/down (either this or tol must be met; used when the reference is ~0). */
   minAbs?: number;
-  /** persistent: share of days the metric exceeds `level` (default 0.8 of days, level 0). */
+  /** persistent: share of days the metric exceeds `level` (default 0.8 of days, level 0); atMost: every day ≤ level. */
   level?: number;
   /** Evaluation window for this check only (default: the experiment's). */
   window?: (days: number) => [number, number];
@@ -310,6 +324,11 @@ type LimitDraft = Omit<Limit, 'id' | 'created' | 'binding'>;
 function limit(p: Partial<LimitDraft>): LimitDraft {
   return { label: '', enabled: true, kind: 'priceMax', good: -1, town: -1, toTown: -1, value: 0, until: -1, ...p };
 }
+/** Take 60 % of the bank's own capital into the Purse (experiment 16, both arms). */
+function thinBank(g: Game): void {
+  const take = Math.round(0.6 * Math.max(0, g.s.bank.equity));
+  act(g, { type: 'transfer', group: 'bank', town: -1, amount: take, dir: -1 }, 'thin the bank');
+}
 
 const EXPERIMENTS: Experiment[] = [
   {
@@ -351,6 +370,17 @@ const EXPERIMENTS: Experiment[] = [
     ],
   },
   {
+    id: '15',
+    name: 'Bread price may move at most 2 % a day',
+    arms: [{ name: 'bread moves ≤ 2 %', setup: (g) => act(g, { type: 'addLimit', limit: limit({ kind: 'priceMove', good: G.bread, value: 0.02 }) }, 'move limit') }],
+    checks: [
+      { label: 'day-to-day bread price moves smaller', metric: 'breadMove', kind: 'down', tol: 0.15 },
+      { label: 'no move above 2 % on any day (whole run)', metric: 'breadMoveMax', kind: 'atMost', level: 0.02, window: (d) => [0, d] },
+      { label: 'shortages when it holds the price', metric: 'breadShort', kind: 'up', minAbs: 1 },
+    ],
+    show: ['breadGross', 'hunger'],
+  },
+  {
     id: '4',
     name: 'Wage floor far above market',
     arms: [{ name: 'floor 150 %', setup: (g, c) => act(g, { type: 'addLimit', limit: limit({ kind: 'wageMin', value: Math.round(1.5 * c.wage * 100) / 100 }) }, 'wage floor') }],
@@ -377,6 +407,50 @@ const EXPERIMENTS: Experiment[] = [
       { label: 'investment up', metric: 'inv', kind: 'up', tol: 0.03 },
     ],
     show: ['money', 'cpi', 'unemp'],
+  },
+  {
+    id: '16',
+    name: 'Capital requirement 3 % (the bank’s capital thinned)',
+    // A capital Limit replaces the standing 8 % rule. The founding bank holds some 15 % of its
+    // loans and lends as much as its borrowers can carry, so the rule only matters once its capital
+    // is scarce: both arms take 60 % of the bank's equity into the Purse on day 0 (to about 7 % of
+    // its loans, below the standing rule plus the headroom its standards demand). Under the standing
+    // rule it tightens its standards and lends less until retained profit rebuilds its capital; with
+    // a 3 % rule in its place it carries on lending.
+    arms: [
+      { name: 'capital thinned', setup: (g) => thinBank(g) },
+      {
+        name: 'thinned, 3 % rule',
+        setup: (g) => {
+          thinBank(g);
+          act(g, { type: 'addLimit', limit: limit({ kind: 'capitalMin', value: 0.03 }) }, 'capital rule');
+        },
+      },
+    ],
+    checks: [
+      { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.02, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
+      { label: 'lending standards looser', metric: 'bankStance', kind: 'down', tol: 0.1, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
+      { label: 'credit not below the untouched bank’s', metric: 'credit', kind: 'notDown', tol: 0.02, arm: 'thinned, 3 % rule' },
+    ],
+    show: ['capRatio', 'inv', 'unemp'],
+  },
+  {
+    id: '17',
+    name: 'A floor under loan rates 3 points above today’s',
+    arms: [
+      {
+        name: 'loan-rate floor',
+        setup: (g) => {
+          const r = Math.round(((g.s.stats.latest.loanRate ?? 0.07) + 0.03) * 1000) / 1000;
+          act(g, { type: 'addLimit', limit: limit({ kind: 'rateMin', value: r }) }, 'loan-rate floor');
+        },
+      },
+    ],
+    checks: [
+      { label: 'loan rates up', metric: 'loanRate', kind: 'up', tol: 0.1 },
+      { label: 'credit down', metric: 'credit', kind: 'down', tol: 0.01 },
+    ],
+    show: ['inv', 'money'],
   },
   {
     id: '6',
@@ -645,6 +719,21 @@ function judge(exp: Experiment, check: Check, res: Results): Verdict {
       }
       pass = n > 0 && hit / n >= 0.8;
       break;
+    }
+    case 'atMost': {
+      // every day of the window at or below the level (the reported value is the window's largest)
+      const lvl = check.level ?? 0;
+      const top = (x: readonly number[] | undefined): number => {
+        let t = -Infinity;
+        if (x) for (let i = Math.max(0, win[0]); i < Math.min(x.length, win[1]); i++) t = Math.max(t, x[i]);
+        return t;
+      };
+      const tA = top(A);
+      const tB = top(B);
+      pass = Number.isFinite(tA) && tA <= lvl + 1e-9;
+      const r0 = Number.isFinite(tB) ? tB : 0;
+      const v0 = Number.isFinite(tA) ? tA : 0;
+      return { exp, check, ref: r0, val: v0, delta: (v0 - r0) / Math.max(Math.abs(r0), 1e-9), pass, refName, armName };
     }
   }
   return { exp, check, ref, val, delta, pass, refName, armName };

@@ -321,7 +321,8 @@ function shortages(s: SimState): void {
       const share = demand > 1 ? fin(m.shortage) / demand : 0;
       c.shortStreak[i] = share >= EVENT_SHORTAGE_SHARE ? c.shortStreak[i] + 1 : 0;
       if (c.shortStreak[i] !== EVENT_SHORTAGE_DAYS || !cooled(s, 'short_' + i)) continue;
-      const cap = priceBounds(s, t, g).max;
+      // the day's legal ceiling (a fixed one, or how far the price was allowed to move)
+      const cap = m.curve && m.curve.ceiling >= 0 ? m.curve.ceiling : priceBounds(s, t, g).max;
       const atCap = cap >= 0 && m.price >= cap - 1e-9;
       const why = atCap ? ' At the price the law allows, there is not enough to go round.' : ' Sellers cannot keep up.';
       news(s, `${goodCap(g)} is running short in ${townName(s, t)}: for days now, buyers have been turned away from the market hall empty-handed.${why}`, 'bad', t);

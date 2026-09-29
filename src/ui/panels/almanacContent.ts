@@ -4,6 +4,10 @@
 //   paragraphs separated by blank lines; lines starting with "- " are bullets;
 //   **bold** and `code` are supported by the Almanac renderer.
 // ============================================================================
+import { BANK_MIN_CAPITAL, BANK_OWN_MIN_CAPITAL } from '../../sim/config';
+
+/** 0.08 → "8%" (the Almanac quotes the realm's standing rules from the sim's own constants). */
+const pct = (x: number): string => `${Math.round(x * 1000) / 10}%`;
 
 export interface AlmanacSection {
   title: string;
@@ -79,7 +83,11 @@ Because everyone else still trades at the auction price, a rule aimed at one tra
         title: 'Legal price lines',
         body: `A **Limit** on a price overrides the auction. If the price the market would find is above a legal ceiling, trade happens at the ceiling — but sellers bring only what they are willing to sell at that price, so buyers are rationed: everyone who bid at least the ceiling gets the same share of what is available. The unserved demand is reported as a shortage.
 
-A legal floor works the other way round: unsold goods pile up in the sellers' storehouses unless someone buys them.`,
+A legal floor works the other way round: unsold goods pile up in the sellers' storehouses unless someone buys them.
+
+A Limit can also say how far a price may **move in a day**: each morning the auction's ceiling and floor are set that share above and below the day before's price. Small moves pass untouched; a sudden jump is held back and the pressure shows instead as a shortage (or unsold goods) at the bound, the price creeping toward where the market wants it a step each day. A move of 0% holds the price where it stands. Fixed price lines still apply, and where the two disagree the fixed line prevails.
+
+Price lines and daily moves can also be set for the IOU and gold markets.`,
       },
       {
         title: 'Your orders in the market',
@@ -168,6 +176,14 @@ When you pay someone, their deposit grows and so do the bank's reserves. When yo
       {
         title: 'Lending creates money',
         body: `When the bank lends, it simply adds to the borrower's deposit — new money appears. When the loan is repaid, that money disappears again. How much the bank lends depends on what it pays for money (your window rates), on how safe borrowers look, on its own capital, and on how many loans have recently gone bad.`,
+      },
+      {
+        title: "The bank's capital and its rates",
+        body: `The bank must keep capital of its own — what it owns beyond what it owes its depositors — of at least **${pct(BANK_MIN_CAPITAL)}** of its loans. That is the realm's standing rule. A **Limit** on the bank's capital replaces it, higher or lower; the bank never lets its capital fall below **${pct(BANK_OWN_MIN_CAPITAL)}** of its loans of its own accord, whatever the Limit allows.
+
+A lower rule lets the bank lend more against the capital it has — but only when its capital has run thin, after losses. A bank with capital to spare lends as much as its borrowers can carry either way.
+
+A Limit can cap the bank's loan rates (it then turns away the borrowers it would charge more) or put a floor under them (every loan then costs at least that much, so even its safest borrowers pay more and borrow less).`,
       },
       {
         title: 'The window',
