@@ -473,6 +473,23 @@ export const ROAD_INVALIDATE_TILES = 5;
  * sides, draining marsh.
  */
 export const TRACK_CLEAR_FACTOR: readonly number[] = [0, 0, 1.2, 1, 2.2, 1.8, 4, 2.6];
+
+// ---- which town a building belongs to (world/belonging.ts) ----
+/** Tiles beyond a town's settlement radius that still count as the town itself (rule 1: closeness decides). */
+export const BELONG_CORE = 1.5;
+/** Closeness score exp(−(d − radius)/BELONG_NEAR_TILES). */
+export const BELONG_NEAR_TILES = 7;
+/** Road-link score exp(−days/BELONG_ROAD_DAYS) of travel from the door to the centre. */
+export const BELONG_ROAD_DAYS = 0.6;
+/** Weights of the scores: closeness, road link, where its people live, where its owner lives. */
+export const BELONG_W_NEAR = 0.45;
+export const BELONG_W_ROAD = 0.3;
+export const BELONG_W_WORKERS = 0.17;
+export const BELONG_W_OWNER = 0.08;
+/** The town a building belongs to now keeps this much in hand (no flapping between two). */
+export const BELONG_STICK = 0.06;
+/** A district reaches this many steps out from its outermost buildings (borders grow with them). */
+export const DISTRICT_BUILDING_REACH = 5;
 /** Finished/cancelled projects kept in s.projects for the UI (most recent). */
 export const PROJECT_KEEP_DONE = 24;
 
@@ -966,3 +983,9 @@ export const ORDER_ANY_BUDGET_MULT = 1.5;
 export const AIM_SMOOTH = 0.35; // share of the gap to the rate that would hit the aim (at yesterday's auction price) closed each morning
 export const AIM_MAX_DEFAULT = 0.5; // default ceiling on an aimed rate
 export const AIM_MAX_CAP = 0.9; // highest ceiling a player may set
+
+// ---- where private ventures go (agents/sites.ts) ----
+/** A venture on a natural resource looks this far from its town's centre (tiles) — belonging decides what counts. */
+export const VENTURE_REACH = 30;
+/** Years a dirt track is written off over when a venture weighs building one (its yearly cost = rate + 1/life). */
+export const TRACK_LIFE_YEARS = 25;

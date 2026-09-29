@@ -24,6 +24,7 @@ import { bankBeginDay, bankOrders, bankEndDay } from './agents/bank';
 import { beginDayStats, statsStep } from './stats/stats';
 import { beginDayEvents, eventsStep } from './stats/events';
 import { foldFlows } from './stats/flows';
+import { townsStep } from './world/belonging';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -67,6 +68,7 @@ export function stepDay(s: SimState): void {
   bankEndDay(s);
   stockLevies(s);
   entryStep(s);
+  townsStep(s); // (monthly) settlement radii, which town each building belongs to, districts
   demographyStep(s);
   foreignEndDay(s);
   spoilage(s);

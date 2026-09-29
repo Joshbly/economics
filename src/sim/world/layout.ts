@@ -179,6 +179,11 @@ function footprintOk(s: SimState, what: SiteWhat, x: number, y: number): boolean
   return access && touchesLand;
 }
 
+/** The footprint rules alone (free, the right ground, a way in), wherever it is: for sites chosen on their merits (agents/sites.ts). */
+export function siteFits(s: SimState, what: SiteWhat, x: number, y: number): boolean {
+  return footprintOk(s, what, x, y);
+}
+
 /** Distance from the town centre to the footprint centre. */
 function distTo(s: SimState, what: SiteWhat, town: TownId, x: number, y: number): number {
   const t = s.towns[town];
@@ -332,8 +337,8 @@ export function layTrack(s: SimState, tiles: readonly number[]): number {
   return changed;
 }
 
-/** The open tile next to a building from which its track starts ("the door"), or -1. */
-export function doorTile(s: SimState, b: Building): number {
+/** The open tile next to a building (or a planned footprint) from which its track starts ("the door"), or -1. */
+export function doorTile(s: SimState, b: Pick<Building, 'x' | 'y' | 'w' | 'h' | 'town'>): number {
   const m = s.map;
   const t = s.towns[b.town];
   const tx = t ? t.x : b.x;
@@ -359,6 +364,21 @@ export function doorTile(s: SimState, b: Building): number {
     }
   }
   return best;
+}
+
+/**
+ * The dirt track a building (or a planned footprint) needs to reach the road network: the
+ * tiles from its door to the nearest existing road that are not road yet ([] when the door
+ * is on a road; just the door when no way is found within reach).
+ */
+export function accessTrack(s: SimState, b: Pick<Building, 'x' | 'y' | 'w' | 'h' | 'town'>): number[] {
+  const door = doorTile(s, b);
+  if (door < 0) return [];
+  const m = s.map;
+  if (m.road[door] >= 1) return [];
+  const path = planTrack(s, door, -1, 600);
+  const tiles = (path.length ? path : [door]).filter((i) => m.road[i] < 1 && m.occ[i] < 0 && !isWaterT(m.terrain[i]));
+  return tiles;
 }
 
 /**

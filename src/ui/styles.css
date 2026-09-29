@@ -761,11 +761,14 @@ button.kpi:hover, .kpi.has-hint:hover { border-color: var(--line-2); }
 .ind:hover { background: rgba(236, 224, 199, 0.035); }
 .ind-lab { font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); }
 .ind-row { display: flex; align-items: baseline; gap: 5px; }
-.ind-val { font-size: 13.5px; font-weight: 600; color: var(--ink-0); font-variant-numeric: tabular-nums; letter-spacing: -0.005em; }
+.ind-val,
+.ind-val-room { font-size: 13.5px; font-weight: 600; color: var(--ink-0); font-variant-numeric: tabular-nums; letter-spacing: -0.005em; }
 .ind-val.bad { color: var(--bad); }
 .ind-val.warn { color: var(--warn); }
-.ind-delta { font-size: 10.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.ind-delta .arr { font-size: 7.5px; margin-right: 2px; vertical-align: 1px; }
+.ind-delta,
+.ind-delta-room { font-size: 10.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.ind-delta .arr,
+.ind-delta-room .arr { font-size: 7.5px; margin-right: 2px; vertical-align: 1px; }
 .ind-delta.good { color: var(--good); }
 .ind-delta.bad { color: var(--bad); }
 
@@ -1168,7 +1171,8 @@ button.kpi:hover, .kpi.has-hint:hover { border-color: var(--line-2); }
 @media (min-width: 1800px) {
   :root { --topbar-h: 50px; }
   .ind { padding: 0 14px; }
-  .ind-val { font-size: 14px; }
+  .ind-val,
+  .ind-val-room { font-size: 14px; }
 }
 
 /* ---------- welcome (first run) ------------------------------------------------ */

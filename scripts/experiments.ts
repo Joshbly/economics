@@ -22,6 +22,7 @@
 import { TREASURY_FREIGHT_PREMIUM, WARMUP_DAYS } from '../src/sim/config';
 import { freightPerUnit } from '../src/sim/agents/traders';
 import { G, GOODS, N_GOODS, TRADABLE_GOODS } from '../src/sim/goods';
+import { seedRng } from '../src/sim/rng';
 import { Game } from '../src/sim/game';
 import { takeHomeWage } from '../src/sim/stats/stats';
 import { expectedGrossFor } from '../src/sim/market/markets';
@@ -329,6 +330,12 @@ interface Experiment {
   checks: Check[];
   /** Extra metrics shown with --verbose. */
   show?: string[];
+  /**
+   * Run each arm this many times from the same state, the k-th run of every arm with the same
+   * reseeded random stream (common random numbers), and judge the mean path: for comparisons
+   * between arms that are close by design, where one path of a chaotic economy is a coin flip.
+   */
+  replicas?: number;
   note?: (res: Results, c: Ctx) => string;
 }
 
@@ -558,8 +565,11 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '10',
     name: 'Wage levy on workers vs on employers (incidence)',
-    // Long-run equivalence: wages are slow to fall, so give them several years.
+    // Long-run equivalence: wages are slow to fall, so give them several years; the two arms
+    // differ only in who hands the levy over, so one path each is a coin flip at 5 % — judge the
+    // mean of three runs with common random numbers.
     days: (o) => Math.max(o.days, 1440),
+    replicas: 3,
     arms: [
       // Both arms hand the revenue back as the same per-head payment, so the only
       // difference between them is who hands the levy over (not how much money leaves circulation).
@@ -727,8 +737,9 @@ interface Results {
   arms: Record<string, Record<string, number[]>>;
 }
 
-function runArm(json: string, c: Ctx, arm: Arm | null, days: number, metrics: string[], label: string, verbose: boolean): Record<string, number[]> {
+function runArm(json: string, c: Ctx, arm: Arm | null, days: number, metrics: string[], label: string, verbose: boolean, replica = 0): Record<string, number[]> {
   const g = Game.load(json);
+  if (replica > 0) g.s.rng = seedRng((g.s.seed * 1_000_003 + replica * 7919) >>> 0);
   const out: Record<string, number[]> = {};
   for (const k of metrics) out[k] = [];
   const t0 = performance.now();
@@ -887,7 +898,11 @@ function main(): void {
     console.error(`[${exp.id}] ${exp.name}`);
     for (const arm of exp.arms) {
       try {
-        res.arms[arm.name] = runArm(json, ctx, arm, days, metrics, arm.name, true);
+        const R = Math.max(1, exp.replicas ?? 1);
+        const runs = Array.from({ length: R }, (_, k) => runArm(json, ctx, arm, days, metrics, R > 1 ? `${arm.name} (run ${k + 1}/${R})` : arm.name, true, k));
+        const mean: Record<string, number[]> = {};
+        for (const m of metrics) mean[m] = runs[0][m].map((_, d) => runs.reduce((a, r) => a + (r[m][d] ?? 0), 0) / R);
+        res.arms[arm.name] = mean;
       } catch (e) {
         console.error(`  ${arm.name}: FAILED TO RUN — ${e instanceof Error ? e.message : String(e)}`);
         res.arms[arm.name] = {};

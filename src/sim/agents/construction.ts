@@ -66,7 +66,7 @@ import { news } from '../stats/events';
 import type { Building, Firm, MapData, Materials, Project, ProjectKind, Ref, Sector, SimState, TownId } from '../types';
 import { STATE, Terrain } from '../types';
 import { clamp, fin, shareOut } from '../util';
-import { findSite, isValidSite, placeBuilding, removeBuilding } from '../world/layout';
+import { accessTrack, findSite, isValidSite, placeBuilding, removeBuilding, siteFits } from '../world/layout';
 import { createFirm, defaultWage, fairPrice, firmDailyCost, noteFirmCosts, noteShortfall, strikeFactor, townGrossPrices, typicalDailyCost, workforceEff } from './firms';
 import { hasLevyBase } from './labor';
 import { materialsValue, toolFactor } from './production';
@@ -83,6 +83,8 @@ export interface ProjectSpec {
   tiles?: number[]; // road tiles
   /** Road: 1 = a dirt track, 2 = paving (the default). */
   grade?: 1 | 2;
+  /** A site (x, y) chosen on its merits anywhere (agents/sites.ts): only the footprint rules apply, not the distance from the town. */
+  anywhere?: boolean;
   loan?: number;
   label?: string;
 }
@@ -644,6 +646,7 @@ function complete(s: SimState, b: Firm | undefined, p: Project): void {
   }
   const bld: Building | undefined = p.building >= 0 ? s.buildings[p.building] : undefined;
   const tn = townName(s, p.town);
+  layAccess(s, p);
   switch (p.kind) {
     case 'firm':
     case 'reopen': {
@@ -927,6 +930,14 @@ export function builderOrders(s: SimState, books: Books): void {
 // ---------------------------------------------------------------------------
 
 /** Is an explicit site acceptable? Uses the layout's shared site rules; falls back to a free-footprint check. */
+function safeFits(s: SimState, what: Sector, x: number, y: number): boolean {
+  try {
+    return siteFits(s, what, x, y);
+  } catch {
+    return false;
+  }
+}
+
 function siteOk(s: SimState, what: Sector | 'house' | 'pier', x: number, y: number, town: TownId, w: number, h: number): boolean {
   try {
     return !!isValidSite(s, what, x, y, town);
@@ -1006,13 +1017,14 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       const [w, h] = SECTORS[sec].footprint;
       let xy: { x: number; y: number } | null = null;
       if (spec.x !== undefined && spec.y !== undefined) {
-        if (!siteOk(s, sec, spec.x, spec.y, town, w, h)) return `A ${SECTORS[sec].name} cannot be built on that spot.`;
+        if (!(spec.anywhere ? safeFits(s, sec, spec.x, spec.y) : siteOk(s, sec, spec.x, spec.y, town, w, h))) return `A ${SECTORS[sec].name} cannot be built on that spot.`;
         xy = { x: spec.x, y: spec.y };
       } else xy = safeFindSite(s, sec, town);
       if (!xy) return `No free site for a ${SECTORS[sec].name} near ${townName(s, town)}.`;
       const bld = safePlace(s, 'firm', sec, town, xy.x, xy.y);
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
+      tiles = safeAccess(s, bld);
       break;
     }
     case 'house':
@@ -1027,6 +1039,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       const bld = safePlace(s, kind === 'house' ? 'house' : 'port', '', town, xy.x, xy.y);
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
+      tiles = safeAccess(s, bld);
       break;
     }
     case 'expand': {
@@ -1062,7 +1075,8 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       return 'Unknown kind of construction.';
   }
   const label = spec.label || defaultLabel(s, spec);
-  const need = kind === 'road' ? roadNeed(s, tiles, spec.grade === 1 ? 1 : 2) : projectNeed(kind, sector, tiles.length);
+  // a new building's need includes its access track (tiles, grade 1)
+  const need = kind === 'road' ? roadNeed(s, tiles, spec.grade === 1 ? 1 : 2) : addM(projectNeed(kind, sector, 0), roadNeed(s, tiles, 1));
   const p = newProjectRecord(s, kind, town, spec.owner, b.id, label);
   if (kind === 'road' && spec.grade === 1) p.grade = 1;
   p.sector = sector;
@@ -1084,6 +1098,32 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
   return p;
 }
 
+function safeAccess(s: SimState, b: Building): number[] {
+  try {
+    return accessTrack(s, b);
+  } catch {
+    return [];
+  }
+}
+
+function addM(a: Materials, b: Materials): Materials {
+  return { labor: a.labor + b.labor, wood: a.wood + b.wood, iron: a.iron + b.iron, tools: a.tools + b.tools };
+}
+
+/** A finished building's access track: its tiles become dirt track (where still open ground). */
+function layAccess(s: SimState, p: Project): void {
+  if (p.kind === 'road' || !p.tiles?.length) return;
+  const m = s.map;
+  let laid = 0;
+  for (const i of p.tiles) {
+    if (i >= 0 && i < m.road.length && m.road[i] < 1 && m.occ[i] < 0 && m.terrain[i] !== Terrain.Water && m.terrain[i] !== Terrain.DeepWater) {
+      m.road[i] = 1;
+      laid++;
+    }
+  }
+  if (laid) invalidateRoutes(s);
+}
+
 function safeFindSite(s: SimState, what: Sector | 'house' | 'pier', town: TownId): { x: number; y: number } | null {
   try {
     const r = findSite(s, what, town);
@@ -1095,7 +1135,8 @@ function safeFindSite(s: SimState, what: Sector | 'house' | 'pier', town: TownId
 
 function safePlace(s: SimState, kind: Building['kind'], sector: Sector | '', town: TownId, x: number, y: number): Building | null {
   try {
-    const b = placeBuilding(s, kind, sector, town, x, y, 'construction');
+    // no free track: the builders lay the access track as part of the works (accessTrack)
+    const b = placeBuilding(s, kind, sector, town, x, y, 'construction', { connect: false });
     return b && b.id >= 0 && s.buildings[b.id] === b ? b : null;
   } catch {
     return null;
@@ -1174,6 +1215,12 @@ export function cancelProject(s: SimState, id: number): boolean {
 export function estimateCost(s: SimState, kind: ProjectKind, town: TownId, sector?: Sector, tiles?: number): number {
   if (!(town >= 0 && town < s.towns.length)) return 0;
   return needCost(s, town, projectNeed(kind, sector ?? '', tiles ?? 0));
+}
+
+/** What a project's access track (the tiles of a new building's track to the road) costs today; 0 for roads and works on standing buildings. */
+export function accessCost(s: SimState, p: Project): number {
+  if (p.kind === 'road' || !p.tiles?.length) return 0;
+  return needCost(s, p.town, roadNeed(s, p.tiles, 1));
 }
 
 /** What `need` would cost built by `town`'s builders at today's prices and wages. */

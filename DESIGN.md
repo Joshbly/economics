@@ -69,6 +69,26 @@ Each town has a **Market Hall** at its centre. Every town has one market per
 good (a daily call auction). The IOU market and the Gold market are national.
 Every town also has a Builders' Yard and a Trading House.
 
+**Which town a building belongs to** (`world/belonging.ts`) — whose market its
+workshop trades in and its households shop in — follows a hierarchy of rules:
+1. inside a town's built-up core (its settlement radius + BELONG_CORE tiles):
+   that town, however the roads run (the nearer if two cores overlap);
+2. otherwise the best score over the towns: closeness
+   (BELONG_W_NEAR × exp(−(d − radius)/BELONG_NEAR_TILES)), the road link
+   (BELONG_W_ROAD × exp(−days/BELONG_ROAD_DAYS), travel days from its door to the
+   centre: townReach, a Dijkstra per town over the roads and open country, cached
+   until roads change), where its people live (BELONG_W_WORKERS × the share of a
+   workshop's workers living there; for a house, of its residents working there)
+   and where its owner lives (BELONG_W_OWNER); the town it belongs to now keeps
+   BELONG_STICK in hand, so nothing flaps between two towns.
+Monthly (`townsStep`, after entry) settlement radii are measured again (towns grow
+as they build outward), buildings are reassigned — a workshop that moves trades in
+its new town's market (its price expectation starts half-way to the new market's),
+a house's households shop there — and the districts are redrawn: a town's core,
+else the town of the nearest standing building within DISTRICT_BUILDING_REACH
+steps, else the nearest centre within DISTRICT_REACH. Borders grow with the
+buildings, and the map draws them. A new world is settled quietly (settleTowns).
+
 ### 1.3 Roads & movement
 Towns are joined by dirt tracks generated with A* over terrain costs. Every
 building is connected to its town centre by a local track. People walk to work
@@ -263,6 +283,21 @@ dividends to their owner, invest, and can go bankrupt.
   its share of the trade's sales plus unmet demand (so a town that buys two sets
   of tools a day gets no second toolworks, however well the first one does).
   Developers build houses when rent yields beat loan rate + hurdle.
+  **Where** (`agents/sites.ts`): a workshop on a natural resource looks at every
+  free site of the right ground within VENTURE_REACH of its town's centre that
+  would count as the town's own (belonging), and values each a year ahead —
+  output × (net price − materials − tool cost) at the site's richness
+  (0.6 + 0.8·quality), less its hands' walk beyond the town (wage ×
+  COMMUTE_COST_PER_TILE a tile), less its dirt track to the nearest road × (rate +
+  1/TRACK_LIFE_YEARS) (clearing by terrain, bridges over rivers: a Dijkstra from
+  every road tile) — with a jitter of a few per cent for the investor's judgement.
+  The expected return scales with the site against an average one close to town
+  (`rel`, 0.3…2) and counts the track as more capital; below the hurdle, no venture.
+  Town trades keep their sites near the centre. **Every new building's access
+  track is part of its works** (construction: accessTrack, door → nearest road;
+  its materials in the project's need, laid when the building is finished; the
+  financing covers it). Why screened ventures do not happen is counted
+  (`entry_miss_nosite / site / noowner / finance`): mostly nobody holds the equity.
 
 ### 3.3 Builders (construction)
 One Builders' Yard firm per town with a project queue. A project needs
@@ -697,6 +732,7 @@ firmsEndDay         accounting, expectations, loan requests, dividends, bankrupt
 bankEndDay          loan decisions, dividends, capital check, failure
 stockLevies         money/goods/head/building levies
 entryStep           (monthly) new firms, expansions, houses
+townsStep           (monthly) settlement radii, each building's town by the rules, districts (world/belonging.ts)
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance
 spoilage            perishables decay everywhere (stores, pantries, cargo on the road)

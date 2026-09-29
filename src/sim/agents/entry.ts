@@ -69,12 +69,13 @@ import { expectedGrossFor, expectedNetFor, marketOf } from '../market/markets';
 import { employerWageCost } from '../policy/levies';
 import { chance, rand } from '../rng';
 import { news } from '../stats/events';
+import { rt } from '../runtime';
 import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownId } from '../types';
 import { STATE } from '../types';
 import { fin } from '../util';
-import { findSite } from '../world/layout';
 import { quoted, quoteRate, requestLoan } from './bank';
-import { builderFor, estimateCost, startProject, cancelProject, type ProjectSpec } from './construction';
+import { accessCost, builderFor, estimateCost, startProject, cancelProject, type ProjectSpec } from './construction';
+import { ventureSite, type VentureSite } from './sites';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
 import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
 
@@ -106,7 +107,7 @@ function financing(kind: Project['kind'], owner: Ref): { purpose: LoanPurpose; t
 }
 
 /** Annual rate used to screen investments before a borrower is chosen. */
-function screenRate(s: SimState): number {
+export function screenRate(s: SimState): number {
   const q = quoteRate(s, -1, 0);
   const base = fin(s.bank.baseRate, 0.045) + ENTRY_SCREEN_SPREAD;
   return quoted(q) ? Math.max(q, fin(s.bank.depositRate, 0)) : base;
@@ -146,7 +147,7 @@ export function settleFinancing(s: SimState): void {
         continue;
       }
       // Advance everything the owner can spare, at least the loan itself, up to the project's needs.
-      const total = Math.max(projectTotal(s, p.kind, p.town, p.sector), fin(p.loanWanted));
+      const total = Math.max(projectTotal(s, p.kind, p.town, p.sector) + accessCost(s, p), fin(p.loanWanted));
       const avail = p.owner === STATE ? cashOf(s, STATE) : Math.max(investableCash(s, p.owner), Math.min(fin(p.loanWanted), cashOf(s, p.owner)));
       const amt = Math.min(total, avail);
       const paid = amt > 0 ? pay(s, p.owner, firmRef(b.id), amt, 'asset') : 0;
@@ -158,7 +159,7 @@ export function settleFinancing(s: SimState): void {
     if ((age >= 1 && !pending.has(p.id)) || age > FINANCING_WAIT_DAYS) {
       // Refused: an owner who can pay for the whole works goes ahead on their own means.
       const b = s.firms[p.builder];
-      const need = projectTotal(s, p.kind, p.town, p.sector);
+      const need = projectTotal(s, p.kind, p.town, p.sector) + accessCost(s, p);
       if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner) >= need) {
         p.prepaid = fin(p.prepaid) + pay(s, p.owner, firmRef(b.id), need, 'asset');
         p.loanWanted = 0;
@@ -176,7 +177,7 @@ export function settleFinancing(s: SimState): void {
 // Monthly: signals
 // ---------------------------------------------------------------------------
 
-interface SectorSignal {
+export interface SectorSignal {
   roc: number; // expected annual return on replacement capital
   capFirm: Firm | null; // profitable firm at capacity (expansion candidate)
   vacant: Building | null; // vacant building of the trade (reopening candidate)
@@ -217,7 +218,7 @@ function entrantAnnualProfit(s: SimState, town: TownId, sector: Sector, q: numbe
   return (q * (pNet - mc - tc) - n * employerWageCost(s, town, sector, defaultWage(s, town))) * DAYS_PER_YEAR;
 }
 
-function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {
+export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {
   const d = SECTORS[sector];
   const capital = projectTotal(s, 'firm', town, sector);
   if (!(capital > 0)) return null;
@@ -383,11 +384,14 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   const r = startProject(s, spec);
   if (typeof r === 'string') return false;
   const { purpose, term } = financing(spec.kind, owner);
+  // the access track to the road is part of the works: the bank's share grows with it
+  const track = accessCost(s, r);
   if (loan > 0) {
+    loan += track * (loan / total);
     r.loanWanted = loan;
     requestLoan(s, { borrower: owner, amount: loan, term, purpose, project: r.id });
   } else {
-    const paid = pay(s, owner, firmRef(r.builder), Math.min(total, free), 'asset');
+    const paid = pay(s, owner, firmRef(r.builder), Math.min(total + track, free), 'asset');
     r.prepaid = fin(r.prepaid) + paid;
   }
   return true;
@@ -433,17 +437,21 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
       if (launch(s, { kind: 'expand', town, owner, sector, building: f.building, label: `Enlarging ${f.name}` }, total, roc, ENTRY_HURDLE)) return true;
     }
   }
-  let site: { x: number; y: number } | null = null;
+  // Where: the best site on its merits (agents/sites.ts) — its richness and its workers' walk
+  // against the trade's average site, and its track to the road as more capital.
+  let site: VentureSite | null = null;
   try {
-    site = findSite(s, sector, town);
+    site = ventureSite(s, sector, town);
   } catch {
     site = null;
   }
-  if (!site) return false;
+  if (!site) return miss(s, 'nosite');
   const total = projectTotal(s, 'firm', town, sector);
-  const owner = pickEntrepreneur(s, town, ENTRY_OWNER_EQUITY * total);
-  if (owner === null) return false;
-  return launch(s, { kind: 'firm', town, owner, sector, x: site.x, y: site.y, label: `New ${d.name} in ${tn}` }, total, c.roc, ENTRY_HURDLE);
+  const roc = c.roc * site.rel * (total / Math.max(1, total + site.accessCost));
+  if (!(roc > c.req)) return miss(s, 'site');
+  const owner = pickEntrepreneur(s, town, ENTRY_OWNER_EQUITY * (total + site.accessCost));
+  if (owner === null) return miss(s, 'noowner');
+  return launch(s, { kind: 'firm', town, owner, sector, x: site.x, y: site.y, anywhere: true, label: `New ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE) || miss(s, 'finance');
 }
 
 /**
@@ -490,6 +498,12 @@ function voluntaryExit(s: SimState): void {
       closeFirm(s, f, 'unprofitable');
     }
   }
+}
+
+/** A venture that passed the screen but did not happen, and why (stats: entry_miss_*). */
+function miss(s: SimState, why: 'nosite' | 'site' | 'noowner' | 'finance'): false {
+  bump(s, 'entry_miss_' + why);
+  return false;
 }
 
 function bump(s: SimState, key: string, v = 1): void {
@@ -545,7 +559,10 @@ export function entryStep(s: SimState): void {
       if (budget <= 0) break;
       const prob = Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * c.rel);
       if (!chance(s, prob)) continue;
-      if (tryCandidate(s, t, c)) {
+      const ok = tryCandidate(s, t, c);
+      const trace = rt(s).bag.entryTrace;
+      if (Array.isArray(trace)) trace.push({ day: s.day, town: t, sector: c.sector ?? 'house', roc: c.roc, req: c.req, ok });
+      if (ok) {
         budget--;
         bump(s, 'entry_projects');
       }

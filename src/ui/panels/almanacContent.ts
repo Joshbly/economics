@@ -223,6 +223,12 @@ Nothing stops at zero. If reserves earn less than nothing, the bank passes it on
     title: 'Shipping and the outside world',
     sections: [
       {
+        title: 'Towns and their borders',
+        body: `Every workshop and house counts as part of one town: it sells in that town's market, and its households shop there. What decides it, in order: a building within a town itself belongs to that town, however its track runs. Further out, closeness counts most, then how quickly its road reaches each town, then where its workers live (for a house, where its people work), then where its owner lives. The rules are looked at again at the turn of every month, so a farm whose workers all come from the next town may come to count as that town's. Towns grow as they build outward, and their borders — the dashed lines on the map — follow their outermost buildings.
+
+Someone opening a farm, a mine, a camp or a fishery looks all around the town for the best ground: richer seams and better fishing yield more, but workers must be paid for a longer walk, and the builders must lay a track to the nearest road — through forest, up hills or over a river it costs more. A capital near the coast can open its own fishery, if the fishing is good enough and the walk short enough. Only ground that would count as the town's own is considered.`,
+      },
+      {
         title: 'Traders and wagons',
         body: `Every town has a trading house with wagons and carters. When a good is cheap in one town and dear in another by more than it costs to haul it, traders buy, load and ship it. Hauling costs the carters' wages, the oil the wagons burn, and wear on the wagons. Paved roads make wagons faster and hauling cheaper.
 

@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/sim/world/layout', async () => {
   const factory = await import('../src/sim/factory');
+  const actual = await vi.importActual<typeof import('../src/sim/world/layout')>('../src/sim/world/layout');
   let nx = 20;
   return {
+    ...actual,
+    accessTrack: () => [],
+    siteFits: () => true,
     findSite: () => ({ x: nx++, y: 20 }),
     isValidSite: () => true,
     placeBuilding: (s: any, kind: any, sector: any, town: number, x: number, y: number, status: any) => {

@@ -28,6 +28,21 @@ import {
   type MiniRow,
 } from './common';
 import { hero, linkList, statStrip, statTile, type View } from './kit';
+import { belongingOf, belongingReason } from '../../../sim/world/belonging';
+import type { Building } from '../../../sim/types';
+
+/** "It belongs to X: it is nearest X; …" — and, if the rules now point elsewhere, when it moves. */
+export function belongText(s: SimState, b: Building): string {
+  let why = '';
+  let to = b.town;
+  try {
+    why = belongingReason(s, b);
+    to = belongingOf(s, b);
+  } catch {
+    return s.towns[b.town]?.name ?? '';
+  }
+  return to !== b.town && s.towns[to] ? `${why} It will count as ${s.towns[to].name}’s at the turn of the month.` : why;
+}
 
 const RING = 180;
 const ring = { id: -1, day: -1, out: [] as number[], cash: [] as number[], price: [] as number[] };
@@ -87,6 +102,7 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
   const rVac = wf.row('Unfilled posts', 'Days in a row it has had posts nobody took');
   const rToday = wf.row('Today');
   const rTools = wf.row('Tools', 'Tools held vs tools needed for every worker to work at full pace');
+  const rTown = wf.row('Belongs to', 'The town it counts as part of — whose market it sells in: its closeness to the town above all, then the road to it, where its workers live and where its owner lives (looked at again at every turn of the month)');
 
   // ---- production ----
   const pr = kvBlock();
@@ -232,6 +248,9 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
     rWage.text(fmtPrice(f.wage) + ' / day');
     rVac.text(f.vacancyDays > 0 ? `${fmtInt(f.vacancyDays)} ${f.vacancyDays === 1 ? 'day' : 'days'}` : 'none', f.vacancyDays > 10 ? 'warn' : undefined);
     rToday.text(`hired ${fmtInt(f.hired)} · let go ${fmtInt(f.fired)}`);
+    const bld = f.building >= 0 ? s.buildings[f.building] : undefined;
+    rTown.show(!!bld);
+    if (bld) rTown.text(belongText(s, bld));
     const tpw = def?.toolsPerWorker ?? 0;
     const need = tpw * f.workers.length;
     rTools.show(tpw > 0);

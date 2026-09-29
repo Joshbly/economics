@@ -160,6 +160,7 @@ import { initStats } from '../stats/stats';
 import { STATE, BANK, type Building, type CurveSnapshot, type Firm, type Person, type Sector, type SimState, type TownId, type TownKind } from '../types';
 import { clamp, ema, fin } from '../util';
 import { generateMap, type TownSite } from './mapgen';
+import { settleTowns } from './belonging';
 import {
   computeDistricts,
   connectBuilding,
@@ -1737,8 +1738,8 @@ export function createWorld(opts: WorldOptions): SimState {
   reconcileBank(s);
 
   // ---- towns' derived fields, districts ------------------------------------------------------------------
-  for (const t of s.towns) updateTownRadius(s, t.id);
-  computeDistricts(s);
+  // (every building's town by the rules of world/belonging.ts, radii and districts — quietly)
+  settleTowns(s);
   for (const t of s.towns) {
     const ppl = s.people.filter((p) => p.town === t.id);
     t.pop = ppl.length;

@@ -315,7 +315,8 @@ export function createTopbar(actions: TopbarActions): Topbar {
     const arr = h('span', { class: 'arr' });
     const dtxt = h('span');
     const delta = h('span', { class: 'ind-delta' }, arr, dtxt);
-    const room = h('span', { class: 'ind-row tb-ghost', 'aria-hidden': 'true' }, h('span', { class: 'ind-val' }, def.room[0]), h('span', { class: 'ind-delta' }, h('span', { class: 'arr' }, '▲'), def.room[1]));
+    // (its own class names, so nothing that reads the indicator finds the hidden copy)
+    const room = h('span', { class: 'ind-row tb-ghost', 'aria-hidden': 'true' }, h('span', { class: 'ind-val-room' }, def.room[0]), h('span', { class: 'ind-delta-room' }, h('span', { class: 'arr' }, '▲'), def.room[1]));
     const el = h(
       'button',
       { class: 'ind', type: 'button', 'aria-label': def.title, onClick: () => setTab('charts') },

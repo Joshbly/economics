@@ -897,6 +897,49 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
   }
 
   // ---------------------------------------------------------------------------
+  // Town borders: a faint line wherever the district changes (they grow with the towns'
+  // buildings; recomputed at the turn of each month, world/belonging.ts)
+  // ---------------------------------------------------------------------------
+  let bdKey = '';
+  let bdEdges: Float32Array | null = null;
+
+  function drawBorders(s: SimState, v: View): void {
+    const m = s.map;
+    const key = `${(rt(s).bag.districtVersion as number) ?? 0}|${m.w}x${m.h}|${s.day >> 5}`;
+    if (key !== bdKey) {
+      bdKey = key;
+      const e: number[] = [];
+      const d = m.district;
+      const land = (i: number) => m.terrain[i] !== Terrain.Water && m.terrain[i] !== Terrain.DeepWater;
+      for (let y = 0; y < m.h; y++)
+        for (let x = 0; x < m.w; x++) {
+          const i = y * m.w + x;
+          if (x + 1 < m.w && d[i] !== d[i + 1] && (land(i) || land(i + 1)) && (d[i] >= 0 || d[i + 1] >= 0)) e.push(x + 1, y, x + 1, y + 1);
+          if (y + 1 < m.h && d[i] !== d[i + m.w] && (land(i) || land(i + m.w)) && (d[i] >= 0 || d[i + m.w] >= 0)) e.push(x, y + 1, x + 1, y + 1);
+        }
+      bdEdges = Float32Array.from(e);
+    }
+    const e = bdEdges;
+    if (!e || !e.length) return;
+    const k = v.k;
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < e.length; i += 4) {
+      ctx.moveTo(v.ox + e[i] * k, v.oy + e[i + 1] * k);
+      ctx.lineTo(v.ox + e[i + 2] * k, v.oy + e[i + 3] * k);
+    }
+    ctx.strokeStyle = 'rgba(20,16,10,0.35)';
+    ctx.lineWidth = Math.max(2.4 * v.dpr, 0.16 * k);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(250,228,170,0.62)';
+    ctx.lineWidth = Math.max(1.1 * v.dpr, 0.07 * k);
+    ctx.setLineDash([Math.max(3 * v.dpr, 0.4 * k), Math.max(2.5 * v.dpr, 0.28 * k)]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------------
   // Drawing a road: first click where it starts, then the planned way follows the pointer
   // (with its length and cost); the second click commissions it.
   // ---------------------------------------------------------------------------
@@ -1341,6 +1384,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
       ctx.drawImage(ovTint, v.ox, v.oy, s.map.w * k, s.map.h * k);
       ctx.restore();
     }
+    if (!skip.borders) drawBorders(s, v);
     drawPlacementArea(s, v);
     drawRoadWorks(s, v);
     drawRoadPlan(s, v);

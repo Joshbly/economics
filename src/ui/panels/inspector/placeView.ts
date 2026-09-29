@@ -12,7 +12,7 @@ import { fmtDay, fmtDuration, fmtInt, fmtMoney, fmtMoneyShort, fmtNum, fmtPct, f
 import { focusMarket, setTab, ui } from '../../uiState';
 import { button, type Tone } from '../../widgets';
 import { block, buildingLabel, fin, kvBlock, meter, miniTable, personLink, refKey, refLink, sectorName, townLink, type MiniRow } from './common';
-import { projectRow } from './firmView';
+import { belongText, projectRow } from './firmView';
 import { hero, para, statStrip, statTile, type View } from './kit';
 import { marketTable } from './townView';
 
@@ -55,6 +55,7 @@ function houseView(_s0: SimState, id: number): View {
   const rVacant = kv.row('Empty for', 'Days in a row with at least one empty slot; landlords cut the rent when homes stay empty');
   const rBuilt = kv.row('Built');
   const rIncome = kv.row('Rent roll', 'Rent due per day from current tenants');
+  const rTown = kv.row('Belongs to', 'The town it counts as part of — where its households shop: its closeness to the town above all, then the road to it, where its people work and where its landlord lives');
   const tenants = miniTable(
     [
       { label: 'Tenant', align: 'left', width: '42%' },
@@ -87,6 +88,7 @@ function houseView(_s0: SimState, id: number): View {
       rVacant.text(n >= b.slots ? 'full' : fmtDuration(b.vacantDays));
       rBuilt.text(b.built >= 0 ? fmtDay(b.built) : 'not yet');
       rIncome.text(`${fmtMoney(n * fin(b.rent))} / day`);
+      rTown.text(belongText(s, b));
       proj.update(s, b);
       tenants.set(
         (b.residents ?? []).map((pid) => {
