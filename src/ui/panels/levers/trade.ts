@@ -54,6 +54,7 @@ export function tradeLever(): Lever {
   /** How the price limit is set: fixed, following the market within a band, or none. */
   type PMode = 'fixed' | 'f05' | 'f10' | 'f20' | 'f30' | 'any';
   let pmode: PMode = 'fixed';
+  let pace: 'patient' | 'eager' = 'patient'; // how an order that follows the market bids within its band
   const bandOf = (m: PMode): number => (m === 'f05' ? 0.05 : m === 'f10' ? 0.1 : m === 'f20' ? 0.2 : m === 'f30' ? 0.3 : 0);
   let priceFor = ''; // market signature the price field was last defaulted for
   let uiMarketApplied = '';
@@ -160,6 +161,19 @@ export function tradeLever(): Lever {
   });
   const modeHint = hint();
   const modeRow = dynRow('Price', modeSeg.el, modeHint);
+  const paceSeg = segmented<'patient' | 'eager'>({
+    options: [
+      { value: 'patient', label: 'As low as it can', title: 'Start at the market’s going price; step towards the band’s edge only on days the order falls short, and back on days it fills' },
+      { value: 'eager', label: 'Always at the edge', title: 'Always bid the full band away from the going price: fills first, pays more when the order is large' },
+    ],
+    value: pace,
+    size: 'sm',
+    onChange: (v) => {
+      pace = v;
+      edited();
+    },
+  });
+  const paceRow = dynRow('Bidding', paceSeg.el);
   const priceRow = dynRow('Price limit', price.el, pctChips);
   const priceHint = hint();
   priceRow.ctl.appendChild(priceHint);
@@ -194,6 +208,7 @@ export function tradeLever(): Lever {
     ref,
     sideRow.el,
     modeRow.el,
+    paceRow.el,
     priceRow.el,
     qtyRow.el,
     durRow,
@@ -279,7 +294,9 @@ export function tradeLever(): Lever {
   function goingPrice(s: SimState): number {
     if (kind === 'labor') return 0;
     const m = market(s);
-    const p = m ? (m.ema > 0 ? m.ema : m.price) : 0;
+    // the market's own going price: without the Treasury's orders (what following orders anchor to)
+    const own = fin(m?.ownEma);
+    const p = m ? (own > 0 ? own : m.ema > 0 ? m.ema : m.price) : 0;
     return fin(p) > 0 ? p : kind === 'iou' ? IOU_PAR : 0;
   }
   function refPrice(s: SimState): number {
@@ -454,6 +471,14 @@ export function tradeLever(): Lever {
     const going = goingPrice(s);
     const band = bandOf(pmode);
     const sign = side === 'buy' ? '+' : '−';
+    const banded = canFollow && pmode !== 'fixed' && pmode !== 'any';
+    show(paceRow.el, banded);
+    const pb = paceSeg.el.querySelectorAll('button');
+    if (pb.length === 2) {
+      setText(pb[0], side === 'buy' ? 'As low as it can' : 'As high as it can');
+      setText(pb[1], `Always ${sign}${Math.round(band * 100)}%`);
+    }
+    const patient = banded && pace === 'patient';
     setText(
       modeHint,
       pmode === 'fixed'
@@ -464,7 +489,11 @@ export function tradeLever(): Lever {
             ? side === 'buy'
               ? `No limit: keeps buying however high the price goes (going price ≈ ${fmtPrice(going)}${u.price}), as long as the Purse can pay.`
               : `No floor: takes whatever the market pays (going price ≈ ${fmtPrice(going)}${u.price}).`
-            : `Each morning the limit re-sets to the going price ${sign}${Math.round(band * 100)}% — today ${fmtPrice(going * (side === 'buy' ? 1 + band : 1 - band))}${u.price}.`,
+            : patient
+              ? side === 'buy'
+                ? `Bids from the market’s going price (${fmtPrice(going)}${u.price}, without your orders) and steps up — to at most ${fmtPrice(going * (1 + band))} — only on days it falls short, back down on days it fills. You pay the day’s auction price, like every buyer.`
+                : `Asks from the market’s going price (${fmtPrice(going)}${u.price}, without your orders) and steps down — to at least ${fmtPrice(going * (1 - band))} — only on days it does not sell out, back up on days it does. You receive the day’s auction price, like every seller.`
+              : `Each morning the limit re-sets to the market’s going price (without your orders) ${sign}${Math.round(band * 100)}% — today ${fmtPrice(going * (side === 'buy' ? 1 + band : 1 - band))}${u.price}. You pay the day’s auction price; a large order pushes it towards the limit.`,
     );
 
     // quantity hint
@@ -478,7 +507,7 @@ export function tradeLever(): Lever {
     else setText(qtyHint, `The Treasury holds ${fmtQ(fin(t.gold))} oz.`);
 
     // preview (a following order is estimated at today's limit; 'any price' at the going price)
-    const pEff = pmode === 'fixed' ? p : pmode === 'any' ? (side === 'buy' ? going : 0) : going * (side === 'buy' ? 1 + band : 1 - band);
+    const pEff = pmode === 'fixed' ? p : pmode === 'any' ? (side === 'buy' ? going : 0) : patient ? going : going * (side === 'buy' ? 1 + band : 1 - band);
     const q = qty.value;
     const n = dur === 'days' ? days.value : dur === 'once' ? 1 : NaN;
     const cap = total.value;
@@ -537,6 +566,7 @@ export function tradeLever(): Lever {
         once: dur === 'once',
         priceMode: kind === 'labor' || pmode === 'fixed' ? 'fixed' : pmode === 'any' ? 'any' : 'follow',
         band: pmode === 'fixed' || pmode === 'any' ? undefined : bandOf(pmode),
+        pace: kind === 'labor' || pmode === 'fixed' || pmode === 'any' ? undefined : pace,
       },
       msg,
       '✓ Order placed — it is listed under In force.',

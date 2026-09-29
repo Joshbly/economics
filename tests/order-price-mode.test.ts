@@ -15,17 +15,17 @@ function setup() {
 }
 
 describe('orders that follow the market', () => {
-  it('a following buy re-sets its limit daily to the going price + band', () => {
+  it('an eager following buy re-sets its limit daily to the going price + band', () => {
     const { g, s, town } = setup();
-    const r = g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.tools }, side: 'buy', price: 0, qty: 3, priceMode: 'follow', band: 0.1 });
+    const r = g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.tools }, side: 'buy', price: 0, qty: 3, priceMode: 'follow', band: 0.1, pace: 'eager' });
     expect(r.ok).toBe(true);
     const o = s.policy.orders.find((x) => x.id === r.id)!;
     expect(o.priceMode).toBe('follow');
     expect(r.message).toMatch(/10% above the going price/);
     for (let d = 0; d < 20; d++) {
       g.step(1);
-      const ref = s.markets[town * N_GOODS + G.tools].ema;
-      // Limit set this morning from yesterday's going price: within the band of today's.
+      const ref = s.markets[town * N_GOODS + G.tools].ownEma!;
+      // Limit set this morning from yesterday's going price (the market's own): within the band of today's.
       expect(o.price).toBeGreaterThan(0);
       expect(Math.abs(o.price / ref - 1.1)).toBeLessThan(0.25);
     }
@@ -70,5 +70,46 @@ describe('orders that follow the market', () => {
     expect(g.dispatch({ type: 'placeOrder', market: { kind: 'labor', town }, side: 'buy', price: 0, qty: 2, priceMode: 'any' }).ok).toBe(false);
     const back = deserialize(serialize(s));
     expect(back.policy.orders.find((x) => x.id === r.id)!.priceMode).toBe('fixed');
+  });
+
+  it('a patient buy starts at the going price and steps within the band: up when short, back when filled', () => {
+    const { g, s, town } = setup();
+    const r = g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.tools }, side: 'buy', price: 0, qty: 3, priceMode: 'follow', band: 0.05 });
+    expect(r.ok, r.message).toBe(true);
+    const o = s.policy.orders.find((x) => x.id === r.id)!;
+    expect(o.pace).toBe('patient'); // the default for new following orders
+    expect(o.offset).toBe(0);
+    expect(r.message).toMatch(/bidding as low as it can — from the going price, stepping up to at most 5% above it/);
+    const m = s.markets[town * N_GOODS + G.tools];
+    let ups = 0;
+    let downs = 0;
+    for (let d = 0; d < 40; d++) {
+      const before = o.offset ?? 0;
+      g.step(1);
+      const after = o.offset ?? 0;
+      expect(after).toBeGreaterThanOrEqual(-0.05 - 1e-12);
+      expect(after).toBeLessThanOrEqual(0.05 + 1e-12);
+      if (after > before + 1e-12) {
+        ups++;
+        expect(o.filledToday).toBeLessThan(3); // stepped up only after a day short of its quantity
+      } else if (after < before - 1e-12) {
+        downs++;
+        expect(o.filledToday).toBeCloseTo(3, 6); // and back only after a full day
+      }
+      // today's limit = the market's own going price × (1 + offset)
+      expect(effectiveOrderLimit(s, o)).toBeCloseTo((m.ownEma ?? m.ema) * (1 + (o.offset ?? 0)), 6);
+    }
+    expect(ups + downs).toBeGreaterThan(0);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+
+  it('the market’s own price leaves out the Treasury: a big purchase raises the auction price, not its own', () => {
+    const { g, s, town } = setup();
+    const m = s.markets[town * N_GOODS + G.tools];
+    g.dispatch({ type: 'placeOrder', market: { kind: 'good', town, good: G.tools }, side: 'buy', price: m.ema * 3, qty: Math.max(5, m.volEma * 0.6) });
+    g.step(1);
+    expect(m.own).toBeGreaterThan(0);
+    expect(m.price).toBeGreaterThan(m.own! * 1.01); // the Treasury's buying lifted today's price
+    expect(m.ema).toBeGreaterThan(m.ownEma!); // … and the smoothed price, but not the market's own
   });
 });

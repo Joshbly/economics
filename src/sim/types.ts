@@ -454,6 +454,13 @@ export interface MarketState {
   hist: number[]; // daily base price, last MARKET_HIST_DAYS
   volHist: number[]; // daily volume
   curve: CurveSnapshot | null;
+  /**
+   * The market's own price: what today's auction would have cleared at without the Treasury's
+   * orders (= price on days it has none), and its smoothed value. Treasury orders that follow the
+   * market anchor to ownEma, so a large order does not chase the price its own buying raised.
+   */
+  own?: number;
+  ownEma?: number;
 }
 
 /** Transient order (lives only during one day's market phase). */
@@ -637,6 +644,16 @@ export interface PlayerOrder {
   priceMode: OrderPriceMode;
   band: number; // fraction, for 'follow' (0.1 = within 10 % of the going price)
   /**
+   * 'follow' orders (not labour): 'patient' bids as low as it can (sells: asks as much as it
+   * can) — it starts at the going price and moves by steps within the band: towards the band's
+   * edge after a day it went (partly) unfilled, back after a day it filled in full, so it settles
+   * near the best price that still gets its quantity; 'eager' always bids the band's edge.
+   * Absent = 'eager' (orders from before this choice). New orders default to 'patient'.
+   */
+  pace?: OrderPace;
+  /** 'patient' orders: today's step away from the going price (fraction within ±band; + = pays more / accepts less). */
+  offset?: number;
+  /**
    * Labour orders only. 'projects': each morning the number of people employed is re-set to
    * what the Treasury's building projects in the town can use (construction.treasuryCrewWanted),
    * never more than `qty`; as projects finish the crew is let go. Absent: a fixed number (`qty`).
@@ -648,6 +665,7 @@ export interface PlayerOrder {
 }
 
 export type OrderPriceMode = 'fixed' | 'follow' | 'any';
+export type OrderPace = 'patient' | 'eager';
 
 /**
  * A Treasury supply route: buy in the order's town → carry → offer at the destination.
@@ -753,13 +771,15 @@ export type PlayerAction =
       /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Labour: 'fixed' or 'follow' (the going wage + band). */
       priceMode?: OrderPriceMode;
       band?: number;
+      /** 'follow' orders: 'patient' (default) or 'eager' (see PlayerOrder.pace). */
+      pace?: OrderPace;
       /** Labour orders: staff the town's Treasury projects automatically (`qty` = the most to employ). */
       staff?: 'projects';
     }
   | {
       type: 'updateOrder';
       id: number;
-      patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until' | 'priceMode' | 'band'>> & {
+      patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until' | 'priceMode' | 'band' | 'pace'>> & {
         /** Labour orders: 'projects' = staff the town's Treasury projects automatically; 'fixed' = a set number. */
         staff?: 'projects' | 'fixed';
         /** Supply routes only: change how goods are offered at the destination. */

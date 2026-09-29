@@ -202,6 +202,16 @@ export function routeComposer(): RouteComposer {
     size: 'sm',
     onChange: (v) => ((bmode = v), edited()),
   });
+  let bpace: 'patient' | 'eager' = 'patient';
+  const buyPaceSeg = segmented<'patient' | 'eager'>({
+    options: [
+      { value: 'patient', label: 'As low as it can', title: 'Start at the going price; step up towards the limit only on days the purchase falls short' },
+      { value: 'eager', label: 'Always at the limit', title: 'Always bid the full band above the going price' },
+    ],
+    value: bpace,
+    size: 'sm',
+    onChange: (v) => ((bpace = v), edited()),
+  });
   const upTo = h('span', { class: 'lv-w' }, 'at up to');
   const followText = h('span', { class: 'lv-w' });
   const step1 = step(
@@ -209,6 +219,7 @@ export function routeComposer(): RouteComposer {
     'Buy',
     h('div', { class: 'lv-step-line' }, goodSel.el, h('span', { class: 'lv-w' }, 'in'), fromSel.el),
     h('div', { class: 'lv-step-line' }, buyModeSeg.el),
+    h('div', { class: 'lv-step-line' }, buyPaceSeg.el),
     h('div', { class: 'lv-step-line' }, upTo, price.el, followText, h('span', { class: 'lv-nowrap' }, h('span', { class: 'lv-w' }, '×'), qty.el)),
     buyChips,
     buyHint,
@@ -431,14 +442,23 @@ export function routeComposer(): RouteComposer {
     show(wMarket, mode === 'market');
 
     const fixedBuy = bmode === 'fixed';
-    const goingA = fin(s.markets[from * N_GOODS + good]?.ema);
+    const mA = s.markets[from * N_GOODS + good];
+    const goingA = fin(mA?.ownEma) > 0 ? fin(mA?.ownEma) : fin(mA?.ema); // the market's own going price
     show(upTo, fixedBuy);
     show(price.el, fixedBuy);
     show(buyChips, fixedBuy);
     show(followText, !fixedBuy);
-    setText(followText, bmode === 'any' ? 'at whatever price is asked' : `at up to the going price +${Math.round(bandOf(bmode) * 100)}%`);
-    // A following limit is quoted at today's value; 'any price' at the going price.
-    const p = fixedBuy ? price.value : bmode === 'any' ? goingA : goingA * (1 + bandOf(bmode));
+    const bandedBuy = !fixedBuy && bmode !== 'any';
+    const patientBuy = bandedBuy && bpace === 'patient';
+    show(buyPaceSeg.el.parentElement as HTMLElement, bandedBuy);
+    const bpb = buyPaceSeg.el.querySelectorAll('button');
+    if (bpb.length === 2) setText(bpb[1], `Always +${Math.round(bandOf(bmode) * 100)}%`);
+    setText(
+      followText,
+      bmode === 'any' ? 'at whatever price is asked' : patientBuy ? `as low as it can, at most the going price +${Math.round(bandOf(bmode) * 100)}%` : `at the going price +${Math.round(bandOf(bmode) * 100)}%`,
+    );
+    // A following limit is quoted at today's value (a patient one starts at the going price); 'any price' at the going price.
+    const p = fixedBuy ? price.value : bmode === 'any' || patientBuy ? goingA : goingA * (1 + bandOf(bmode));
     const q = qty.value;
     const Q = routeQuote(s, from, to, good, p, q, mode, sellPrice.value, margin.value);
     const hl = Q.haul;
@@ -451,7 +471,9 @@ export function routeComposer(): RouteComposer {
         : !fixedBuy
           ? bmode === 'any'
             ? `No limit: keeps buying however high the price goes (here ${fmtPrice(Q.refA)}/${u} today), while the Purse can pay.`
-            : `Each morning the limit re-sets to the going price +${Math.round(bandOf(bmode) * 100)}% — today ${fmtPrice(p)}/${u}.`
+            : patientBuy
+              ? `Bids from the market’s going price (${fmtPrice(goingA)}/${u}, without your orders), stepping up to at most ${fmtPrice(goingA * (1 + bandOf(bmode)))} only on days it falls short. You pay the day’s auction price, like every buyer.`
+              : `Each morning the limit re-sets to the market’s going price +${Math.round(bandOf(bmode) * 100)}% — today ${fmtPrice(p)}/${u}.`
           : `Here ${fmtPrice(Q.refA)}/${u}${Number.isFinite(rel) ? ` · yours is ${Math.abs(rel) < 0.0005 ? 'at the market' : fmtPct(Math.abs(rel)) + (rel > 0 ? ' above' : ' below')}` : ''} · ≈ ${fmtQ(fin(s.markets[from * N_GOODS + good]?.volEma))} ${us} traded a day.`,
     );
     // ② carry hint
@@ -544,6 +566,7 @@ export function routeComposer(): RouteComposer {
         route,
         priceMode: bmode === 'fixed' ? 'fixed' : bmode === 'any' ? 'any' : 'follow',
         band: bmode === 'fixed' || bmode === 'any' ? undefined : bandOf(bmode),
+        pace: bmode === 'fixed' || bmode === 'any' ? undefined : bpace,
       },
       msg,
       '✓ Route started — follow it under Stores & wagons below.',

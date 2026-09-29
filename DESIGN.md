@@ -423,10 +423,17 @@ that pay ¤5 per year each, forever). Seven primitives:
    (selling = issuing new IOUs, buying = retiring them), the Gold market.
    Price limit, quantity per day, duration (once / N days / standing), optional
    total cap. Also *Move goods* between towns (pays freight).
-   * **Price mode** (`priceMode`, goods/IOU/gold orders; labour orders are always
-     fixed): `fixed` uses `price`; `follow` re-sets the limit every morning to the
-     market's going price (its EMA) × (1 + `band`) for a buy, × (1 − `band`) for a
-     sell (never below the sell floor) — the UI offers bands ORDER_BANDS (5/10/20/30%);
+   * **Price mode** (`priceMode`): `fixed` uses `price`; `follow` re-sets the limit
+     every morning from the market's **own** going price (`MarketState.ownEma`: the
+     EMA of what each day's auction would have cleared at without the Treasury's
+     orders — markets.clearOne clears such books twice — so an order does not chase
+     its own price impact): `pace: 'eager'` bids ownEma × (1 + `band`) for a buy,
+     × (1 − `band`) for a sell (never below the sell floor); `pace: 'patient'` (the
+     default for new orders) bids ownEma × (1 ± `offset`), `offset` starting at 0 and
+     moving within ±band — a step (band × ORDER_PATIENT_STEP_SHARE) towards the edge
+     after a day it filled less than it asked, ORDER_PATIENT_BACK of a step back after
+     a day it filled in full. Labour orders: fixed, or `follow` = the town's going wage
+     + band — the UI offers bands ORDER_BANDS (5/10/20/30%);
      `any` has no effective limit (buy: going price × ORDER_ANY_MULT; sell: the floor),
      with the daily budget reserved at going price × ORDER_ANY_BUDGET_MULT. Typing a
      price switches an order back to `fixed`.

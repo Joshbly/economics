@@ -21,8 +21,9 @@ const body = L('trade');
 const segClick = (text) => page.locator(`${body} .seg-btn:text-is("${text}")`).first().click();
 await segClick('±10%');
 await page.waitForTimeout(300);
-const hintTxt = await page.locator(`${body} .lv-row`).filter({ hasText: 'Each morning' }).first().textContent().catch(() => '');
-check('follow hint shown', /re-sets to the going price \+10%/.test(hintTxt), hintTxt.slice(0, 140));
+const hintTxt = await page.locator(`${body} .lv-row`).filter({ hasText: 'Bids from the market' }).first().textContent().catch(() => '');
+check('follow hint shown (patient by default)', /Bids from the market’s going price .* steps up — to at most/.test(hintTxt), hintTxt.slice(0, 160));
+check('bidding choice shown', await page.locator(`${body} .seg-btn:text-is("As low as it can")`).first().isVisible());
 check('fixed price field hidden', !(await page.locator(`${body} .lv-row .lv-lab:text-is("Pay at most")`).first().isVisible().catch(() => false)));
 await q.shot('pm-trade-follow');
 const n0 = await q.s('s.policy.orders.length');
@@ -49,7 +50,7 @@ check('following orders keep filling', after.every((x) => x.filled > 0), JSON.st
 await page.evaluate(() => document.querySelector('.lv-inforce')?.scrollIntoView());
 await page.waitForTimeout(300);
 const pills = await page.evaluate(() => [...document.querySelectorAll('.lv-if-head')].map((e) => e.textContent.trim()).join(' | '));
-check('In force shows market +10% and any price', /market \+10%/.test(pills) && /any price/.test(pills), pills.slice(0, 300));
+check('In force shows market ≤ +10% (patient, with today’s step) and any price', /market ≤ \+10% · /.test(pills) && /any price/.test(pills), pills.slice(0, 300));
 await q.shot('pm-inforce');
 
 // route composer: follow +20 %

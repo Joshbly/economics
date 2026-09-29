@@ -379,7 +379,13 @@ function paintRouteOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
 function limitText(o: PlayerOrder): string {
   const mode = o.priceMode ?? 'fixed';
   if (mode === 'any') return 'any price';
-  if (mode === 'follow') return `market ${o.side === 'buy' ? '+' : '−'}${Math.round(fin(o.band) * 100)}%`;
+  if (mode === 'follow') {
+    const b = Math.round(fin(o.band) * 100);
+    if (o.pace !== 'patient') return `market ${o.side === 'buy' ? '+' : '−'}${b}%`;
+    const now = fin(o.offset) * 100;
+    const today = Math.abs(now) < 0.05 ? 'at market' : `${(o.side === 'buy' ? now : -now) > 0 ? '+' : '−'}${Math.abs(now).toFixed(1)}%`;
+    return `market ${o.side === 'buy' ? '≤ +' : '≥ −'}${b}% · ${today}`;
+  }
   return (o.side === 'buy' ? '≤ ' : '≥ ') + fmtPrice(o.price);
 }
 

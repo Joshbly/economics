@@ -691,11 +691,15 @@ function r4(x: number): number {
   return Math.round(x * 1e4) / 1e4;
 }
 
+const _ownQty: number[] = [];
+
 function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
   const ref = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : m.price > 0 && Number.isFinite(m.price) ? m.price : 1;
   let r: ClearResult;
   let vol = 0;
   let undelivered = 0;
+  let pOwn = NaN;
+  let ownTraded = false;
   const hasOrders = book.bids.length > 0 || book.asks.length > 0;
   if (!hasOrders) {
     // Nobody came: the reference price stands, within the day's legal bounds (a limit on daily moves too).
@@ -705,6 +709,22 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
     r = EMPTY_RESULT;
     r.price = p0;
   } else {
+    // The market's own price first: the same book cleared without the Treasury's orders.
+    const so = (book as PooledBook).stateOrders;
+    if (so && so.length) {
+      let any = false;
+      for (let i = 0; i < so.length; i++) {
+        _ownQty[i] = so[i].qty;
+        if (so[i].qty > 0) any = true;
+        so[i].qty = 0;
+      }
+      if (any) {
+        const rx = clearBook(book, ref);
+        pOwn = rx.price > 0 && Number.isFinite(rx.price) ? rx.price : NaN;
+        ownTraded = rx.volume > 0;
+      }
+      for (let i = 0; i < so.length; i++) so[i].qty = _ownQty[i];
+    }
     r = clearBook(book, ref); // leaves every fill at 0 when nothing trades
     if (r.volume > 0) {
       const out = settle(s, book, r.price, kind);
@@ -726,6 +746,12 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
     m.net = p;
   }
   const base = m.ema > 0 && Number.isFinite(m.ema) ? m.ema : p;
+  // own price: without the Treasury (the actual price on days it has no orders here)
+  const hadState = Number.isFinite(pOwn);
+  const own = hadState ? pOwn : p;
+  const ob = (m.ownEma ?? 0) > 0 && Number.isFinite(m.ownEma) ? (m.ownEma as number) : base;
+  m.own = own;
+  m.ownEma = Math.max(PRICE_MIN, ob + ((hadState ? ownTraded : traded) ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (own - ob));
   m.ema = Math.max(PRICE_MIN, base + (traded ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (p - base));
   m.volume = vol;
   m.volEma = (Number.isFinite(m.volEma) ? m.volEma : 0) + MARKET_VOL_EMA * (vol - (Number.isFinite(m.volEma) ? m.volEma : 0));

@@ -93,7 +93,9 @@ Price lines and daily moves can also be set for the IOU and gold markets.`,
         title: 'Your orders in the market',
         body: `Your orders are part of the same auction. A large order to buy pushes the price up for everyone; a large order to sell pushes it down. An order to buy an unlimited quantity at a set price means the price can never fall below it while your Purse lasts. An order to sell unlimited quantities at a set price caps it — while your stores last.
 
-An order's **Price** can be fixed, or it can follow the market. With **±10%**, a buy order's limit re-sets each morning to the going price plus 10% (a sell order's to the going price less 10%), so you keep trading as the market drifts without re-typing the price. A sudden jump bigger than the band stops you until the going price catches up. With **Any**, there is no limit at all: you buy whatever the sellers ask, however high it spikes. Typing a price again makes it fixed.
+Everyone who trades in a market on a day pays the same price — the day's auction price. Your limit is only the most you will pay (or the least you will take); a large order moves the day's price itself, because it takes supply that others would have bought.
+
+An order's **Price** can be fixed, or it can follow the market. Following orders measure the market's **own** going price — what it would have been without your orders — so a big order does not chase the price its own buying raised. With **±10%** you choose how it bids within the band: **As low as it can** starts at the going price and steps up (towards +10%) only on days it falls short, and back down on days it fills — it pays less, and gets a little less when sellers are few; **Always +10%** bids the band's edge every day — it fills first, and pushes the price up when it is large. Sell orders mirror this. With **Any**, there is no limit at all: you buy whatever the sellers ask, however high it spikes. Typing a price again makes it fixed.
 
 Goods you hold sit in the town where you bought them. Bread, fish and ale go stale in store.`,
       },

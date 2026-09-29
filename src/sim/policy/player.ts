@@ -36,6 +36,9 @@ import {
   ORDER_ANY_BUDGET_MULT,
   ORDER_ANY_MULT,
   ORDER_BAND_MAX,
+  ORDER_PATIENT_BACK,
+  ORDER_PATIENT_STEP_MIN,
+  ORDER_PATIENT_STEP_SHARE,
   BANK_MIN_CAPITAL,
   BANK_OWN_MIN_CAPITAL,
   LIMIT_MOVE_MAX,
@@ -59,6 +62,7 @@ import type {
   LimitKind,
   Order,
   OrderMarket,
+  OrderPace,
   OrderPriceMode,
   OrderRoute,
   PlayerAction,
@@ -663,13 +667,17 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
     : `The Treasury will sell up to ${qtyText(o.qty)} oz of gold a day, ${priceTerms(s, o, ' an ounce')}${span}${cap}.`;
 }
 
-function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null, mode: OrderPriceMode = 'fixed', band = 0, staff?: 'projects'): string {
+function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null, mode: OrderPriceMode = 'fixed', band = 0, staff?: 'projects', pace?: OrderPace): string {
   if (m.kind === 'labor') {
     const wage = mode === 'follow' ? `going wage${band > 0 ? ' +' + pctText(band) : ''}` : `${moneyText(price)}/day`;
     return staff === 'projects' ? `Staff projects · ${townName(s, m.town)} · ≤${qtyText(qty)} · ${wage}` : `Employ ${qtyText(qty)} · ${townName(s, m.town)} · ${wage}`;
   }
   const lim =
-    mode === 'any' ? 'any price' : mode === 'follow' ? `market ${side === 'buy' ? '+' : '−'}${pctText(band)}` : `${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
+    mode === 'any'
+      ? 'any price'
+      : mode === 'follow'
+        ? `market ${pace === 'patient' ? (side === 'buy' ? '≤ +' : '≥ −') : side === 'buy' ? '+' : '−'}${pctText(band)}`
+        : `${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
   const base = `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${lim}`;
   return route ? `${base} → ${townName(s, route.to)}` : base;
 }
@@ -962,13 +970,23 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       if (!o) return fail('No such order.');
       const p = a.patch ?? {};
       const next = { price: o.price, qty: o.qty, enabled: o.enabled, total: o.total, until: o.until, priceMode: o.priceMode ?? 'fixed', band: fin(o.band) };
-      if (p.priceMode !== undefined || p.band !== undefined) {
+      // pace of an order that follows the market (labour follows the going wage without one)
+      let pace: OrderPace | undefined = o.pace;
+      let offset = (o.offset ?? 0);
+      if (p.pace !== undefined && p.pace !== 'patient' && p.pace !== 'eager') return fail('Choose a patient or an eager order.');
+      if (p.priceMode !== undefined || p.band !== undefined || p.pace !== undefined) {
         const pm = checkPriceMode(p.priceMode ?? next.priceMode, p.band ?? (next.priceMode === 'follow' ? next.band : undefined), o.market);
         if (!pm.ok) return fail(pm.message);
+        const newlyFollowing = pm.mode === 'follow' && next.priceMode !== 'follow';
         next.priceMode = pm.mode;
         next.band = pm.band;
+        if (pm.mode === 'follow' && o.market.kind !== 'labor') {
+          const want = p.pace ?? (newlyFollowing ? 'patient' : pace ?? 'eager');
+          if (want === 'patient' && (pace !== 'patient' || newlyFollowing)) offset = 0; // a patient order starts at the going price
+          pace = want;
+        } else pace = undefined;
         if (pm.mode !== 'fixed') {
-          const lim = effectiveOrderLimit(s, { market: o.market, side: o.side, price: 0, priceMode: pm.mode, band: pm.band });
+          const lim = effectiveOrderLimit(s, { market: o.market, side: o.side, price: 0, priceMode: pm.mode, band: pm.band, pace, offset });
           if (!(lim > 0)) return fail('That market has no going price yet to follow; keep a fixed price.');
           next.price = lim;
         }
@@ -1011,6 +1029,13 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         sellSpec = c.spec;
       }
       Object.assign(o, next);
+      if (pace) {
+        o.pace = pace;
+        o.offset = pace === 'patient' ? offset : 0;
+      } else {
+        delete o.pace;
+        delete o.offset;
+      }
       if (sellSpec && isRouteOrder(o)) {
         // Only the selling rule changes; goods on the road and waiting keep their landed cost.
         o.route.sell = sellSpec.mode;
@@ -1025,7 +1050,7 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         delete o.staffToday;
       }
       if (o.total >= 0 && o.filled >= o.total && o.enabled) o.enabled = false;
-      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route, o.priceMode, o.band, o.staff);
+      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route, o.priceMode, o.band, o.staff, o.pace);
       return { ok: true, message: o.enabled ? describeOrder(s, o) : 'Order paused.', id: o.id };
     }
     case 'cancelOrder': {
@@ -1199,7 +1224,10 @@ export function goingWage(s: SimState, town: TownId): number {
 function orderRefPrice(s: SimState, m: OrderMarket): number {
   if (m.kind === 'labor') return goingWage(s, m.town);
   const mk = m.kind === 'good' ? s.markets[m.town * N_GOODS + m.good] : m.kind === 'iou' ? s.iouMarket : m.kind === 'gold' ? s.goldMarket : undefined;
-  const p = mk ? (mk.ema > 0 ? mk.ema : mk.price) : 0;
+  // The market's own going price (without the Treasury's orders), so an order that follows the
+  // market does not chase the price its own buying or selling moved.
+  const own = mk?.ownEma ?? 0;
+  const p = mk ? (own > 0 && Number.isFinite(own) ? own : mk.ema > 0 ? mk.ema : mk.price) : 0;
   if (p > 0 && Number.isFinite(p)) return p;
   return m.kind === 'iou' ? IOU_PAR : 0;
 }
@@ -1215,7 +1243,22 @@ function sellFloorShare(m: OrderMarket): number {
  * ORDER_ANY_MULT × the going price, 'any' sells take a token floor. 0 if the market has
  * no price yet. Fixed orders return their own price.
  */
-export function effectiveOrderLimit(s: SimState, o: Pick<PlayerOrder, 'market' | 'side' | 'price' | 'priceMode' | 'band'>): number {
+type LimitSpec = Pick<PlayerOrder, 'market' | 'side' | 'price' | 'priceMode' | 'band'> & Partial<Pick<PlayerOrder, 'pace' | 'offset'>>;
+
+/** How far a following order sits from the going price today: the band's edge, or a patient order's own step. */
+function followOffset(o: LimitSpec): number {
+  const b = Math.min(ORDER_BAND_MAX, Math.max(0, fin(o.band)));
+  if (o.pace !== 'patient') return b;
+  const x = (o.offset ?? 0);
+  return x < -b ? -b : x > b ? b : x;
+}
+
+/** A patient order's step for its band. */
+function patientStep(band: number): number {
+  return Math.max(ORDER_PATIENT_STEP_MIN, Math.max(0, band) * ORDER_PATIENT_STEP_SHARE);
+}
+
+export function effectiveOrderLimit(s: SimState, o: LimitSpec): number {
   const mode = o.priceMode ?? 'fixed';
   if (mode === 'fixed' || (o.market.kind === 'labor' && mode !== 'follow')) return o.price;
   const ref = orderRefPrice(s, o.market);
@@ -1223,20 +1266,27 @@ export function effectiveOrderLimit(s: SimState, o: Pick<PlayerOrder, 'market' |
   if (!(ref > 0)) return 0;
   const floor = ref * sellFloorShare(o.market);
   if (mode === 'follow') {
-    const b = Math.min(ORDER_BAND_MAX, Math.max(0, fin(o.band)));
+    const b = followOffset(o);
     return o.side === 'buy' ? ref * (1 + b) : Math.max(floor, ref * (1 - b));
   }
   return o.side === 'buy' ? ref * ORDER_ANY_MULT : floor;
 }
 
 /** The price part of an order's description, in words. */
-function priceTerms(s: SimState, o: Pick<PlayerOrder, 'market' | 'side' | 'price' | 'priceMode' | 'band'>, unit: string): string {
+function priceTerms(s: SimState, o: LimitSpec, unit: string): string {
   const mode = o.priceMode ?? 'fixed';
   if (o.market.kind === 'labor')
     return mode === 'follow'
       ? `at the going wage${o.band > 0 ? ` plus ${pctText(o.band)}` : ''} (${moneyText(effectiveOrderLimit(s, o))} a day today)`
       : `at ${moneyText(o.price)} a day`;
   if (mode === 'any') return o.side === 'buy' ? 'at whatever price the market asks' : 'for whatever the market pays';
+  if (mode === 'follow' && o.pace === 'patient') {
+    const b = pctText(o.band);
+    const today = moneyText(effectiveOrderLimit(s, o));
+    return o.side === 'buy'
+      ? `bidding as low as it can — from the going price, stepping up to at most ${b} above it on days it goes short and back down on days it fills (${today}${unit} today)`
+      : `asking as much as it can — from the going price, stepping down to at most ${b} below it on days it does not sell out and back up on days it does (${today}${unit} today)`;
+  }
   if (mode === 'follow') {
     const b = pctText(o.band);
     const today = moneyText(effectiveOrderLimit(s, o));
@@ -1264,12 +1314,14 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (!pm.ok) return fail(pm.message);
   const mode = pm.mode;
   const band = pm.band;
+  if (a.pace !== undefined && a.pace !== 'patient' && a.pace !== 'eager') return fail('Choose a patient or an eager order.');
+  const pace: OrderPace | undefined = mode === 'follow' && m.kind !== 'labor' ? (a.pace ?? 'patient') : undefined;
   let price = a.price;
   if (mode === 'fixed') {
     if (!isNum(a.price) || a.price < 0 || a.price > PLAYER_MAX_PRICE) return fail(`The price must be a number between 0 and ${moneyText(PLAYER_MAX_PRICE)}.`);
     if ((a.side === 'buy' || m.kind === 'labor') && a.price <= 0) return fail(m.kind === 'labor' ? 'The daily wage must be above zero.' : 'A buying price must be above zero.');
   } else {
-    price = effectiveOrderLimit(s, { market: m, side: a.side, price: 0, priceMode: mode, band });
+    price = effectiveOrderLimit(s, { market: m, side: a.side, price: 0, priceMode: mode, band, pace, offset: 0 });
     if (!(price > 0)) return fail('That market has no going price yet to follow; set a fixed price instead.');
   }
   if (!isNum(a.qty) || a.qty <= 0) return fail('The quantity must be a positive number.');
@@ -1305,7 +1357,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (a.staff !== undefined && a.staff !== 'projects') return fail('Staffing is either automatic (for the projects) or a set number.');
   if (a.staff === 'projects' && m.kind !== 'labor') return fail('Only an order for workers can staff projects.');
   const staff = a.staff === 'projects' ? 'projects' : undefined;
-  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, route, mode, band, staff);
+  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, route, mode, band, staff, pace);
   const market: OrderMarket =
     m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : { kind: m.kind };
   const o: PlayerOrder = {
@@ -1327,6 +1379,10 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     priceMode: mode,
     band,
   };
+  if (pace) {
+    o.pace = pace;
+    o.offset = 0;
+  }
   if (staff && m.kind === 'labor') {
     o.staff = staff;
     o.staffToday = Math.min(qty, treasuryCrewWanted(s, m.town));
@@ -2185,6 +2241,14 @@ export function playerAfterClear(s: SimState, books: Books): void {
       po.filledToday += f;
       po.filled += f;
       if (f > 0) po.value += po.side === 'buy' ? ord.paid : -ord.paid;
+      // A patient order that follows the market: short today → a step towards the band's edge
+      // tomorrow; filled in full → part of a step back (it settles near the best price that fills).
+      if (po.pace === 'patient' && po.priceMode === 'follow' && ord.qty > 1e-9) {
+        const b = Math.min(ORDER_BAND_MAX, Math.max(0, fin(po.band)));
+        const step = patientStep(b);
+        const x = (po.offset ?? 0);
+        po.offset = f < ord.qty * (1 - 1e-3) ? Math.min(b, x + step) : Math.max(-b, x - step * ORDER_PATIENT_BACK);
+      }
       if (po.route && f > 0) paidToday[po.id] = (paidToday[po.id] || 0) + Math.max(0, ord.paid);
     }
     sub.length = 0;
