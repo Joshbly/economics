@@ -3,7 +3,7 @@
 // (with trend arrows and explanatory hover cards) · the realm menu.
 // Reads ui.game.s (read-only). Menu commands are supplied by the app shell.
 // ============================================================================
-import { SEASONS, seasonOf } from '../sim/calendar';
+import { MONTH_NAMES, SEASONS, seasonOf } from '../sim/calendar';
 import { DAYS_PER_YEAR, SESSION_TIMES } from '../sim/config';
 import type { SimState } from '../sim/types';
 import { h, listen, setText, setTone, toggleClass } from './dom';
@@ -52,6 +52,8 @@ interface IndDef {
   label: string;
   /** Hide order when the bar is too narrow (higher hides first; 0 = never). */
   drop: number;
+  /** Its widest usual reading (value, change): the room it keeps, whatever today's figures. */
+  room: [string, string];
   /** Daily series behind the indicator (for the hover sparkline). */
   series: string;
   read(s: SimState): IndReading;
@@ -113,6 +115,7 @@ const INDICATORS: IndDef[] = [
     id: 'prices',
     drop: 0,
     label: 'Prices',
+    room: ['188.8', '−8.8% so far'],
     series: 'cpi',
     title: 'Prices',
     explain:
@@ -145,6 +148,7 @@ const INDICATORS: IndDef[] = [
     id: 'jobless',
     drop: 0,
     label: 'Jobless',
+    room: ['18.8%', '−8.8 pts'],
     series: 'unemp',
     title: 'Jobless',
     explain: 'Share of households with no job. Every household has one worker. Rising joblessness means firms are hiring fewer than want work.',
@@ -167,6 +171,7 @@ const INDICATORS: IndDef[] = [
     id: 'output',
     drop: 3,
     label: 'Output',
+    room: ['188.8', '−8.8% so far'],
     series: 'gdpReal',
     title: 'Output',
     explain:
@@ -189,6 +194,7 @@ const INDICATORS: IndDef[] = [
     id: 'money',
     drop: 5,
     label: 'Money',
+    room: ['¤888.8k', '−8.8%'],
     series: 'money',
     title: 'Money',
     explain:
@@ -205,6 +211,7 @@ const INDICATORS: IndDef[] = [
     id: 'purse',
     drop: 1,
     label: 'Purse',
+    room: ['¤888.8k', '−¤88.88'],
     series: 'purse',
     title: 'The Purse',
     explain: 'Money the Treasury holds. Spending from it puts money into circulation; collecting pulls it out. You can always create more with Mint — at a price.',
@@ -229,6 +236,7 @@ const INDICATORS: IndDef[] = [
     id: 'gold',
     drop: 6,
     label: 'Gold',
+    room: ['¤888.88', '−8.8%'],
     series: 'goldPrice',
     title: 'Gold price',
     explain:
@@ -245,6 +253,7 @@ const INDICATORS: IndDef[] = [
     id: 'people',
     drop: 7,
     label: 'People',
+    room: ['8,888', '−88'],
     series: 'pop',
     title: 'Households',
     explain: 'Households living in the realm. Births and newcomers add to it; deaths and people leaving for abroad — taking their money with them — subtract.',
@@ -270,12 +279,16 @@ export function createTopbar(actions: TopbarActions): Topbar {
   const realmEl = h('div', { class: 'tb-realm' });
   const brand = h('div', { class: 'tb-brand' }, h('div', { class: 'tb-crest' }, icon('crown', 17)), h('div', { class: 'tb-titles' }, realmEl, h('div', { class: 'tb-sub' }, 'Treasury of the Realm')));
 
-  // date
-  const dateMain = h('div', { class: 'tb-date-main' });
+  // date — both lines keep the width of their longest wording (hidden copies of every
+  // variant share the cell), so a new month or the market session never moves the bar
+  const SESS_NAMES = ['opening market', 'midday market', 'closing market'];
+  const dateText = h('span');
+  const dateMain = h('div', { class: 'tb-date-main tb-fit' }, ...MONTH_NAMES.map((m) => fitGhost(`${m} 28, Year 10`)), dateText);
   const seasonDot = h('span', { class: 'season-dot' });
   const seasonLab = h('span');
+  const seasonSlot = h('span', { class: 'tb-fit' }, ...SEASONS.flatMap((x) => SESS_NAMES.map((n) => fitGhost(`${x} · ${n}`))), seasonLab);
   const dayFill = h('i');
-  const date = h('div', { class: 'tb-date' }, dateMain, h('div', { class: 'tb-date-sub' }, seasonDot, seasonLab, h('span', { class: 'tb-daybar', title: 'Time of day' }, dayFill)));
+  const date = h('div', { class: 'tb-date' }, dateMain, h('div', { class: 'tb-date-sub' }, seasonDot, seasonSlot, h('span', { class: 'tb-daybar', title: 'Time of day' }, dayFill)));
 
   // speed
   const speedLab = h('span', { class: 'speed-lab' });
@@ -302,11 +315,12 @@ export function createTopbar(actions: TopbarActions): Topbar {
     const arr = h('span', { class: 'arr' });
     const dtxt = h('span');
     const delta = h('span', { class: 'ind-delta' }, arr, dtxt);
+    const room = h('span', { class: 'ind-row tb-ghost', 'aria-hidden': 'true' }, h('span', { class: 'ind-val' }, def.room[0]), h('span', { class: 'ind-delta' }, h('span', { class: 'arr' }, '▲'), def.room[1]));
     const el = h(
       'button',
       { class: 'ind', type: 'button', 'aria-label': def.title, onClick: () => setTab('charts') },
       h('span', { class: 'ind-lab' }, def.label),
-      h('span', { class: 'ind-row' }, val, delta),
+      h('span', { class: 'tb-fit' }, room, h('span', { class: 'ind-row' }, val, delta)),
     );
     attachTip(el, () => indicatorCard(def), { placement: 'below', delay: 220 });
     return { def, el, val, arr, dtxt, delta };
@@ -386,6 +400,9 @@ export function createTopbar(actions: TopbarActions): Topbar {
   }
 
   // ---- fit: hide low-priority indicators until the strip fits ---------------------
+  // Each indicator keeps the room of its widest usual reading (IndDef.room), so changing
+  // figures never shift their neighbours; what does not fit the bar is dropped, least
+  // important first.
   let fitSig = '';
   function fit(): void {
     for (const x of inds) x.el.hidden = false;
@@ -420,7 +437,8 @@ export function createTopbar(actions: TopbarActions): Topbar {
     if (!s) return;
     // the markets meet three times a day: name the session the clock is near
     const f = ui.dayFrac;
-    const sessName = Math.abs(f - SESSION_TIMES[0]) < 0.06 ? 'opening market' : Math.abs(f - SESSION_TIMES[1]) < 0.06 ? 'midday market' : Math.abs(f - SESSION_TIMES[2]) < 0.06 ? 'closing market' : '';
+    const at = SESSION_TIMES.findIndex((t) => Math.abs(f - t) < 0.06);
+    const sessName = at >= 0 ? SESS_NAMES[at] ?? '' : '';
     const seasonText = SEASONS[seasonOf(s.day)] + (sessName ? ' · ' + sessName : '');
     if (seasonLab.textContent !== seasonText) setText(seasonLab, seasonText);
     const name = s.settings?.realmName || 'The Realm';
@@ -431,7 +449,7 @@ export function createTopbar(actions: TopbarActions): Topbar {
     }
     if (s.day === lastDay && !force) return;
     lastDay = s.day;
-    setText(dateMain, fmtDayLong(s.day));
+    setText(dateText, fmtDayLong(s.day));
     const season = seasonOf(s.day);
     seasonDot.className = 'season-dot season-' + season;
     for (const x of inds) {
@@ -493,4 +511,9 @@ function indicatorCard(def: IndDef): HTMLElement[] | null {
     /* detail keys may be missing early on */
   }
   return out;
+}
+
+/** An invisible copy of one wording a slot can show: the slot is as wide as its widest. */
+function fitGhost(text: string): HTMLElement {
+  return h('span', { class: 'tb-ghost', 'aria-hidden': 'true' }, text);
 }

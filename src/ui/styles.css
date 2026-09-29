@@ -711,7 +711,10 @@ button.kpi:hover, .kpi.has-hint:hover { border-color: var(--line-2); }
 .tb-date { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 0 14px; min-width: 150px; flex: none; line-height: 1.15; }
 .tb-date-main { font-size: 13px; font-weight: 600; color: var(--ink-0); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tb-date-sub { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--ink-2); white-space: nowrap; }
-.tb-daybar { width: 44px; height: 3px; border-radius: 2px; background: var(--bg-4); overflow: hidden; }
+.tb-fit { display: inline-grid; justify-items: start; }
+.tb-fit > * { grid-area: 1 / 1; white-space: nowrap; }
+.tb-ghost { visibility: hidden; pointer-events: none; user-select: none; }
+.tb-daybar { width: 44px; flex: none; height: 3px; border-radius: 2px; background: var(--bg-4); overflow: hidden; }
 .tb-daybar > i { display: block; height: 100%; width: 0; background: var(--gold); border-radius: 2px; }
 .season-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .season-0 { background: #8fc27a; }
