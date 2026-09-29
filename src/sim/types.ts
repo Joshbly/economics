@@ -561,15 +561,19 @@ export type LevyInput = Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastM
 export type LimitKind =
   | 'priceMax'
   | 'priceMin'
+  /** How far a price may move in a day: the auction's ceiling/floor are yesterday's price × (1 ± value). */
+  | 'priceMove'
   | 'wageMin'
   | 'wageMax'
   | 'rentMax'
   | 'rentMin'
   | 'rateMax'
+  | 'rateMin'
   | 'importMax'
   | 'exportMax'
   | 'shipMax'
   | 'reserveMin'
+  /** Replaces the bank's standing capital rule (BANK_MIN_CAPITAL), higher or lower (never below BANK_OWN_MIN_CAPITAL). */
   | 'capitalMin';
 
 export interface Limit {
@@ -577,10 +581,11 @@ export interface Limit {
   label: string;
   enabled: boolean;
   kind: LimitKind;
-  good: number; // -1 any / n.a.
+  /** GoodId, -1 any / n.a.; the price kinds (priceMax/priceMin/priceMove) also take IOU_GOOD / GOLD_GOOD (town -1). */
+  good: number;
   town: number; // -1 all towns / n.a. (shipMax: origin)
   toTown: number; // shipMax destination, -1 any
-  value: number; // price ¤, wage ¤, rent ¤, rate fraction, quantity/day, ratio fraction
+  value: number; // price ¤, wage ¤, rent ¤, rate fraction, quantity/day, ratio fraction; priceMove: fraction a day
   created: number;
   until: number; // -1 never
   binding: number; // days (this month) the limit actually bound

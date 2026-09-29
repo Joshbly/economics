@@ -41,7 +41,7 @@ import { N_GOODS, SECTORS } from '../goods';
 import { cashOf, pay, type Flow } from '../ledger';
 import { rt } from '../runtime';
 import { BANK, FIRM_BASE, FOREIGN, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
-import type { Book, Levy, MarketState, Order, Ref, Sector, SimState, TownId, Wedge } from '../types';
+import type { Book, Levy, LimitKind, MarketState, Order, Ref, Sector, SimState, TownId, Wedge } from '../types';
 import { pushCapped } from '../util';
 
 // Local copies of hot constants (imported bindings may be getters under some loaders).
@@ -60,7 +60,7 @@ import {
   targetedSaleRules,
   type Extras,
 } from '../policy/levies';
-import { noteBinding, priceBounds } from '../policy/limits';
+import { auctionBounds, noteBinding, type AuctionBounds } from '../policy/limits';
 import { buyerPct, buyerUnit, clearBook, curveInto, sellerPct, sellerUnit, type ClearResult } from './auction';
 
 export interface Books {
@@ -92,6 +92,9 @@ interface PooledBook extends Book {
   tSell: Levy[];
   /** The state the rules belong to (set by openBooks while any targeted rule is in force), else null. */
   sim: SimState | null;
+  /** Which kind of limit set today's ceiling / floor (limits.auctionBounds), credited when it binds. */
+  ceilKind: LimitKind;
+  floorKind: LimitKind;
 }
 
 function makeOrder(): Order {
@@ -99,7 +102,22 @@ function makeOrder(): Order {
 }
 
 function makeBook(town: TownId, good: number): PooledBook {
-  return { town, good, bids: [], asks: [], wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 }, ceiling: -1, floor: -1, spare: [], stateOrders: [], tBuy: [], tSell: [], sim: null };
+  return {
+    town,
+    good,
+    bids: [],
+    asks: [],
+    wedge: { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 },
+    ceiling: -1,
+    floor: -1,
+    spare: [],
+    stateOrders: [],
+    tBuy: [],
+    tSell: [],
+    sim: null,
+    ceilKind: 'priceMax',
+    floorKind: 'priceMin',
+  };
 }
 
 function recycle(b: Book): void {
@@ -115,8 +133,9 @@ function recycle(b: Book): void {
 
 /**
  * Create one Book per goods market (with wedge from levies.saleWedge and
- * ceiling/floor from limits.priceBounds) plus the IOU and gold books
- * (no wedge; limits do not apply to them). Targeted sale rules in force today are
+ * ceiling/floor from limits.auctionBounds: fixed price limits, tightened by any
+ * limit on how far the price may move from yesterday's) plus the IOU and gold
+ * books (no wedge; only the price limits that name them). Targeted sale rules in force today are
  * listed per book (bids / asks) so addBid/addAsk can put them on the matching
  * orders; with none in force this costs one scan of the rule list.
  * The Books object (and its orders) is reused from the previous call on the same
@@ -153,23 +172,34 @@ export function openBooks(s: SimState): Books {
         targetedSaleRules(s, t, g, 'seller', pb.tSell);
         if (pb.tBuy.length || pb.tSell.length) pb.sim = s;
       }
-      if (hasLimits) {
-        const pb = priceBounds(s, t, g);
-        b.ceiling = pb.max;
-        b.floor = pb.min;
-      } else {
-        b.ceiling = -1;
-        b.floor = -1;
-      }
+      setBounds(s, pb, hasLimits, s.markets[t * N_GOODS + g]);
     }
   }
   for (const b of [books.iou, books.gold]) {
     b.wedge.bPct = b.wedge.bUnit = b.wedge.sPct = b.wedge.sUnit = 0;
-    b.ceiling = -1;
-    b.floor = -1;
     (b as PooledBook).sim = null;
+    setBounds(s, b as PooledBook, hasLimits, b === books.iou ? s.iouMarket : s.goldMarket);
   }
   return books;
+}
+
+const _bounds: AuctionBounds = { ceiling: -1, floor: -1, ceilKind: 'priceMax', floorKind: 'priceMin' };
+
+/** A book's legal ceiling / floor for today (yesterday's price anchors any limit on daily moves). */
+function setBounds(s: SimState, b: PooledBook, hasLimits: boolean, m: MarketState | undefined): void {
+  if (!hasLimits) {
+    b.ceiling = -1;
+    b.floor = -1;
+    b.ceilKind = 'priceMax';
+    b.floorKind = 'priceMin';
+    return;
+  }
+  const prev = m && m.price > 0 && Number.isFinite(m.price) ? m.price : m && m.ema > 0 && Number.isFinite(m.ema) ? m.ema : -1;
+  const r = auctionBounds(s, b.town, b.good, prev, _bounds);
+  b.ceiling = r.ceiling;
+  b.floor = r.floor;
+  b.ceilKind = r.ceilKind;
+  b.floorKind = r.floorKind;
 }
 
 const VOID_BOOK: PooledBook = makeBook(-1, -1);
@@ -668,8 +698,12 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
   let undelivered = 0;
   const hasOrders = book.bids.length > 0 || book.asks.length > 0;
   if (!hasOrders) {
+    // Nobody came: the reference price stands, within the day's legal bounds (a limit on daily moves too).
+    let p0 = ref;
+    if (book.ceiling >= 0 && p0 > book.ceiling) p0 = book.ceiling;
+    if (book.floor >= 0 && p0 < book.floor) p0 = book.floor;
     r = EMPTY_RESULT;
-    r.price = ref;
+    r.price = p0;
   } else {
     r = clearBook(book, ref); // leaves every fill at 0 when nothing trades
     if (r.volume > 0) {
@@ -712,12 +746,14 @@ function clearOne(s: SimState, book: Book, m: MarketState, kind: Kind): void {
       addAcc(acc, K_VAL[good], p * vol);
     }
     if (m.shortage > 0) addAcc(acc, K_SHORT[good], m.shortage);
-    if (r.bound === 'ceiling') noteBinding(s, 'priceMax', good, book.town);
-    else if (r.bound === 'floor') noteBinding(s, 'priceMin', good, book.town);
   } else if (vol > 0) {
     const tag = kind === K_IOU ? 'iou' : 'gold';
     addAcc(acc, 'vol_' + tag, vol);
     addAcc(acc, 'val_' + tag, p * vol);
+  }
+  if (r.bound !== 'none') {
+    const pb = book as PooledBook;
+    noteBinding(s, r.bound === 'ceiling' ? (pb.ceilKind ?? 'priceMax') : (pb.floorKind ?? 'priceMin'), book.good, book.town);
   }
 }
 

@@ -7,7 +7,7 @@
 //   const info = seriesInfo(s, 'gross_8');   // { name: 'Bread — price buyers pay', unit: 'price', … }
 //   const fmt = unitFormat(info.unit);       // (v) => '¤4.20'
 // ============================================================================
-import { DAYS_PER_MONTH } from '../../../sim/config';
+import { BANK_MIN_CAPITAL, DAYS_PER_MONTH } from '../../../sim/config';
 import { GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
 import type { Sector, SimState } from '../../../sim/types';
 import { fmtIndex, fmtInt, fmtMoneyShort, fmtNum, fmtPct, fmtPrice, fmtQty, MINUS } from '../../format';
@@ -175,7 +175,7 @@ const FIXED: Record<string, [string, Unit, Category, string?]> = {
   reserves: ['Bank reserves at the Treasury', 'money', 'Money & bank'],
   credit: ['Bank loans outstanding', 'money', 'Money & bank'],
   bankEquity: ['Bank equity', 'money', 'Money & bank'],
-  capRatio: ['Bank capital ratio', 'share', 'Money & bank', 'Bank equity ÷ loans. Below 8% the bank stops lending.'],
+  capRatio: ['Bank capital ratio', 'share', 'Money & bank', `Bank equity ÷ loans. Below the capital rule in force (${Math.round(BANK_MIN_CAPITAL * 100)}% unless a Limit sets another) the bank stops lending.`],
   loanRate: ['Loan rate', 'rate', 'Money & bank'],
   baseRate: ['Bank base rate', 'rate', 'Money & bank'],
   depRate: ['Deposit rate', 'rate', 'Money & bank'],

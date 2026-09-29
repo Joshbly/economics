@@ -15,7 +15,7 @@ is something you discover:
 | **Mint** | Create (or destroy) money in the Treasury's Purse. |
 | **Trade** | Post buy/sell orders in *any* market — any good in any town, the labour market (hire Treasury workers), the IOU market (issue or retire perpetual IOUs), the gold market. Move goods between towns. |
 | **Levy** | Attach a signed rate to any flow: sales of a good, wages (paid by worker or employer), profits, money held, goods held, each person, rent, interest, shipments, imports/exports, buildings, estates. Positive = you take. Negative = you pay. |
-| **Limit** | Legal bounds: max/min prices, wages and rents; max loan rate; shipment, import and export caps; minimum bank reserve and capital ratios. |
+| **Limit** | Legal bounds: max/min prices (of goods, IOUs and gold) and how far a price may move in a day; max/min wages and rents; max/min loan rate; shipment, import and export caps; minimum bank reserve ratio; the bank's capital rule (replacing the standing 8 %, higher or lower). |
 | **Window** | The rate you pay on the bank's reserves and the rate you charge when it borrows from you. |
 | **Build** | Commission roads, houses, workshops of any trade (Treasury-owned), piers. |
 | **Transfer** | One-off payments to (or seizures from) a group. |

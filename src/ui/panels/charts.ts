@@ -307,7 +307,7 @@ function presetSpec(def: ChartDef): CardSpec {
         const r = seriesData(s, ln.key, v, { smooth: def.smooth, total: def.total, monthlyOnly: !!info.monthlyOnly });
         return { key: ln.key, label: ln.label, data: r.data, x0: r.x0, xStep: r.xStep, unit, color: ln.color ?? SERIES[0], dashed: ln.dashed, area: ln.area, width: ln.width, hidden: ln.hidden };
       });
-      return { lines, unit: def.unit, log: def.log, zero: def.zero, ref: def.ref };
+      return { lines, unit: def.unit, log: def.log, zero: def.zero, ref: typeof def.ref === 'function' ? def.ref(s) : def.ref };
     },
   };
 }

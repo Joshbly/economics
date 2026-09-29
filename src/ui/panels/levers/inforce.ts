@@ -18,6 +18,7 @@ import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../.
 import type { Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
 import { fmtDay, fmtPct, fmtPrice, plural } from '../../format';
+import { marketOf } from '../../../sim/market/markets';
 import { icon, numberInput, toggle, type NumberInput } from '../../widgets';
 import { fin, flowTone, fmtMS, fmtQ, keyedList, polishRule, run, safe, signedMoney, tersely, TONES, unitsOf } from './common';
 import { baseDef, saleWhoOf, saleWhoWords } from './levyDefs';
@@ -264,6 +265,14 @@ function limitRow(l: Limit): LimitRow {
   return { el, sw, desc, bind, meta };
 }
 
+/** A limit on daily moves in one market: the range the auction allowed today ("today ¤2.35–¤2.45"), else ''. */
+function moveBand(s: SimState, l: Limit): string {
+  if (l.kind !== 'priceMove' || !l.enabled) return '';
+  const c = marketOf(s, l.town, l.good).curve; // one market: a good in a town, or the IOU / gold market
+  if (!c || !(c.ceiling > 0)) return '';
+  return c.floor > 0 ? `today ${fmtPrice(c.floor)}–${fmtPrice(c.ceiling)} · ` : `today up to ${fmtPrice(c.ceiling)} · `;
+}
+
 function paintLimit(s: SimState, v: LimitRow, l: Limit): void {
   v.sw.set(l.enabled);
   toggleClass(v.el, 'off', !l.enabled);
@@ -271,7 +280,7 @@ function paintLimit(s: SimState, v: LimitRow, l: Limit): void {
   const b = fin(l.binding);
   setText(v.bind, b > 0 ? `Bound ${plural(b, 'day')} this month` : 'Not binding this month');
   setTone(v.bind, TONES, b > 0 ? 'warn' : null);
-  setText(v.meta, `since ${fmtDay(l.created)}`);
+  setText(v.meta, `${safe(() => moveBand(s, l), '')}since ${fmtDay(l.created)}`);
 }
 
 interface OrderRow {

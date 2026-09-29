@@ -255,6 +255,7 @@ export function createDetail(hooks: DetailHooks): Detail {
   }
   function doLimit(): void {
     if (isGood(good)) prefill({ lever: 'limit', kind: 'priceMax', good, town });
+    else if (isInstrument(good)) prefill({ lever: 'limit', kind: 'priceMax', good, town: -1 });
   }
   function doMap(): void {
     const s = state;
@@ -323,8 +324,8 @@ export function createDetail(hooks: DetailHooks): Detail {
       if (b === 'shortage') list.push(chip('Buyers went short', 'warn', `${fmtQty(m.shortage)} units of demand went unmet today.`));
       if (b === 'surplus') list.push(chip('Unsold stock', undefined, `${fmtQty(m.surplus)} units offered found no buyer today.`));
       const c = m.curve;
-      if (c && c.ceiling > 0) list.push(chip('Max price ' + fmtPrice(c.ceiling), 'warn', 'A legal maximum price applies here.'));
-      if (c && c.floor > 0) list.push(chip('Min price ' + fmtPrice(c.floor), 'warn', 'A legal minimum price applies here.'));
+      if (c && c.ceiling > 0) list.push(chip('Max price ' + fmtPrice(c.ceiling), 'warn', 'A legal maximum price applies here today: a fixed limit, or as far as the price may rise from yesterday’s.'));
+      if (c && c.floor > 0) list.push(chip('Min price ' + fmtPrice(c.floor), 'warn', 'A legal minimum price applies here today: a fixed limit, or as far as the price may fall from yesterday’s.'));
       if (c && hasWedge(c)) list.push(chip('Levy wedge', 'gold', 'Buyers pay and sellers keep different amounts because of a levy (or payment).'));
       if (c && c.state.length) list.push(chip('Treasury order', 'gold', 'The Treasury has an order in this market today.'));
       if (mode === 'town' && s.towns[town]?.hasPort && GOODS[good]?.tradable) list.push(chip('Foreign ships trade here', undefined, 'The port lets foreign ships buy and sell this good here at world prices.'));
@@ -335,10 +336,12 @@ export function createDetail(hooks: DetailHooks): Detail {
     btnTrade.disabled = mode === 'realm';
     btnTrade.title = mode === 'realm' ? 'Pick a town to trade in' : inst ? (good === IOU_GOOD ? 'Sell new IOUs or buy them back' : 'Buy or sell gold') : 'Post a Treasury buy or sell order in this market';
     btnLevy.disabled = inst;
-    btnLimit.disabled = inst;
+    btnLimit.disabled = false;
     btnMap.disabled = inst;
     btnLevy.title = inst ? 'Levies attach to flows of goods, wages, rent… — not to this market' : 'Attach a levy (or a payment) to sales of this good' + (town >= 0 ? ' here' : ' in every town');
-    btnLimit.title = inst ? 'Price limits apply to goods markets' : 'Set a legal maximum (or minimum) price for this good' + (town >= 0 ? ' here' : ' in every town');
+    btnLimit.title = inst
+      ? `Set a legal maximum or minimum ${good === IOU_GOOD ? 'price of IOUs' : 'gold price'}, or how far it may move in a day`
+      : 'Set a legal maximum (or minimum) price for this good, or how far it may move in a day' + (town >= 0 ? ' here' : ' in every town');
   }
 
   function dayChange(hist: ArrayLike<number> | undefined): number {
@@ -628,11 +631,13 @@ export function createDetail(hooks: DetailHooks): Detail {
     return false;
   }
   function limitTouches(l: Limit): boolean {
+    const price = l.kind === 'priceMax' || l.kind === 'priceMin' || l.kind === 'priceMove';
+    if (isInstrument(good)) return price && l.good === good; // the IOU and gold markets: only price limits that name them
     if (!isGood(good)) return false;
     const gOk = l.good < 0 || l.good === good;
     if (!gOk) return false;
     const tOk = town < 0 || l.town < 0 || l.town === town;
-    if (l.kind === 'priceMax' || l.kind === 'priceMin') return tOk;
+    if (price) return tOk;
     if (l.kind === 'shipMax') return town < 0 || l.town < 0 || l.town === town || l.toTown === town;
     if (l.kind === 'importMax' || l.kind === 'exportMax') return town < 0 || !!state?.towns[town]?.hasPort;
     return false;

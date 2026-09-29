@@ -560,7 +560,11 @@ export const LINE_WAGE_PREMIUM = 0.05;
 export const BANK_BASE_SPREAD = 0.025;
 export const BANK_RISK_PREMIUM = 0.06; // × leverage²
 export const BANK_DEPOSIT_SPREAD = 0.01;
+/** The realm's standing rule: the bank keeps its own capital at no less than this share of its loans. A Limit on bank
+ *  capital (limits.capitalMin) replaces the rule, higher or lower (bank.minCapital). */
 export const BANK_MIN_CAPITAL = 0.08;
+/** …but whatever a Limit allows, the bank's own prudence never lets its capital fall below this share of its loans. */
+export const BANK_OWN_MIN_CAPITAL = 0.02;
 export const BANK_DSCR = 1.25;
 export const BANK_MAX_LEVERAGE = 0.75;
 export const BANK_IOU_MARGIN = 0.004;
@@ -705,6 +709,8 @@ export const PLAYER_MAX_RATE = 1; // highest annual rate at the window / in a lo
 export const PLAYER_MIN_RATE = -0.1; // lowest annual rate at the window (−10 %)
 export const PLAYER_MAX_RULES = 300; // levies + limits + orders
 export const PLAYER_MAX_WORKERS = 5000; // largest Treasury labour order (workers)
+/** Largest daily move a 'priceMove' Limit may allow (1 = 100 % a day); 0 holds the price where it stands. */
+export const LIMIT_MOVE_MAX = 1;
 
 // ---- Foreign (agents/foreign.ts) ---------------------------------------------
 export const IMPORT_MARKUP = 0.18;

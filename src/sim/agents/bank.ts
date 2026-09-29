@@ -46,7 +46,7 @@ import {
 } from '../ledger';
 import { addAsk, addBid, bookFor, marketOf, type Books } from '../market/markets';
 import { chargeLevy, type LevyCtx } from '../policy/levies';
-import { capitalMin, maxLoanRate, reserveRatio } from '../policy/limits';
+import { capitalMin, maxLoanRate, minLoanRate, noteBinding, reserveRatio } from '../policy/limits';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
 import { BANK, FIRM_BASE, FOREIGN, IOU_GOOD, STATE } from '../types';
@@ -61,6 +61,7 @@ const {
   BANK_BASE_SPREAD,
   BANK_DEPOSIT_SPREAD,
   BANK_MIN_CAPITAL,
+  BANK_OWN_MIN_CAPITAL,
   BANK_RISK_PREMIUM,
   BANK_DSCR,
   BANK_MAX_LEVERAGE,
@@ -181,9 +182,32 @@ function pctText(x: number): string {
   return (Math.abs(v) < 10 ? v.toFixed(1) : String(Math.round(v))) + '%';
 }
 
-/** Minimum capital ratio in force: the bank's own floor or the player's Limit, whichever is higher. */
+/**
+ * Minimum capital ratio in force: the realm's standing rule (BANK_MIN_CAPITAL) — or, while a Limit on
+ * bank capital is in force, the Limit instead (higher or lower), never below the bank's own prudence
+ * (BANK_OWN_MIN_CAPITAL).
+ */
 export function minCapital(s: SimState): number {
-  return Math.max(BANK_MIN_CAPITAL, capitalMin(s));
+  const lim = capitalMin(s);
+  return lim >= 0 ? Math.max(BANK_OWN_MIN_CAPITAL, lim) : BANK_MIN_CAPITAL;
+}
+
+/** Where the capital rule in force comes from: the standing rule, the player's Limit, or the bank's own floor (a Limit below it). */
+export function capitalRuleSource(s: SimState): 'standing' | 'limit' | 'own' {
+  const lim = capitalMin(s);
+  if (lim < 0) return 'standing';
+  return lim < BANK_OWN_MIN_CAPITAL ? 'own' : 'limit';
+}
+
+/**
+ * The legal range of loan rates today: `cap` (rateMax, −1 none) and `floor` (rateMin, −1 none).
+ * A floor above the cap is cut to it (the maximum wins, as for prices).
+ */
+function rateLimits(s: SimState): { cap: number; floor: number } {
+  const cap = maxLoanRate(s);
+  let floor = minLoanRate(s);
+  if (cap >= 0 && floor > cap) floor = cap;
+  return { cap, floor };
 }
 
 /** Reserves the bank must hold by law (Limit reserveMin × deposits). */
@@ -197,9 +221,10 @@ function reserveTarget(s: SimState, dep: number): number {
   return reserveRatio(s) * d + BANK_RESERVE_BUFFER * d;
 }
 
-/** Annual rate for a spread over today's base rate, capped by a rate Limit (cap < 0 = none). */
-function rateFor(base: number, spread: number, cap: number): number {
+/** Annual rate for a spread over today's base rate, raised to a rate floor and capped by a rate Limit (< 0 = none). */
+function rateFor(base: number, spread: number, cap: number, floor = -1): number {
   let r = base + spread;
+  if (floor >= 0 && r < floor) r = floor;
   if (cap >= 0 && r > cap) r = cap;
   r = fin(r, base);
   return r < BANK_MIN_LOAN_RATE ? BANK_MIN_LOAN_RATE : r;
@@ -342,9 +367,9 @@ export function quoteRate(s: SimState, borrower: Ref, extraDebt: number): number
   }
   const spread = riskSpread(lev) + BANK_STANCE_SPREAD * stance + premium;
   const raw = fin(b.baseRate) + spread;
-  const cap = maxLoanRate(s);
+  const { cap, floor } = rateLimits(s);
   if (cap >= 0 && raw > cap) return -1;
-  return Math.max(BANK_MIN_LOAN_RATE, raw);
+  return Math.max(BANK_MIN_LOAN_RATE, raw, floor);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,11 +425,13 @@ function defaultLoan(s: SimState, ln: Loan): number {
 }
 
 /** Reprice, collect interest and amortisation, count missed payments, default. */
-function serviceLoans(s: SimState, cap: number): void {
+function serviceLoans(s: SimState, cap: number, floor: number): void {
   const b = s.bank;
   const base = fin(b.baseRate);
   let interestIn = 0;
   let repaid = 0;
+  let capped = false;
+  let raised = false;
   for (const ln of s.loans) {
     if (!ln.active) continue;
     const who = ln.borrower;
@@ -422,7 +449,12 @@ function serviceLoans(s: SimState, cap: number): void {
       ln.active = false;
       continue;
     }
-    const r = rateFor(base, fin(ln.spread), cap);
+    const r = rateFor(base, fin(ln.spread), cap, floor);
+    if (cap >= 0 || floor >= 0) {
+      const free = base + fin(ln.spread);
+      if (cap >= 0 && free > cap + 1e-12) capped = true;
+      else if (floor >= 0 && free < floor - 1e-12) raised = true;
+    }
     ln.rate = r;
     const interest = (ln.principal * r) / DAYS_PER_YEAR;
     const amort = ln.left > 1 ? ln.principal / ln.left : ln.principal;
@@ -451,6 +483,8 @@ function serviceLoans(s: SimState, cap: number): void {
   b.interestIn += interestIn;
   bump(s, 'interest_loans', interestIn);
   bump(s, 'loans_repaid', repaid);
+  if (capped) noteBinding(s, 'rateMax', -1, -1);
+  if (raised) noteBinding(s, 'rateMin', -1, -1);
 }
 
 const _ctx: LevyCtx = {};
@@ -607,6 +641,7 @@ function payWindowInterest(s: SimState): void {
 function manageReserves(s: SimState, dep: number): void {
   const b = s.bank;
   const target = reserveTarget(s, dep);
+  if (s.policy.limits.length && b.reserves < requiredReserves(s, dep) - 1e-9) noteBinding(s, 'reserveMin', -1, -1);
   if (b.reserves < target) {
     const need = target - b.reserves;
     if (need > 0 && Number.isFinite(need)) {
@@ -640,7 +675,8 @@ function sanitize(s: SimState): void {
  *    depositRate = max(min(0, reserveRate), reserveRate − BANK_DEPOSIT_SPREAD);
  *    (implemented smoothly: the funding cost slides from the reserve rate to the window
  *    rate as window debt + any reserve shortfall grows to BANK_TIGHT_SCALE of deposits)
- *  - every active loan reprices (rate = baseRate + spread, capped by limits.maxLoanRate);
+ *  - every active loan reprices (rate = baseRate + spread, raised to limits.minLoanRate and
+ *    capped by limits.maxLoanRate — the cap wins a conflict);
  *    borrower pays interest principal·rate/360 (pay → BANK, flow 'interest') and
  *    amortisation principal/left (repayPrincipal); shortfall → overdue++;
  *    overdue > LOAN_DEFAULT_OVERDUE_DAYS → default: writeOff, loan inactive, borrower distress;
@@ -665,8 +701,8 @@ export function bankBeginDay(s: SimState): void {
   b.rejected = 0;
   const dep0 = deposits(s);
   setRates(s, dep0);
-  const cap = maxLoanRate(s);
-  serviceLoans(s, cap);
+  const lim = rateLimits(s);
+  serviceLoans(s, lim.cap, lim.floor);
   payHolders(s);
   payWindowInterest(s);
   manageReserves(s, dep0); // (morning deposits: today's interest moves them by a hair)
@@ -803,7 +839,7 @@ function projectYield(s: SimState, req: LoanRequest): number {
  *  - the risk-adjusted rate must not exceed a legal rate ceiling (else: rationed).
  * Working-capital requests may be approved in part (down to BANK_PARTIAL_MIN).
  */
-function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): Decision {
+function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number, floor: number): Decision {
   const b = s.bank;
   const d = _dec;
   d.amount = 0;
@@ -868,7 +904,7 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
     const spread = riskSpread(lev) + premium;
     const raw = base + spread;
     if (cap >= 0 && raw > cap) return 'ratecap';
-    const r = Math.max(BANK_MIN_LOAN_RATE, raw);
+    const r = Math.max(BANK_MIN_LOAN_RATE, raw, floor);
     // Coverage is judged on interest, with the yield the new money earns counted in: term credit
     // finances capital (BANK_PROJECT_YIELD or the rent yield), working capital finances the
     // stock and payroll a firm turns over — it pays for itself as the goods are sold. Judging a
@@ -938,10 +974,11 @@ function processRequests(s: SimState): void {
   if (!rq.length) return;
   const log: { day: number; items: LoanDecision[] } = { day: s.day, items: [] };
   rt(s).bag.bankDecisions = log;
-  const cap = maxLoanRate(s);
+  const { cap, floor } = rateLimits(s);
   let loansNow = loansOutstanding(s);
   let lent = 0;
   let rationed = 0;
+  let capitalShort = 0;
   for (const req of rq) {
     const item: LoanDecision = { borrower: req.borrower, purpose: req.purpose, project: req.project, requested: req.amount, amount: 0, loan: -1, reason: '' };
     log.items.push(item);
@@ -950,9 +987,10 @@ function processRequests(s: SimState): void {
       b.rejected++;
       continue;
     }
-    const d = decide(s, req, loansNow, cap);
+    const d = decide(s, req, loansNow, cap, floor);
     item.reason = d.reason;
     if (d.reason === 'ratecap') rationed++;
+    if (d.reason === 'capital') capitalShort++;
     if (!(d.amount >= BANK_MIN_LOAN)) {
       if (!item.reason) item.reason = 'small';
       b.rejected++;
@@ -973,7 +1011,9 @@ function processRequests(s: SimState): void {
   rq.length = 0;
   bump(s, 'loans_new', lent);
   bump(s, 'loans_rationed', rationed);
-  if (rationed > 0 && maxLoanRate(s) >= 0) {
+  if (rationed > 0) noteBinding(s, 'rateMax', -1, -1);
+  if (capitalShort > 0) noteBinding(s, 'capitalMin', -1, -1);
+  if (rationed > 0 && cap >= 0) {
     newsOnce(s, 'ratecap', `The Bank turned away ${rationed} borrower${rationed > 1 ? 's' : ''} it would only lend to above the legal maximum rate.`, 'info');
   }
 }
@@ -1072,8 +1112,9 @@ function failureStep(s: SimState): void {
 
 /**
  * Evening: decide queued loan requests (DSCR ≥ BANK_DSCR, leverage ≤ BANK_MAX_LEVERAGE,
- * capital ratio after loan ≥ max(BANK_MIN_CAPITAL, limits.capitalMin), stance; a rate
- * cap below the risk-adjusted rate → reject); approved → Loan record + ledger.disburse.
+ * capital ratio after loan ≥ minCapital (BANK_MIN_CAPITAL, or a capitalMin Limit in its place,
+ * never below BANK_OWN_MIN_CAPITAL), stance; a rate cap below the risk-adjusted rate → reject;
+ * a rate floor raises the rate the borrower's coverage is judged at); approved → Loan record + ledger.disburse.
  * Stance tightens with defaultEma, loosens slowly. Monthly dividends to the owner when
  * capital ratio > 12 %. Failure: equity < 0 → failed (no new loans, news 'crisis');
  * after BANK_FAIL_GRACE_DAYS still < 0 → bailIn to restore capital (to the minimum ratio +

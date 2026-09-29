@@ -10,8 +10,8 @@
 //   borrowers    the largest debtors (click → inspect)
 //   history      loans and the Bank's own capital
 // ============================================================================
-import { BANK_FAIL_GRACE_DAYS, BANK_MIN_CAPITAL } from '../../../sim/config';
-import { lastLoanDecisions, requiredReserves, minCapital } from '../../../sim/agents/bank';
+import { BANK_FAIL_GRACE_DAYS, BANK_MIN_CAPITAL, BANK_OWN_MIN_CAPITAL } from '../../../sim/config';
+import { capitalRuleSource, lastLoanDecisions, requiredReserves, minCapital } from '../../../sim/agents/bank';
 import { refName } from '../../../sim/ledger';
 import { FIRM_BASE, type LoanPurpose, type SimState } from '../../../sim/types';
 import { h, replace, setText } from '../../dom';
@@ -73,7 +73,7 @@ export function createBankView(): LedgerView {
   const banner = h('div', { class: 'ldg-banner', hidden: true });
 
   const tiles = {
-    cap: kpi({ label: 'Capital ratio', format: (v) => fmtPct(v, 1), good: 'up', hint: 'The Bank’s own capital (equity) as a share of its loans. Below its minimum it must refuse new loans; below zero it has failed.' }),
+    cap: kpi({ label: 'Capital ratio', format: (v) => fmtPct(v, 1), good: 'up', hint: `The Bank’s own capital (equity) as a share of its loans. Below its minimum — the standing ${fmtPct(BANK_MIN_CAPITAL, 0)}, or a Limit in its place (never below ${fmtPct(BANK_OWN_MIN_CAPITAL, 0)}) — it must refuse new loans; below zero it has failed.` }),
     res: kpi({ label: 'Reserves', format: fmtMoneyShort, hint: 'Money the Bank keeps with the Treasury. When it holds less than the requirement it borrows the rest at the window.' }),
     loanRate: kpi({ label: 'Loan rate', format: fmtRate, hint: 'Average annual rate on the Bank’s loans, weighted by size.' }),
     depRate: kpi({ label: 'Deposit rate', format: fmtRate, hint: 'Annual rate the Bank pays on every deposit (every private balance of money).' }),
@@ -83,7 +83,10 @@ export function createBankView(): LedgerView {
   const bsNote = h('p', { class: 'note ldg-foot' });
 
   const stance = meter('Lending stance', 'How strict the Bank is when it judges a loan request. It tightens quickly after losses or when capital runs thin, and relaxes slowly.');
-  const capMeter = meter('Capital vs its minimum', 'Equity as a share of loans, against the minimum the Bank (or a Limit) requires.');
+  const capMeter = meter(
+    'Capital vs its minimum',
+    `Equity as a share of loans, against the minimum in force: the standing ${fmtPct(BANK_MIN_CAPITAL)} unless a Limit sets another (the Bank never goes below ${fmtPct(BANK_OWN_MIN_CAPITAL)} of its own accord).`,
+  );
   const resMeter = meter('Reserves vs the requirement', 'Reserves as a share of deposits, against the minimum share a Limit requires (if any).');
   const todayKv = h('div');
   const reasonsEl = h('div', { class: 'ldg-reasons' });
@@ -163,6 +166,7 @@ export function createBankView(): LedgerView {
     const equity = fin(b.equity);
     const capRatio = loans > 0 ? equity / loans : NaN;
     const capMin = safe(() => minCapital(s), BANK_MIN_CAPITAL);
+    const capSrc = safe(() => capitalRuleSource(s), 'standing' as const);
     const reqRes = safe(() => requiredReserves(s, deposits), 0);
     const avgLoan = loans > 0 ? wRate / loans : fin(b.baseRate, NaN);
 
@@ -192,7 +196,8 @@ export function createBankView(): LedgerView {
 
     // tiles
     const capD = D(s, 'capRatio');
-    tiles.cap.set(capRatio, { sub: `min ${fmtPct(capMin, 1)}`, tone: !(capRatio >= 0) ? 'bad' : capRatio < capMin ? 'warn' : null, delta: capD.length > 30 && Number.isFinite(capRatio) ? capRatio - capD[capD.length - 31] : null, deltaFormat: (d) => (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + ' pts' });
+    const capPct = fmtPct(capMin, 1).replace(/\.0%$/, '%');
+    tiles.cap.set(capRatio, { sub: capSrc === 'standing' ? `min ${capPct}` : capSrc === 'limit' ? `Limit ${capPct}` : `own ${capPct}`, tone: !(capRatio >= 0) ? 'bad' : capRatio < capMin ? 'warn' : null, delta: capD.length > 30 && Number.isFinite(capRatio) ? capRatio - capD[capD.length - 31] : null, deltaFormat: (d) => (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + ' pts' });
     tiles.res.set(reserves, { sub: reqRes > 0 ? `need ${fmtMoneyShort(reqRes)}` : 'no minimum', tone: reqRes > 0 && reserves < reqRes ? 'warn' : null });
     tiles.loanRate.set(avgLoan, { sub: `base ${fmtPct(b.baseRate, 1)}` });
     tiles.depRate.set(fin(b.depositRate, NaN), { sub: `window ${fmtPct(t?.reserveRate, 1)}` });

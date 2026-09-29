@@ -3,6 +3,8 @@
 // chart names its stats keys, a unit and how its data is treated (smoothing,
 // rolling totals, log scale, reference lines).
 // ============================================================================
+import { BANK_MIN_CAPITAL } from '../../../sim/config';
+import { minCapital } from '../../../sim/agents/bank';
 import { G, GOODS } from '../../../sim/goods';
 import type { SimState } from '../../../sim/types';
 import { goodColor, SERIES, T } from '../../widgets';
@@ -36,7 +38,8 @@ export interface ChartDef {
   /** Log scale (when not indexed). */
   log?: boolean;
   zero?: boolean;
-  ref?: { y: number; label?: string };
+  /** A reference line (or one that depends on the realm's state, e.g. the capital rule in force). */
+  ref?: { y: number; label?: string } | ((s: SimState) => { y: number; label?: string });
   /** Plain-language note under the chart. */
   note?: string;
   height?: number;
@@ -259,9 +262,17 @@ export const GROUPS: GroupDef[] = [
         sub: 'equity ÷ loans',
         unit: 'share',
         zero: true,
-        ref: { y: 0.08, label: '8% floor' },
+        ref: (s) => {
+          let y = BANK_MIN_CAPITAL;
+          try {
+            y = minCapital(s);
+          } catch {
+            /* the standing rule */
+          }
+          return { y, label: `${Math.round(y * 1000) / 10}% floor` };
+        },
         lines: () => [{ key: 'capRatio', label: 'Capital ratio', color: SERIES[0], area: true }],
-        note: 'Below the floor the bank stops lending.',
+        note: 'Below the floor in force (the standing rule, or a Limit in its place) the bank stops lending.',
       },
     ],
   },

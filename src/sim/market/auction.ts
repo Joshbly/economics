@@ -265,7 +265,7 @@ function clampPrice(p: number): number {
  *    asks first); orders at exactly the marginal price share pro-rata.
  * 5. Set order.filled and order.price (= clearing base price) for every order.
  * If no bid ≥ ask: volume 0, price = mid of best bid/ask if both exist, else
- * refPrice (clamped into any active limits).
+ * refPrice (clamped into any active limits; a clamp reports the limit as `bound`).
  * Side effect: book.bids / book.asks array order is left untouched.
  */
 export function clearBook(book: Book, refPrice: number): ClearResult {
@@ -342,6 +342,8 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     if (floor >= 0 && x < floor) x = floor;
     return x;
   };
+  // A limit that holds an indicative price (no trade) binds too: the quote would have gone past it.
+  const heldBy = (p: number, x: number): ClearResult['bound'] => (x < p ? 'ceiling' : x > p ? 'floor' : 'none');
 
   // ---- no cross: indicative price ----
   if (ndB === 0 || ndA === 0 || bestBid < bestAsk) {
@@ -354,7 +356,8 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     if (ndB > 0 && ndA > 0) ind = (bestBid + bestAsk) / 2;
     else if (ndB > 0 && bestBid > ref0) ind = Math.min(bestBid, ref0 * (1 + INDICATIVE_STEP));
     else if (ndA > 0 && bestAsk > 0 && bestAsk < ref0) ind = Math.max(bestAsk, ref0 * (1 - INDICATIVE_STEP));
-    return finish(book, clampLimits(ind), 'none', false, bestBid, bestAsk);
+    const held = clampLimits(ind);
+    return finish(book, held, heldBy(ind, held), false, bestBid, bestAsk);
   }
 
   // ---- 2. scan candidate price levels (ascending) ----
@@ -409,7 +412,11 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     if (totalBid - bidBelow <= epsQ) break; // no demand left at higher prices
   }
 
-  if (!(bestV > 0) || tLo < 0) return finish(book, clampLimits((bestBid + bestAsk) / 2), 'none', false, bestBid, bestAsk);
+  if (!(bestV > 0) || tLo < 0) {
+    const mid = (bestBid + bestAsk) / 2;
+    const held = clampLimits(mid);
+    return finish(book, held, heldBy(mid, held), false, bestBid, bestAsk);
+  }
 
   let p: number;
   if (nZero > 0 || (nPos > 0 && nNeg > 0)) {
