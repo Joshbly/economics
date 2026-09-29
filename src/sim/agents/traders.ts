@@ -55,7 +55,6 @@ import { pay } from '../ledger';
 import { addAsk, addBid, bookFor, expectedGross, expectedGrossFor, expectedNetFor, marketOf, type Books } from '../market/markets';
 import { chargeLevy, employerWageCost, levyAmount, saleWedgeInto, targetedExtrasFor, type Extras, type LevyCtx } from '../policy/levies';
 import { noteBinding, priceBounds, quota } from '../policy/limits';
-import { routeArrived, syncRouteTransit } from '../policy/routes';
 import { askLine, clearLineReservations, costPerUnit, lineById, lineOffer, lineRoom, noteFare, reserveLine, serves, type LineOffer } from '../policy/lines';
 import { rt, type Route } from '../runtime';
 import { FIRM_BASE, STATE } from '../types';
@@ -291,8 +290,6 @@ function deliver(s: SimState, sh: Shipment): void {
     for (let t = tg.length; t <= sh.to; t++) tg.push(new Array(N_GOODS).fill(0));
     tg[sh.to][sh.good] += q;
     bump(s, 'delivered_units', q);
-    // Cargo of a supply route joins the route's stock waiting to be sold there (policy/routes).
-    if (sh.order >= 0) routeArrived(s, sh);
     return;
   }
   const f = sh.owner >= FIRM_BASE ? s.firms[sh.owner - FIRM_BASE] : undefined;
@@ -340,7 +337,6 @@ export function tradersBeginDay(s: SimState): void {
     else list[k++] = sh;
   }
   list.length = k;
-  syncRouteTransit(s); // Treasury supply routes: units still on the road
 
   for (const f of s.firms) {
     if (!f || f.sector !== 'trader' || !f.trade) continue;
@@ -380,16 +376,12 @@ export function tradersBeginDay(s: SimState): void {
 export function deliverTreasuryDue(s: SimState, until: number): void {
   const list = s.shipments;
   let k = 0;
-  let any = false;
   for (let i = 0; i < list.length; i++) {
     const sh = list[i];
-    if (sh.owner === STATE && sh.arrive <= until + 1e-9) {
-      deliver(s, sh);
-      any = true;
-    } else list[k++] = sh;
+    if (sh.owner === STATE && sh.arrive <= until + 1e-9) deliver(s, sh);
+    else list[k++] = sh;
   }
   list.length = k;
-  if (any) syncRouteTransit(s);
 }
 
 /** A closed trader's goods in other towns pass to the Treasury (goods are never destroyed silently). */
@@ -1307,7 +1299,7 @@ export interface CargoResult extends ActionResult {
  * shipTreasuryGoods with the details: loads min(qty, holdings) of the Treasury's `good` in
  * `from` and sends it to `to`. `unitCost` (¤/unit, default 0) is what the goods cost the
  * Treasury before carriage: the shipment's basis (landed cost per unit) is unitCost + freight
- * per unit. `order` tags the cargo with a supply-route order id (Shipment.order, default −1).
+ * per unit. `order` tags the cargo with the carry rule that loads it (Shipment.order, default −1).
  * Fails (nothing moves, nothing is paid) without a usable road, a trading house in `from`, or —
  * with auto-mint off — a Purse that covers the freight.
  */

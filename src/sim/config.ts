@@ -922,20 +922,17 @@ export const IOU_SELL_FLOOR_MIN_SHARE = 0.1;
 /** Warn when a sell floor is below this share of today's price. */
 export const SELL_FLOOR_WARN_SHARE = 0.5;
 
-// ---- Treasury supply routes, moves with a sale, in-kind handouts (policy/player.ts, policy/routes.ts) ----
-/** A route (or a move) offering its goods "for whatever they fetch" asks no less than this share of the
- *  destination's reference price: a token floor, so the auction sets the price. */
-export const ROUTE_MARKET_FLOOR_SHARE = 0.05;
-/** Range of the margin over landed cost a route (or a move with a sale) may ask: −90 % … +1000 %. */
-export const ROUTE_MARGIN_MIN = -0.9;
-export const ROUTE_MARGIN_MAX = 10;
-/** A supply route that sends full wagons (OrderRoute.dispatch 'full'): a wagon leaves once it is this
+// ---- Treasury carry rules and 'any price' sales (policy/carry.ts, policy/player.ts) ----
+/** A sell order at 'any price' (or a following sell at its lowest) asks no less than this share of the
+ *  market's going price: a token floor, so the auction sets the price. */
+export const ORDER_ANY_FLOOR_SHARE = 0.05;
+/** A carry rule that sends full wagons (CarryRule.wagons 'full'): a wagon leaves once it is this
  *  full — the Purse pays a whole wagon's trip however little it carries — … */
-export const ROUTE_FULL_SHARE = 0.9;
+export const CARRY_FULL_SHARE = 0.9;
 /** … or once the goods waiting for it would lose this share to spoilage by waiting longer (bread: 2
- *  days), and never after more than ROUTE_MAX_HOLD_DAYS (goods that keep). */
-export const ROUTE_SPOIL_BUDGET = 0.1;
-export const ROUTE_MAX_HOLD_DAYS = 7;
+ *  days), and never after more than CARRY_MAX_HOLD_DAYS (goods that keep). */
+export const CARRY_SPOIL_BUDGET = 0.1;
+export const CARRY_MAX_HOLD_DAYS = 7;
 /** Bands offered for orders that follow the market (fractions of the going price). */
 export const ORDER_BANDS = [0.05, 0.1, 0.2, 0.3];
 export const ORDER_BAND_MAX = 1;

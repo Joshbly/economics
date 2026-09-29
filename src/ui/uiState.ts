@@ -38,7 +38,7 @@ export interface UiState {
   placing: Placing | null;
   showPeople: boolean;
   showCarts: boolean;
-  /** Map: draw the Treasury's supply routes (gold dashed lines with labels). */
+  /** Map: draw the Treasury's carry rules and freight lines (gold lines with labels). */
   showRoutes: boolean;
   /** Market the Markets panel is focused on. */
   marketTown: number;

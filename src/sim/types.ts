@@ -297,7 +297,7 @@ export interface Shipment {
   depart: number; // day (fractional allowed)
   arrive: number; // day (fractional allowed)
   wagons: number;
-  order: number; // Treasury supply-route order id this cargo belongs to, or -1
+  order: number; // the Treasury carry rule (CarryRule.id) that loaded this cargo, or -1
   /** Treasury freight line (FreightLine.id) whose wagons carry this cargo, or -1 (the owner's own wagons / a trading house's). */
   line: number;
 }
@@ -643,12 +643,6 @@ export interface PlayerOrder {
   filledToday: number;
   created: number;
   /**
-   * Supply route (goods buy orders only): every unit this order buys is loaded onto
-   * the Treasury's wagons and carried to `route.to`, where it is offered in that
-   * town's market. null = an ordinary order.
-   */
-  route: OrderRoute | null;
-  /**
    * How the limit is set each day: 'fixed' = `price` as entered; 'follow' = the market's
    * going price (its smoothed clearing price) plus `band` for buys / minus `band` for sells,
    * re-set every morning; 'any' = no limit (buys keep buying through spikes, capped only by
@@ -689,37 +683,38 @@ export type OrderPriceMode = 'fixed' | 'follow' | 'any';
 export type OrderPace = 'patient' | 'eager';
 
 /**
- * A Treasury supply route: buy in the order's town → carry → offer at the destination.
- * Composed entirely of real steps: the purchase clears in the origin auction, freight
- * is paid to the origin's trading house from the Purse, the goods ride real wagons,
- * and they are sold through the destination's auction like any other ask.
+ * A Treasury carry rule: moves the Treasury's own goods from its store in `from` to its store in
+ * `to` by wagon — on a Treasury freight line on that road if it has room, otherwise with the
+ * trading house of `from`, for freight paid from the Purse. It neither buys nor sells: orders fill
+ * and empty the stores, a carry only moves what is held. Loads leave after a market session
+ * (policy/carry.ts), and arrivals land in the store at `to` (where a sell order can offer them).
  */
-export interface OrderRoute {
-  to: TownId; // destination town
-  /** How the goods are offered on arrival: at a fixed floor, at landed cost (+margin), or for whatever they fetch. */
-  sell: 'fixed' | 'cost' | 'market';
-  sellPrice: number; // floor (base ¤/unit) when sell === 'fixed'
-  sellMargin: number; // when sell === 'cost': floor = landed cost × (1 + sellMargin)
-  inTransit: number; // units on the road now
-  waiting: number; // units arrived at `to` and not yet sold
-  landed: number; // average landed cost per unit (purchase + freight) of the waiting units
-  shippedToday: number;
-  soldToday: number;
-  shippedTotal: number; // lifetime units loaded
-  soldTotal: number; // lifetime units sold at the destination
-  freightPaid: number; // lifetime ¤ of freight
-  revenue: number; // lifetime ¤ received from sales at the destination
-  /** Units of today's offer cancelled against a Treasury purchase in the same market. */
-  nettedToday?: number;
+export interface CarryRule {
+  id: number; // shares s.ids.policy with levies, limits, orders and lines
+  label: string;
+  enabled: boolean;
+  from: TownId;
+  to: TownId;
+  good: GoodId;
+  /** Units a day at most; −1 = everything the Treasury holds of the good in `from`, as it comes in. */
+  qty: number;
   /**
-   * How purchases leave for the destination: 'full' (the default) — a wagon leaves once it is
-   * ROUTE_FULL_SHARE full, once the goods have waited as long as they keep (routes.routeHoldDays),
-   * once a Treasury freight line on the road has room, or when the buying ends; 'daily' — what was
-   * bought leaves every day (quicker, dearer per unit when loads are small).
+   * 'full': a wagon leaves once it is CARRY_FULL_SHARE full — or once the goods have waited as long
+   * as they keep (carry.carryHoldDays), a Treasury freight line on the road has room, or the rule's
+   * last day has come; 'now': what is held leaves after every market session (quicker; dearer per
+   * unit when loads are small, since the Purse pays a whole wagon's trip however little it carries).
    */
-  dispatch?: 'full' | 'daily';
-  /** Day the purchases now waiting to be loaded began collecting (−1 / absent: none waiting). */
-  heldSince?: number;
+  wagons: 'full' | 'now';
+  until: number; // last day active, −1 never
+  created: number;
+  /** qty ≥ 0 rules: units it may still load (qty is added each morning; banked while goods wait for a fuller wagon). */
+  allow: number;
+  /** Day the goods now waiting for a fuller wagon began waiting (−1: none waiting). */
+  heldSince: number;
+  carriedToday: number;
+  carried: number; // lifetime units loaded
+  freightToday: number;
+  freight: number; // lifetime ¤ of freight paid
 }
 
 /** How a Treasury freight line charges for what it carries: a fixed ¤ per unit, its own running cost per unit, or nothing. */
@@ -778,6 +773,8 @@ export interface Policy {
   orders: PlayerOrder[];
   /** Treasury freight lines. */
   lines: FreightLine[];
+  /** Standing rules carrying the Treasury's goods between its stores. */
+  carries: CarryRule[];
 }
 
 // ---------------------------------------------------------------------------
@@ -798,8 +795,6 @@ export type PlayerAction =
       days?: number; // undefined/0 = standing until cancelled
       once?: boolean;
       label?: string;
-      /** Goods BUY orders only: carry everything bought to another town and offer it there. */
-      route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number; dispatch?: 'full' | 'daily' };
       /** Default 'fixed'. With 'follow'/'any', `price` may be omitted (it is set daily from the market). Labour: 'fixed' or 'follow' (the going wage + band). */
       priceMode?: OrderPriceMode;
       band?: number;
@@ -818,20 +813,27 @@ export type PlayerAction =
         session?: number;
         /** Labour orders: 'projects' = staff the town's Treasury projects automatically; 'fixed' = a set number. */
         staff?: 'projects' | 'fixed';
-        /** Supply routes only: change how goods are offered at the destination. */
-        route?: { sell?: OrderRoute['sell']; sellPrice?: number; sellMargin?: number; dispatch?: 'full' | 'daily' };
       };
     }
   | { type: 'cancelOrder'; id: number }
   | {
-      type: 'moveGoods';
+      /**
+       * Carry Treasury goods from its store in `from` to its store in `to`. `once`: now, `qty` units
+       * (−1 = all held), and no rule is kept. Otherwise a standing rule (CarryRule): up to `qty` a day
+       * (−1 = everything held, as it comes in) for `days` days (absent/0 = until removed).
+       */
+      type: 'carry';
       from: TownId;
       to: TownId;
       good: GoodId;
       qty: number;
-      /** Optionally offer the goods at the destination once they arrive (a sell order capped at qty). */
-      sell?: { mode: OrderRoute['sell']; price?: number; margin?: number };
+      once?: boolean;
+      days?: number;
+      wagons?: CarryRule['wagons'];
+      label?: string;
     }
+  | { type: 'updateCarry'; id: number; patch: { qty?: number; enabled?: boolean; wagons?: CarryRule['wagons']; until?: number } }
+  | { type: 'removeCarry'; id: number }
   | { type: 'addLevy'; levy: LevyInput }
   | { type: 'updateLevy'; id: number; patch: Partial<Levy> }
   | { type: 'removeLevy'; id: number }

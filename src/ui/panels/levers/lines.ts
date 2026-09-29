@@ -152,7 +152,7 @@ function card(L: FreightLine, state: () => SimState | null, compact: boolean): C
     if (x) run({ type: 'updateLine', id, patch: { wagons: x.wagonsWanted + 1 } }, null);
   }, 'Keep one wagon more (bought as tools in the depot town)');
   for (const b of [less, more]) b.classList.add('chip');
-  const controls = h('div', { class: 'lv-rt-offer lv-ln-ctl' }, h('span', { class: 'lv-rt-offer-k' }, 'Fare:'), ...fareBtns, h('span', { class: 'lv-ln-gap' }), less, more);
+  const controls = h('div', { class: 'lv-if-opts lv-ln-ctl' }, h('span', { class: 'lv-if-opts-k' }, 'Fare:'), ...fareBtns, h('span', { class: 'lv-ln-gap' }), less, more);
   const el = h(
     'div',
     { class: 'lv-rt lv-ln', dataset: { line: String(id) } },

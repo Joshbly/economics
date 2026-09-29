@@ -1,8 +1,9 @@
 // ============================================================================
 // The player's primitives: validation + execution of PlayerActions, Treasury
-// orders in markets (incl. supply routes: buy → carry → offer, policy/routes.ts),
-// Treasury workforce, transfers (money, or goods in kind), freight lines (open /
-// change / close; their daily running lives in policy/lines.ts). See DESIGN §5.
+// orders in markets, carry rules between the Treasury's stores (their daily running
+// lives in policy/carry.ts), Treasury workforce, transfers (money, or goods in kind),
+// freight lines (open / change / close; their daily running lives in policy/lines.ts).
+// See DESIGN §5.
 // OWNER: market-policy agent.
 //
 // Nothing here is a "policy": the player composes seven neutral primitives
@@ -29,10 +30,8 @@ import {
   WAGON_CAPACITY,
   PRICE_MIN,
   IOU_SELL_FLOOR_MIN_SHARE,
-  ROUTE_MARGIN_MAX,
-  ROUTE_MARGIN_MIN,
   SELL_FLOOR_WARN_SHARE,
-  ROUTE_MARKET_FLOOR_SHARE,
+  ORDER_ANY_FLOOR_SHARE,
   ORDER_ANY_BUDGET_MULT,
   ORDER_ANY_MULT,
   ORDER_BAND_MAX,
@@ -64,7 +63,7 @@ import type {
   OrderMarket,
   OrderPace,
   OrderPriceMode,
-  OrderRoute,
+  CarryRule,
   PlayerAction,
   PlayerOrder,
   Sector,
@@ -74,7 +73,7 @@ import type {
 } from '../types';
 import { addAsk, addBid, type Books } from '../market/markets';
 import { aimedRateAt, bankClaimRoom, inGroup, isAimed, isTargetedSale, primeAimedRates, rateIn, steerLevies } from './levies';
-import { heldAtOrigin, isRouteOrder, marketFloor, newRoute, routeBusy, routeFloor, routeLoadToday } from './routes';
+import { carriesBeginDay, carryById, carryLabel, describeCarry, runCarries } from './carry';
 import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject, treasuryCrewWanted } from '../agents/construction';
 import { deliverTreasuryDue, freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
@@ -630,24 +629,12 @@ function marketText(s: SimState, m: OrderMarket): string {
   return 'gold';
 }
 
-/** How a route (or a move with a sale) offers its goods: "at landed cost", "for no less than ¤3.20 each"... */
-function sellRuleText(mode: OrderRoute['sell'], price: number, margin: number): string {
-  if (mode === 'fixed') return `for no less than ${moneyText(price)} each`;
-  if (mode === 'market') return 'for whatever it fetches';
-  if (Math.abs(margin) < 1e-9) return 'at landed cost';
-  return margin > 0 ? `at landed cost plus ${pctText(margin)}` : `at ${pctText(-margin)} below landed cost`;
-}
-
 /** Plain sentence describing a Treasury order. */
 export function describeOrder(s: SimState, o: PlayerOrder): string {
   const m = o.market;
   const span = o.once ? ' today' : o.until >= 0 ? ` until ${dateLabel(o.until)}` : '';
   const cap = o.total >= 0 ? ` (at most ${qtyText(o.total)} in all)` : '';
   const when = o.session === 0 ? ' at the opening' : o.session === 1 ? ' at midday' : o.session === 2 ? ' at the close' : '';
-  if (m.kind === 'good' && o.route) {
-    const r = o.route;
-    return `The Treasury will buy up to ${amountOf(m.good, o.qty)} a day${when} in ${townName(s, m.town)}, ${priceTerms(s, o, ' each')}${span}${cap}, carry it to ${townName(s, r.to)} ${r.dispatch === 'daily' ? 'as soon as it is bought' : 'in full wagons'} and offer it there ${sellRuleText(r.sell, r.sellPrice, r.sellMargin)}.`;
-  }
   if (m.kind === 'labor') {
     const lcap = o.total >= 0 ? ` (at most ${qtyText(o.total)} worker-days in all)` : '';
     if (o.staff === 'projects')
@@ -669,7 +656,7 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
     : `The Treasury will sell up to ${qtyText(o.qty)} oz of gold a day, ${priceTerms(s, o, ' an ounce')}${span}${cap}.`;
 }
 
-function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, route?: OrderRoute | null, mode: OrderPriceMode = 'fixed', band = 0, staff?: 'projects', pace?: OrderPace): string {
+function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, price: number, qty: number, mode: OrderPriceMode = 'fixed', band = 0, staff?: 'projects', pace?: OrderPace): string {
   if (m.kind === 'labor') {
     const wage = mode === 'follow' ? `going wage${band > 0 ? ' +' + pctText(band) : ''}` : `${moneyText(price)}/day`;
     return staff === 'projects' ? `Staff projects · ${townName(s, m.town)} · ≤${qtyText(qty)} · ${wage}` : `Employ ${qtyText(qty)} · ${townName(s, m.town)} · ${wage}`;
@@ -680,8 +667,7 @@ function orderShortLabel(s: SimState, side: 'buy' | 'sell', m: OrderMarket, pric
       : mode === 'follow'
         ? `market ${pace === 'patient' ? (side === 'buy' ? '≤ +' : '≥ −') : side === 'buy' ? '+' : '−'}${pctText(band)}`
         : `${side === 'buy' ? '≤' : '≥'} ${moneyText(price)}`;
-  const base = `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${lim}`;
-  return route ? `${base} → ${townName(s, route.to)}` : base;
+  return `${side === 'buy' ? 'Buy' : 'Sell'} ${qtyText(qty)}/day · ${marketText(s, m)} · ${lim}`;
 }
 
 function policyNews(s: SimState, text: string, town = -1): void {
@@ -689,7 +675,7 @@ function policyNews(s: SimState, text: string, town = -1): void {
 }
 
 function ruleCount(s: SimState): number {
-  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.lines?.length ?? 0);
+  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.lines?.length ?? 0) + (s.policy.carries?.length ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,20 +1012,6 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         if (!isInt(p.until) || (p.until !== -1 && p.until < s.day)) return fail('The end day must be today or later (or −1 for none).');
         next.until = p.until;
       }
-      let sellSpec: SellSpec | null = null;
-      let dispatchTo: 'full' | 'daily' | undefined;
-      if (p.route !== undefined) {
-        if (!isRouteOrder(o)) return fail('Only a supply route has a selling rule or wagons to change.');
-        if (p.route?.sell !== undefined) {
-          const c = checkSell(p.route.sell, p.route.sellPrice, p.route.sellMargin);
-          if (!c.ok) return fail(c.message);
-          sellSpec = c.spec;
-        }
-        if (p.route?.dispatch !== undefined) {
-          if (p.route.dispatch !== 'full' && p.route.dispatch !== 'daily') return fail('Wagons leave either when full or every day.');
-          dispatchTo = p.route.dispatch;
-        }
-      }
       Object.assign(o, next);
       if (pace) {
         o.pace = pace;
@@ -1048,13 +1020,6 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         delete o.pace;
         delete o.offset;
       }
-      if (sellSpec && isRouteOrder(o)) {
-        // Only the selling rule changes; goods on the road and waiting keep their landed cost.
-        o.route.sell = sellSpec.mode;
-        o.route.sellPrice = sellSpec.price;
-        o.route.sellMargin = sellSpec.margin;
-      }
-      if (dispatchTo && isRouteOrder(o)) o.route.dispatch = dispatchTo;
       if (p.session !== undefined) {
         if (p.session >= 0) o.session = p.session;
         else delete o.session;
@@ -1067,22 +1032,27 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         delete o.staffToday;
       }
       if (o.total >= 0 && o.filled >= o.total && o.enabled) o.enabled = false;
-      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.route, o.priceMode, o.band, o.staff, o.pace);
+      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.priceMode, o.band, o.staff, o.pace);
       return { ok: true, message: o.enabled ? describeOrder(s, o) : 'Order paused.', id: o.id };
     }
     case 'cancelOrder': {
       const i = s.policy.orders.findIndex((x) => x.id === a.id);
       if (i < 0) return fail('No such order.');
       const o = s.policy.orders[i];
-      // A supply route stops buying; what it already bought stays in the Treasury's stores.
-      const kept = isRouteOrder(o) ? routeLeftovers(s, o) : '';
-      if (isRouteOrder(o)) o.route.waiting = 0; // waiting stock becomes ordinary holdings
       s.policy.orders.splice(i, 1);
-      if (kept) policyNews(s, `The Treasury has stopped its supply route “${o.label}”. ${kept}`, o.market.kind === 'good' ? o.market.town : -1);
-      return { ok: true, message: `Order withdrawn (${qtyText(o.filled)} filled in all).${kept ? ' ' + kept : ''}`, id: o.id };
+      return { ok: true, message: `Order withdrawn (${qtyText(o.filled)} filled in all).`, id: o.id };
     }
-    case 'moveGoods':
-      return moveGoods(s, a);
+    case 'carry':
+      return carry(s, a);
+    case 'updateCarry':
+      return updateCarry(s, a);
+    case 'removeCarry': {
+      const cs = s.policy.carries ?? [];
+      const i = cs.findIndex((x) => x.id === a.id);
+      if (i < 0) return fail('No such carry rule.');
+      const [c] = cs.splice(i, 1);
+      return { ok: true, message: `Carry rule removed (${amountOf(c.good, c.carried)} carried in all). Goods already on the road still arrive.`, id: c.id };
+    }
     case 'addLevy': {
       if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
       const c = checkLevy(s, a.levy);
@@ -1251,7 +1221,7 @@ function orderRefPrice(s: SimState, m: OrderMarket): number {
 
 /** Lowest floor an 'any price' / following sell order may use (IOU issuance keeps its own guard). */
 function sellFloorShare(m: OrderMarket): number {
-  return m.kind === 'iou' ? Math.max(ROUTE_MARKET_FLOOR_SHARE, IOU_SELL_FLOOR_MIN_SHARE) : ROUTE_MARKET_FLOOR_SHARE;
+  return m.kind === 'iou' ? Math.max(ORDER_ANY_FLOOR_SHARE, IOU_SELL_FLOOR_MIN_SHARE) : ORDER_ANY_FLOOR_SHARE;
 }
 
 /**
@@ -1364,20 +1334,10 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   }
   const once = !!a.once;
   if (once) until = s.day;
-  // Supply route: goods BUY orders only (policy/routes.ts).
-  let route: OrderRoute | null = null;
-  let routeNote = '';
-  if (a.route !== undefined && a.route !== null) {
-    if (m.kind !== 'good' || a.side !== 'buy') return fail('Only a purchase of goods can be carried to another town and offered there.');
-    const rc = checkRoute(s, m.town, m.good, a.route);
-    if (!rc.ok) return fail(rc.message);
-    route = rc.route;
-    routeNote = rc.note;
-  }
   if (a.staff !== undefined && a.staff !== 'projects') return fail('Staffing is either automatic (for the projects) or a set number.');
   if (a.staff === 'projects' && m.kind !== 'labor') return fail('Only an order for workers can staff projects.');
   const staff = a.staff === 'projects' ? 'projects' : undefined;
-  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, route, mode, band, staff, pace);
+  const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, mode, band, staff, pace);
   const market: OrderMarket =
     m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : { kind: m.kind };
   const o: PlayerOrder = {
@@ -1395,7 +1355,6 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     value: 0,
     filledToday: 0,
     created: s.day,
-    route,
     priceMode: mode,
     band,
   };
@@ -1417,7 +1376,6 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (a.side === 'buy' && !s.treasury.autoMint && !(s.treasury.purse > 0))
     note = m.kind === 'labor' ? ' The Purse is empty, so these workers cannot be paid until money comes in.' : ' The Purse is empty, so nothing will be bought until money comes in.';
   if (m.kind === 'labor' && !findStateworks(s, m.town)) note = ' (There is no Treasury workforce in that town.)';
-  if (routeNote) note += ' ' + routeNote;
   if (a.side === 'sell' && m.kind !== 'labor' && mode === 'fixed') {
     const ref = orderRefPrice(s, m);
     if (ref > 0 && a.price < SELL_FLOOR_WARN_SHARE * ref)
@@ -1439,114 +1397,85 @@ function checkPriceMode(mode: unknown, band: unknown, m: OrderMarket): { ok: tru
   return { ok: true, mode, band: b };
 }
 
-type SellSpec = { mode: OrderRoute['sell']; price: number; margin: number };
-
-/** Validate how goods are to be offered at their destination (a route's `sell`, or moveGoods' `sell`). */
-function checkSell(mode: unknown, price: unknown, margin: unknown): { ok: true; spec: SellSpec } | { ok: false; message: string } {
-  if (mode !== 'fixed' && mode !== 'cost' && mode !== 'market') return { ok: false, message: 'Choose how the goods are offered on arrival: at a fixed lowest price, at landed cost, or for whatever they fetch.' };
-  if (mode === 'fixed') {
-    if (!isNum(price) || price <= 0 || price > PLAYER_MAX_PRICE) return { ok: false, message: `The lowest selling price must be above zero and at most ${moneyText(PLAYER_MAX_PRICE)}.` };
-    return { ok: true, spec: { mode, price, margin: 0 } };
-  }
-  if (mode === 'cost') {
-    const mg = margin === undefined ? 0 : margin;
-    if (!isNum(mg) || mg < ROUTE_MARGIN_MIN || mg > ROUTE_MARGIN_MAX)
-      return { ok: false, message: `The margin over landed cost must lie between ${pctText(ROUTE_MARGIN_MIN)} and ${pctText(ROUTE_MARGIN_MAX)} (0.1 = 10%).` };
-    return { ok: true, spec: { mode, price: 0, margin: mg } };
-  }
-  return { ok: true, spec: { mode, price: 0, margin: 0 } };
+/** Validate the towns and good of a carry (between two stores linked by a wagon road). */
+function checkCarryPath(s: SimState, from: unknown, to: unknown, good: unknown): string | null {
+  if (!validTown(s, from) || !validTown(s, to)) return 'Unknown town.';
+  if (from === to) return 'Choose two different towns.';
+  if (!validGood(good)) return 'Unknown good.';
+  if (!(freightPerUnit(s, from, to) >= 0)) return `No wagon road links ${townName(s, from)} and ${townName(s, to)}.`;
+  return null;
 }
 
-/** Validate a supply route from `from` (the order's town) for good `g`. */
-function checkRoute(s: SimState, from: TownId, g: number, raw: unknown): { ok: true; route: OrderRoute; note: string } | { ok: false; message: string } {
-  if (!raw || typeof raw !== 'object') return { ok: false, message: 'No route given.' };
-  const r = raw as { to?: unknown; sell?: unknown; sellPrice?: unknown; sellMargin?: unknown };
-  if (!validTown(s, r.to)) return { ok: false, message: 'Choose the town the goods are carried to.' };
-  const to = r.to;
-  if (to === from) return { ok: false, message: 'The goods must be carried to a different town from the one they are bought in.' };
-  if (!(freightPerUnit(s, from, to) >= 0)) return { ok: false, message: `No wagon road links ${townName(s, from)} and ${townName(s, to)}.` };
-  const c = checkSell(r.sell, r.sellPrice, r.sellMargin);
-  if (!c.ok) return c;
-  const dispatch = (raw as { dispatch?: unknown }).dispatch;
-  if (dispatch !== undefined && dispatch !== 'full' && dispatch !== 'daily') return { ok: false, message: 'Wagons leave either when full or every day.' };
-  let note = '';
-  if (!traderOf(s, from)) note = `There is no trading house in ${townName(s, from)} yet to carry the goods; what is bought waits there until one opens.`;
-  else if (!s.treasury.autoMint) note = `Freight is paid from the Purse as the goods leave; on days it cannot be paid they wait in ${townName(s, from)}.`;
-  void g;
-  const route = newRoute(to, c.spec.mode, c.spec.price, c.spec.margin);
-  route.dispatch = dispatch === 'daily' ? 'daily' : 'full';
-  return { ok: true, route, note };
-}
-
-/** What a route still holds, in words (for its cancellation), or '' if nothing. */
-function routeLeftovers(s: SimState, o: PlayerOrder): string {
-  if (!isRouteOrder(o)) return '';
-  const g = o.market.good;
-  const r = o.route;
-  const parts: string[] = [];
-  if (r.waiting > 1e-3) parts.push(`${amountOf(g, r.waiting)} unsold in ${townName(s, r.to)}`);
-  if (r.inTransit > 1e-3) parts.push(`${amountOf(g, r.inTransit)} on the road there`);
-  const held = heldAtOrigin(s, o);
-  if (held > 1e-3) parts.push(`${amountOf(g, held)} still in ${townName(s, o.market.town)}`);
-  if (!parts.length) return '';
-  return `What it had bought stays in the Treasury's stores as ordinary holdings: ${parts.join(', ')}.`;
-}
-
-/** moveGoods: carry Treasury goods to another town, optionally offering them there (an ordinary sell order capped at the quantity moved). */
-function moveGoods(s: SimState, a: Extract<PlayerAction, { type: 'moveGoods' }>): ActionResult {
-  if (!validTown(s, a.from) || !validTown(s, a.to)) return fail('Unknown town.');
-  if (a.from === a.to) return fail('Choose two different towns.');
-  if (!validGood(a.good)) return fail('Unknown good.');
-  if (!isNum(a.qty) || a.qty <= 0) return fail('The quantity must be a positive number.');
+/**
+ * carry: move Treasury goods between its stores. `once` sends now (qty, or −1 for everything held)
+ * and keeps no rule; otherwise a standing CarryRule (policy/carry.ts) loads after every session.
+ */
+function carry(s: SimState, a: Extract<PlayerAction, { type: 'carry' }>): ActionResult {
+  const err = checkCarryPath(s, a.from, a.to, a.good);
+  if (err) return fail(err);
+  if (!isNum(a.qty) || (a.qty !== -1 && a.qty <= 0)) return fail('The quantity must be a positive number (or all of it).');
+  if (a.qty > PLAYER_MAX_QTY) return fail(`The quantity can be at most ${qtyText(PLAYER_MAX_QTY)}${a.once ? '' : ' a day'}.`);
+  if (a.wagons !== undefined && a.wagons !== 'full' && a.wagons !== 'now') return fail('Wagons leave either when full or right away.');
   const have = s.treasury.goods[a.from]?.[a.good] ?? 0;
-  if (have <= 1e-9) return fail(`The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)}.`);
-  let spec: SellSpec | null = null;
-  if (a.sell !== undefined && a.sell !== null) {
-    if (typeof a.sell !== 'object') return fail('Say how the goods are to be offered on arrival.');
-    const c = checkSell(a.sell.mode, a.sell.price, a.sell.margin);
-    if (!c.ok) return fail(c.message);
-    if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
-    spec = c.spec;
-  }
-  // What the goods were worth where they were (the Treasury keeps no cost record of its stores).
-  const origin = s.markets[a.from * N_GOODS + a.good];
-  const worth = origin && origin.ema > 0 && Number.isFinite(origin.ema) ? origin.ema : 0;
-  const q = Math.min(a.qty, have);
-  const r = sendTreasuryCargo(s, a.from, a.to, a.good, q);
-  if (!r.ok) return { ok: false, message: r.message };
-  if (!spec) {
+  if (a.once) {
+    if (have <= 1e-9) return fail(`The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)}.`);
+    const r = sendTreasuryCargo(s, a.from, a.to, a.good, a.qty === -1 ? have : Math.min(a.qty, have));
+    if (!r.ok) return { ok: false, message: r.message };
     policyNews(s, `The Treasury sent ${amountOf(a.good, r.qty)} from ${townName(s, a.from)} to ${townName(s, a.to)}.`, a.from);
     return { ok: true, message: r.message, id: r.id };
   }
-  // Landed cost per unit: the goods' value at the origin plus the freight per unit.
-  const landed = worth + r.paid / Math.max(1e-9, r.qty);
-  const floor = spec.mode === 'fixed' ? spec.price : spec.mode === 'cost' ? Math.max(0, landed * (1 + spec.margin)) : marketFloor(s, a.to, a.good);
-  const market: OrderMarket = { kind: 'good', town: a.to, good: a.good };
-  const o: PlayerOrder = {
+  if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
+  let until = -1;
+  if (a.days !== undefined && a.days !== 0) {
+    if (!isNum(a.days) || a.days < 0) return fail('The number of days must be positive (or 0 for no end).');
+    until = s.day + Math.max(1, Math.round(a.days)) - 1;
+  }
+  const c: CarryRule = {
     id: s.ids.policy++,
-    label: orderShortLabel(s, 'sell', market, floor, r.qty),
+    label: '',
     enabled: true,
-    market,
-    side: 'sell',
-    price: floor,
-    qty: r.qty,
-    total: r.qty,
-    until: -1,
-    once: false,
-    filled: 0,
-    value: 0,
-    filledToday: 0,
+    from: a.from,
+    to: a.to,
+    good: a.good,
+    qty: a.qty,
+    wagons: a.wagons === 'now' ? 'now' : 'full',
+    until,
     created: s.day,
-    route: null,
-    priceMode: 'fixed',
-    band: 0,
+    allow: a.qty >= 0 ? a.qty : 0,
+    heldSince: -1,
+    carriedToday: 0,
+    carried: 0,
+    freightToday: 0,
+    freight: 0,
   };
-  s.policy.orders.push(o);
-  const how = sellRuleText(spec.mode, spec.mode === 'fixed' ? spec.price : 0, spec.margin);
-  const floorNote = spec.mode === 'cost' ? ` (${moneyText(floor)} each: what they were worth in ${townName(s, a.from)} plus the freight${spec.margin ? ', and the margin' : ''})` : '';
-  const text = `The Treasury sent ${amountOf(a.good, r.qty)} from ${townName(s, a.from)} to ${townName(s, a.to)} and will offer them there ${how}${floorNote} once they arrive.`;
+  c.label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : carryLabel(s, c);
+  (s.policy.carries ??= []).push(c);
+  let note = '';
+  if (have <= 1e-9) note = ` The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)} yet; the rule carries it as it comes in (an order buying it there, or cargo landing).`;
+  if (!traderOf(s, a.from) && !lineBetween(s, a.from, a.to)) note += ` There is no trading house in ${townName(s, a.from)} yet to carry it.`;
+  const text = describeCarry(s, c);
   policyNews(s, text, a.from);
-  return { ok: true, message: `${r.message} ${text}`, id: r.id };
+  return { ok: true, message: text + note, id: c.id };
+}
+
+function updateCarry(s: SimState, a: Extract<PlayerAction, { type: 'updateCarry' }>): ActionResult {
+  const c = carryById(s, a.id);
+  if (!c) return fail('No such carry rule.');
+  const p = a.patch ?? {};
+  if (p.qty !== undefined && (!isNum(p.qty) || (p.qty !== -1 && p.qty <= 0) || p.qty > PLAYER_MAX_QTY))
+    return fail(`The quantity must be a positive number up to ${qtyText(PLAYER_MAX_QTY)} a day (or all of it).`);
+  if (p.wagons !== undefined && p.wagons !== 'full' && p.wagons !== 'now') return fail('Wagons leave either when full or right away.');
+  if (p.until !== undefined && (!isInt(p.until) || (p.until !== -1 && p.until < s.day))) return fail('The end day must be today or later (or −1 for none).');
+  const auto = c.label === carryLabel(s, c);
+  if (p.qty !== undefined && p.qty !== c.qty) {
+    c.qty = p.qty;
+    c.allow = p.qty >= 0 ? p.qty : 0;
+  }
+  if (p.wagons !== undefined) c.wagons = p.wagons;
+  if (p.until !== undefined) c.until = p.until;
+  if (p.enabled !== undefined) c.enabled = !!p.enabled;
+  if (auto) c.label = carryLabel(s, c);
+  return { ok: true, message: c.enabled ? describeCarry(s, c) : 'Carry rule paused.', id: c.id };
 }
 
 function build(s: SimState, a: Extract<PlayerAction, { type: 'build' }>): ActionResult {
@@ -1977,9 +1906,8 @@ function orderExhausted(o: PlayerOrder): boolean {
 }
 
 /**
- * Morning: drop expired levies/limits/orders (a supply route's order stays while it still
- * holds, carries or offers goods: its buy side is over, its sales go on); reset
- * order.filledToday and a route's shippedToday / soldToday;
+ * Morning: drop expired levies/limits/orders/carry rules; reset order.filledToday (and the
+ * carry rules' day, policy/carry.ts);
  * set treasury.givesSuspended = !autoMint && purse <= 0;
  * apply labour orders: for each town, the stateworks firm's target = Σ qty of
  * enabled 'labor' buy orders there and its wage = the highest such price
@@ -2008,22 +1936,11 @@ export function policyBeginDay(s: SimState): void {
   }
   if (P.orders.length) {
     const keep: PlayerOrder[] = [];
-    for (const o of P.orders) {
-      if (!(o.until >= 0 && o.until < day)) keep.push(o);
-      else if (isRouteOrder(o)) {
-        if (routeBusy(s, o)) keep.push(o);
-        else policyNews(s, routeSummary(s, o), o.market.town);
-      }
-    }
+    for (const o of P.orders) if (!(o.until >= 0 && o.until < day)) keep.push(o);
     if (keep.length !== P.orders.length) P.orders = keep;
-    for (const o of P.orders) {
-      o.filledToday = 0;
-      if (o.route) {
-        o.route.shippedToday = 0;
-        o.route.soldToday = 0;
-      }
-    }
+    for (const o of P.orders) o.filledToday = 0;
   }
+  carriesBeginDay(s);
 
   const t = s.treasury;
   const was = t.givesSuspended;
@@ -2088,63 +2005,6 @@ interface Submitted {
   askedDay?: number;
   nettedDay?: number;
   filledDay?: number;
-  /** true: the ask of a supply route's waiting stock at its destination (credited to the route). */
-  route: boolean;
-}
-
-/** A finished supply route in words (when its order lapses with nothing left to carry or sell). */
-function routeSummary(s: SimState, o: PlayerOrder): string {
-  if (!isRouteOrder(o)) return '';
-  const r = o.route;
-  const g = o.market.good;
-  return `The Treasury's supply route “${o.label}” has run its course: ${amountOf(g, o.filled)} bought in ${townName(s, o.market.town)} for ${moneyText(o.value)}, ${qtyText(r.soldTotal)} sold in ${townName(s, r.to)} for ${moneyText(r.revenue)}, freight ${moneyText(r.freightPaid)}.`;
-}
-
-/**
- * Supply routes, after clearing: load what each route has bought and not yet sent
- * (routes.heldAtOrigin — today's purchases, and any left waiting for freight) onto the
- * Treasury's wagons (traders.sendTreasuryCargo): freight from the Purse to the origin's
- * trading house, cargo tagged with the order, basis = purchase cost + freight per unit.
- * Purchase cost: today's units at today's average price, older ones at the order's average.
- * A route that sends full wagons (the default) keeps collecting while it is buying: whole wagons
- * leave once at least ROUTE_FULL_SHARE full, and everything once it has waited as long as the good
- * keeps (routes.routeHoldDays) or a Treasury freight line on the road has room — the Purse pays a
- * whole wagon's trip however little it carries. A 'daily' route sends what it bought every day.
- * When the freight cannot be paid (auto-mint off, Purse short) the goods wait at the origin and
- * the route tries again the next day.
- */
-function shipRoutes(s: SimState, paidToday: Record<number, number>, session: number): void {
-  // Wagons leave at noon, or after a later session (Treasury cargo bought at the close leaves that evening).
-  const depart = s.day + Math.max(0.5, (SESSION_TIMES[session] ?? 0.5) + 0.05);
-  for (const o of s.policy.orders) {
-    if (!isRouteOrder(o)) continue;
-    const held = heldAtOrigin(s, o);
-    if (!(held > 1e-6)) continue;
-    const buying = o.enabled && !(o.until >= 0 && o.until <= s.day) && !orderExhausted(o) && !o.once;
-    const r = o.route;
-    if (!(r.heldSince !== undefined && r.heldSince >= 0)) r.heldSince = s.day;
-    const lineRoom = s.policy.lines?.length ? (lineOffer(s, o.market.town, r.to)?.room ?? 0) : 0;
-    const load = Math.min(held, routeLoadToday(held, r.dispatch ?? 'full', buying, s.day - r.heldSince, o.market.good, lineRoom));
-    if (!(load > 1e-6)) continue; // keep collecting for a fuller wagon
-    const life = o.filled > 0 ? o.value / o.filled : o.price;
-    const qT = Math.min(held, Math.max(0, o.filledToday));
-    const pT = qT > 0 && o.filledToday > 0 ? (paidToday[o.id] ?? 0) / o.filledToday : life;
-    const unitCost = (qT * pT + (held - qT) * life) / held;
-    const res = sendTreasuryCargo(s, o.market.town, r.to, o.market.good, load, { unitCost, order: o.id, depart });
-    if (res.ok) {
-      // what is left starts a new load today
-      r.heldSince = held - res.qty > 1e-6 ? s.day : -1;
-      r.shippedToday += res.qty;
-      r.shippedTotal += res.qty;
-      r.freightPaid += res.paid;
-      r.inTransit += res.qty;
-    } else {
-      // Held back (no freight money, no trading house): say why on the first day of a spell.
-      const fails = (rt(s).bag.routeFails ??= {}) as Record<number, number>;
-      if (fails[o.id] !== s.day - 1 && fails[o.id] !== s.day) policyNews(s, `The Treasury's ${goodLower(o.market.good)} bought in ${townName(s, o.market.town)} for ${townName(s, r.to)} waits there: ${lowerFirst(res.message)}`, o.market.town);
-      fails[o.id] = s.day;
-    }
-  }
 }
 
 /**
@@ -2169,33 +2029,6 @@ export function playerOrders(s: SimState, books: Books): void {
   const committed: Record<number, number> = {};
   let iouBuyCommitted = 0;
   let goldCommitted = 0;
-  // ---- supply routes: offer the goods waiting at each destination (even once the buy side is over);
-  // what a route bought and still holds at its origin is kept from the Treasury's other sell orders there ----
-  for (const po of orders) {
-    if (!isRouteOrder(po)) continue;
-    const r = po.route;
-    const held = heldAtOrigin(s, po);
-    if (held > 1e-9) {
-      const ko = po.market.town * N_GOODS + po.market.good;
-      committed[ko] = (committed[ko] || 0) + held;
-    }
-    if (!(r.waiting > 1e-9)) continue;
-    const g = po.market.good;
-    if (!validTown(s, r.to) || !validGood(g)) continue;
-    const k = r.to * N_GOODS + g;
-    // Never offer more than the Treasury holds there (spoilage, or stock another order sold).
-    const have = Math.max(0, (t.goods[r.to]?.[g] ?? 0) - (committed[k] || 0));
-    if (r.waiting > have) r.waiting = have;
-    if (!(r.waiting > 1e-9)) {
-      r.waiting = 0;
-      continue;
-    }
-    const book = books.goods[k];
-    if (!book) continue;
-    committed[k] = (committed[k] || 0) + r.waiting;
-    const ord = addAsk(book, STATE, routeFloor(s, po), r.waiting, { exempt: true, tag: po.id });
-    sub.push({ po, ord, route: true });
-  }
   for (const po of orders) {
     if (!po.enabled || po.market.kind === 'labor') continue;
     if (po.until >= 0 && po.until < s.day) continue;
@@ -2246,100 +2079,46 @@ export function playerOrders(s: SimState, books: Books): void {
     if (buy) budget -= q * perUnit;
     const opt = { exempt: true, tag: po.id, session: po.session };
     const ord = buy ? addBid(book, STATE, po.price, q, opt) : addAsk(book, STATE, po.price, q, opt);
-    sub.push({ po, ord, route: false });
+    sub.push({ po, ord });
   }
   // Freight lines: the tools and oil they lack, in their depot towns (policy/lines.ts).
   if (s.policy.lines?.length) lineOrders(s, books, budget);
 }
 
-/**
- * After clearing: update order.filled/filledToday/value; credit supply routes' sales
- * (waiting −, soldToday/soldTotal/revenue +) and ship what they bought (shipRoutes);
- * disable once-orders and exhausted totals.
- */
 /** Credit one order's fills of a session (or, without sessions, of the day) to its record. */
-function creditFill(x: Submitted, f: number, paid: number, netted: number, paidToday: Record<number, number>): void {
-  const { po, route } = x;
+function creditFill(x: Submitted, f: number, paid: number, netted: number): void {
+  const { po } = x;
   x.filledDay = (x.filledDay ?? 0) + f;
   x.nettedDay = (x.nettedDay ?? 0) + netted;
-  if (route) {
-    const r = po.route;
-    if (!r) return;
-    r.nettedToday = x.nettedDay > 1e-9 ? x.nettedDay : 0;
-    if (f > 0) {
-      r.waiting = Math.max(0, r.waiting - f);
-      if (r.waiting < 1e-9) r.waiting = 0;
-      r.soldToday += f;
-      r.soldTotal += f;
-      r.revenue += Math.max(0, paid);
-    }
-    return;
-  }
   po.nettedToday = x.nettedDay > 1e-9 ? x.nettedDay : 0;
   po.filledToday += f;
   po.filled += f;
   if (f > 0) po.value += po.side === 'buy' ? paid : -paid;
-  if (po.route && f > 0) paidToday[po.id] = (paidToday[po.id] || 0) + Math.max(0, paid);
 }
 
 /**
  * Before market session k (markets.clearAll hook): Treasury cargo due by then lands (the
- * opening's was delivered in the morning), and each supply route offers what now waits at its
- * destination — cargo that landed during the day is on sale in the next session.
+ * opening's was delivered in the morning) and the Treasury's sell orders are re-sized to what
+ * its stores hold now — cargo that landed during the day is on sale in the next session.
  */
 export function playerBeforeSession(s: SimState, books: Books, k: number): void {
   if (k > 0 && s.shipments.length) deliverTreasuryDue(s, s.day + (SESSION_TIMES[k] ?? 1));
   const sub = rt(s).bag.playerSubmitted as Submitted[] | undefined;
-  if (!sub) return;
-  if (k > 0) resizeTreasurySales(s, books, sub);
-  let routes = false;
-  for (const o of s.policy.orders) if (o.route) routes = true;
-  if (!routes) return;
-  const asks = new Map<number, Submitted>();
-  for (const x of sub) if (x.route) asks.set(x.po.id, x);
-  const t = s.treasury;
-  for (const po of s.policy.orders) {
-    if (!isRouteOrder(po)) continue;
-    const r = po.route;
-    const g = po.market.good;
-    if (!validTown(s, r.to) || !validGood(g)) continue;
-    const have = Math.max(0, t.goods[r.to]?.[g] ?? 0);
-    if (r.waiting > have) r.waiting = have;
-    const x = asks.get(po.id);
-    if (x) {
-      x.ord.left = Math.max(0, r.waiting);
-      x.ord.limit = routeFloor(s, po); // landed cost moves as cargo lands
-    } else if (r.waiting > 1e-9) {
-      const book = books.goods[r.to * N_GOODS + g];
-      if (!book) continue;
-      const ord = addAsk(book, STATE, routeFloor(s, po), r.waiting, { exempt: true, tag: po.id });
-      ord.dayQty = ord.left = r.waiting;
-      ord.filledDay = ord.paidDay = 0;
-      sub.push({ po, ord, route: true });
-    }
-  }
+  if (sub && k > 0) resizeTreasurySales(s, books, sub);
 }
 
 /**
  * Before a later session: the Treasury's goods sell orders offer what it holds now — what an
  * earlier session bought (or cargo that landed) can be sold later the same day — never more than
- * the order's day still allows, and never what a supply route holds at its origin or has waiting
- * at its destination there.
+ * the order's day still allows (and what a carry loaded after an earlier session has left).
  */
 function resizeTreasurySales(s: SimState, books: Books, sub: Submitted[]): void {
   const t = s.treasury;
   const byId = new Map<number, Submitted>();
-  for (const x of sub) if (!x.route) byId.set(x.po.id, x);
+  for (const x of sub) byId.set(x.po.id, x);
   const committed: Record<number, number> = {};
-  for (const o of s.policy.orders) {
-    if (!isRouteOrder(o)) continue;
-    const ko = o.market.town * N_GOODS + o.market.good;
-    committed[ko] = (committed[ko] || 0) + heldAtOrigin(s, o);
-    const kd = o.route.to * N_GOODS + o.market.good;
-    committed[kd] = (committed[kd] || 0) + Math.max(0, o.route.waiting);
-  }
   for (const po of s.policy.orders) {
-    if (!po.enabled || po.side !== 'sell' || po.market.kind !== 'good' || po.route) continue;
+    if (!po.enabled || po.side !== 'sell' || po.market.kind !== 'good') continue;
     if (po.until >= 0 && po.until < s.day) continue;
     const m = po.market;
     if (!validTown(s, m.town) || !validGood(m.good)) continue;
@@ -2358,59 +2137,53 @@ function resizeTreasurySales(s: SimState, books: Books, sub: Submitted[]): void 
       const ord = addAsk(book, STATE, po.price, q, { exempt: true, tag: po.id, session: po.session });
       ord.dayQty = ord.left = q;
       ord.filledDay = ord.paidDay = 0;
-      sub.push({ po, ord, route: false });
+      sub.push({ po, ord });
     }
   }
 }
 
 /**
  * After market session k (markets.clearAll hook): credit the session's fills to the Treasury's
- * orders and routes, and let supply routes load what they bought (their wagons leave after the
- * session that filled them, by their dispatch rule).
+ * orders, then let the carry rules load what the stores now hold (their wagons leave after the
+ * session, by each rule's wagons setting: policy/carry.ts).
  */
 export function playerAfterSession(s: SimState, k: number): void {
   const bag = rt(s).bag;
   bag.playerSessionsDay = s.day;
   const sub = bag.playerSubmitted as Submitted[] | undefined;
-  const paidToday: Record<number, number> = {};
   if (sub) {
     for (const x of sub) {
       const o = x.ord;
       const released = o.released ?? 0;
       x.askedDay = (x.askedDay ?? 0) + released;
-      creditFill(x, o.filled > 0 ? o.filled : 0, o.paid, Math.max(0, released - o.qty), paidToday);
+      creditFill(x, o.filled > 0 ? o.filled : 0, o.paid, Math.max(0, released - o.qty));
     }
   }
-  let routes = false;
-  for (const o of s.policy.orders) if (o.route) routes = true;
-  if (routes) shipRoutes(s, paidToday, k);
+  runCarries(s, k);
 }
 
 /**
- * After clearing: update order.filled/filledToday/value; credit supply routes' sales
- * (waiting −, soldToday/soldTotal/revenue +) and ship what they bought (shipRoutes);
- * disable once-orders and exhausted totals. With market sessions (engine) the fills were
- * credited session by session; without them (a bare clearAll) the day is credited here.
+ * After clearing: update order.filled/filledToday/value, run the carry rules, step patient
+ * orders, attribute Treasury workers, disable once-orders and exhausted totals. With market
+ * sessions (engine) the fills were credited (and carries run) session by session; without them
+ * (a bare clearAll) the day is credited here.
  */
 export function playerAfterClear(s: SimState, books: Books): void {
   void books;
   const bag = rt(s).bag;
   const sessions = bag.playerSessionsDay === s.day;
   const sub = bag.playerSubmitted as Submitted[] | undefined;
-  if (sub) {
-    if (!sessions) {
-      const paidToday: Record<number, number> = {};
+  if (!sessions) {
+    if (sub)
       for (const x of sub) {
         x.askedDay = x.ord.dayQty ?? x.ord.qty;
-        creditFill(x, x.ord.filled > 0 ? x.ord.filled : 0, x.ord.paid, 0, paidToday);
+        creditFill(x, x.ord.filled > 0 ? x.ord.filled : 0, x.ord.paid, 0);
       }
-      let routes = false;
-      for (const o of s.policy.orders) if (o.route) routes = true;
-      if (routes) shipRoutes(s, paidToday, MARKET_SESSIONS - 1);
-    }
+    runCarries(s, MARKET_SESSIONS - 1);
+  }
+  if (sub) {
     for (const x of sub) {
       const po = x.po;
-      if (x.route) continue;
       // A patient order that follows the market: short today → a step towards the band's edge
       // tomorrow; filled in full → part of a step back (it settles near the best price that fills).
       const want = (x.askedDay ?? 0) - (x.nettedDay ?? 0);

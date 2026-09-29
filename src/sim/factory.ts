@@ -373,7 +373,7 @@ export function newSimState(seed: number, map: MapData): SimState {
     bank: newBank(-1),
     treasury: newTreasury(0),
     foreign: newForeign(),
-    policy: { levies: [], limits: [], orders: [], lines: [] },
+    policy: { levies: [], limits: [], orders: [], lines: [], carries: [] },
     stats: newStats(),
     news: [],
     ids: { person: 0, firm: 0, building: 0, loan: 0, shipment: 0, project: 0, policy: 1 },

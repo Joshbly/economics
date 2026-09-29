@@ -6,7 +6,7 @@
 //   statement    income & spending by category: today / this month / last month
 //                (treasury.flows / flowsMonth / flowsLastMonth; + = into the Purse)
 //   stores       Treasury stores & wagons: holdings, wagons on the road and
-//                supply-route pipelines (shared with Levers → Trade; live)
+//                wagons on the road (shared with Levers → Trade; live)
 //   rules        every levy with what it took (or paid) today, this month,
 //                last month and in all
 //   history      the Purse and cumulative money minted

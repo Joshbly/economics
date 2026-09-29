@@ -9,7 +9,7 @@
 // Runtime caches (runtime.ts) are never saved; modules rebuild them on demand.
 // ============================================================================
 import { LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
-import { G, N_GOODS } from './goods';
+import { G, GOODS, N_GOODS } from './goods';
 import { checkLedger, deposits, reconcileBank } from './ledger';
 import type { SimState } from './types';
 
@@ -224,35 +224,107 @@ function migrate(raw: Obj): void {
   }
 }
 
-const ROUTE_NUMS = ['sellPrice', 'sellMargin', 'inTransit', 'waiting', 'landed', 'shippedToday', 'soldToday', 'shippedTotal', 'soldTotal', 'freightPaid', 'revenue'] as const;
+const CARRY_NUMS = ['qty', 'until', 'created', 'allow', 'heldSince', 'carriedToday', 'carried', 'freightToday', 'freight'] as const;
+
+/** A good's name for labels written while loading ("bread"). */
+function goodWords(g: number): { name: string } {
+  return { name: GOODS[g]?.name.toLowerCase() ?? 'goods' };
+}
 
 /**
- * Treasury orders and shipments from before supply routes: `route` defaults to null and
- * `Shipment.order` to −1. A damaged route record is repaired (missing counters → 0) or, when
- * its destination or selling rule is unusable, dropped (its goods stay ordinary holdings).
+ * Treasury orders and carry rules. Orders from before prices could follow the market are
+ * fixed-price orders; `policy.carries` defaults to [] and `Shipment.order` to −1; a damaged carry
+ * rule is repaired (missing counters → 0) or, when its towns or good are unusable, dropped.
+ *
+ * Saves from before carry rules could hold supply routes: a buy order with a `route` (carry what
+ * it buys to another town and offer it there). Each becomes the three primitives it was made of —
+ * the buy order itself; a carry rule from its town to the destination (everything held, same
+ * wagons); and a sell order there for the route's daily amount (a fixed floor stays; landed cost
+ * + margin becomes a fixed floor at today's landed cost + margin; "whatever it fetches" sells at
+ * any price). Goods waiting at either end are ordinary holdings already; cargo on the road is
+ * re-tagged to the carry rule.
  */
-function fillRoutes(s: SimState): void {
+function fillOrders(s: SimState): void {
   const nT = s.towns.length;
+  const pol = s.policy as unknown as Obj;
+  if (!Array.isArray(pol.carries)) pol.carries = [];
+  const okTown = (x: unknown): x is number => isNum(x) && x >= 0 && x < nT && Math.floor(x) === x;
+  const okGood = (x: unknown): x is number => isNum(x) && x >= 0 && x < N_GOODS && Math.floor(x) === x;
+  const added: Obj[] = [];
+  const newCarries: Obj[] = [];
+  const retag: Record<number, number> = {};
   for (const o of s.policy.orders as unknown as Obj[]) {
     if (!isObj(o)) continue;
-    // Orders from before prices could follow the market are fixed-price orders.
     if (o.priceMode !== 'fixed' && o.priceMode !== 'follow' && o.priceMode !== 'any') o.priceMode = 'fixed';
     if (!isNum(o.band) || o.band < 0) o.band = 0;
     const r = o.route;
-    if (!isObj(r)) {
-      o.route = null;
-      continue;
-    }
+    delete o.route;
     const m = o.market as Obj | undefined;
-    const okTo = isNum(r.to) && r.to >= 0 && r.to < nT && Math.floor(r.to) === r.to;
-    const okSell = r.sell === 'fixed' || r.sell === 'cost' || r.sell === 'market';
-    if (!okTo || !okSell || !isObj(m) || m.kind !== 'good' || o.side !== 'buy') {
-      o.route = null;
-      continue;
-    }
-    for (const k of ROUTE_NUMS) if (!isNum(r[k])) r[k] = 0;
+    if (!isObj(r) || !isObj(m) || m.kind !== 'good' || o.side !== 'buy' || !okTown(m.town) || !okGood(m.good) || !okTown(r.to) || r.to === m.town) continue;
+    const g = m.good;
+    const to = r.to;
+    const w = goodWords(g);
+    const from = s.towns[m.town]?.name ?? 'town';
+    const dest = s.towns[to]?.name ?? 'town';
+    const id = s.ids.policy++;
+    newCarries.push({
+      id,
+      label: `Carry ${w.name} · ${from} → ${dest} · all${r.dispatch === 'daily' ? ' · right away' : ''}`,
+      enabled: true,
+      from: m.town,
+      to,
+      good: g,
+      qty: -1,
+      wagons: r.dispatch === 'daily' ? 'now' : 'full',
+      until: -1,
+      created: s.day,
+      allow: 0,
+      heldSince: -1,
+      carriedToday: 0,
+      carried: isNum(r.shippedTotal) ? r.shippedTotal : 0,
+      freightToday: 0,
+      freight: isNum(r.freightPaid) ? r.freightPaid : 0,
+    });
+    retag[o.id as number] = id;
+    const qty = isNum(o.qty) && o.qty > 0 ? o.qty : 1;
+    const landed = isNum(r.landed) && r.landed > 0 ? r.landed : isNum(o.price) ? o.price : 0;
+    const fixed = r.sell === 'fixed' && isNum(r.sellPrice) && r.sellPrice > 0 ? r.sellPrice : r.sell === 'cost' && landed > 0 ? landed * (1 + (isNum(r.sellMargin) ? r.sellMargin : 0)) : 0;
+    const any = !(fixed > 0);
+    added.push({
+      id: s.ids.policy++,
+      label: `Sell ${qty >= 10 ? Math.round(qty) : qty}/day · ${w.name} in ${dest} · ${any ? 'any price' : `≥ ¤${fixed.toFixed(2)}`}`,
+      enabled: true,
+      market: { kind: 'good', town: to, good: g },
+      side: 'sell',
+      price: any ? 0 : Math.round(fixed * 100) / 100,
+      qty,
+      total: -1,
+      until: -1,
+      once: false,
+      filled: isNum(r.soldTotal) ? r.soldTotal : 0,
+      value: isNum(r.revenue) ? -r.revenue : 0,
+      filledToday: 0,
+      created: s.day,
+      priceMode: any ? 'any' : 'fixed',
+      band: 0,
+    });
   }
-  for (const sh of s.shipments as unknown as Obj[]) if (isObj(sh) && !isNum(sh.order)) sh.order = -1;
+  for (const x of added) (s.policy.orders as unknown as Obj[]).push(x);
+  const carries: Obj[] = [];
+  for (const c of [...(pol.carries as unknown[]), ...newCarries]) {
+    if (!isObj(c) || !isNum(c.id) || !okTown(c.from) || !okTown(c.to) || c.from === c.to || !okGood(c.good)) continue;
+    for (const k of CARRY_NUMS) if (!isNum(c[k])) c[k] = k === 'qty' || k === 'until' || k === 'heldSince' ? -1 : 0;
+    if (c.wagons !== 'full' && c.wagons !== 'now') c.wagons = 'full';
+    if (typeof c.enabled !== 'boolean') c.enabled = true;
+    if (typeof c.label !== 'string') c.label = `Carry ${goodWords(c.good).name}`;
+    carries.push(c);
+  }
+  pol.carries = carries;
+  for (const sh of s.shipments as unknown as Obj[]) {
+    if (!isObj(sh)) continue;
+    if (!isNum(sh.order)) sh.order = -1;
+    else if (retag[sh.order] !== undefined) sh.order = retag[sh.order];
+  }
 }
 
 const LINE_NUMS = [
@@ -317,7 +389,7 @@ function fillDefaults(s: SimState): void {
     if (!isNum(f.monthSold)) f.monthSold = 0;
     if (!isNum(f.profitLong)) f.profitLong = 0;
   }
-  fillRoutes(s);
+  fillOrders(s);
   fillLines(s);
   // Loans from before fixed rates: term credit keeps the rate it carries now; credit lines float.
   for (const ln of s.loans) if (ln && typeof ln.fixed !== 'boolean') ln.fixed = !LOAN_FLOATING_PURPOSES.includes(ln.purpose);

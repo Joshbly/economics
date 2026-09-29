@@ -1,19 +1,18 @@
 // ============================================================================
-// The Treasury's supply routes on the map.
+// The Treasury's carry rules on the map.
 //
-// A supply route is a Treasury buy order with order.route set: whatever it buys
-// in the order's town (order.market.town) rides the Treasury's wagons
-// (s.shipments with owner STATE and shipment.order = the order id) to
-// route.to, where it is offered for sale. For every active route the map draws
+// A carry rule (s.policy.carries) moves the Treasury's goods from its store in
+// one town to its store in another on wagons (s.shipments with owner STATE and
+// shipment.order = the rule's id). For every running rule the map draws
 // a subtle gold dashed line along the road between the two towns
 // (routeBetweenTowns, smoothed like the roads, kept to the right of the centre
 // as the wagons are, trimmed inside the towns), chevrons drifting slowly toward
 // the destination, and a pill label near the middle
-// ("bread · 20/day → Saltmere", with the good's colour).
+// ("bread · 20/day → Saltmere" / "bread · all → Saltmere", with the good's colour).
 //
 // Treasury freight lines (s.policy.lines) are drawn the same way, as a solid
 // line in each direction (a lane each side of the road, chevrons both ways) and
-// one pill ("freight line ⇄ Millbrook · 2/4 out"); their ids share the orders'
+// one pill ("freight line ⇄ Millbrook · 2/4 out"); their ids share the policy
 // id space (s.ids.policy), so one hit id names either.
 //
 // Pure helpers first (unit-tested), then the drawing layer. Reads the
@@ -47,20 +46,20 @@ import type { View } from './life';
 import { chaikin } from './roads';
 import { polyFromPoints, samplePoly, type Poly, type PolySample } from './schedule';
 
-/** One active supply route as the map shows it. */
+/** One running carry rule (or freight line direction) as the map shows it. */
 export interface RouteInfo {
-  /** The order's id. */
+  /** The carry rule's id (or the freight line's). */
   order: number;
   from: number;
   to: number;
   good: number;
-  /** Units bought per day at most (order.qty). */
+  /** Units carried per day at most (CarryRule.qty; −1 = everything held). */
   perDay: number;
-  /** Still buying (enabled, not lapsed, cap not reached); false = only its last loads are on the road. */
+  /** Still running (enabled, not lapsed); false = only its last loads are on the road. */
   buying: boolean;
   /** Units on the road now. */
   inTransit: number;
-  /** Units arrived at the destination and not yet sold. */
+  /** Units held in the store at `from`, waiting to be loaded. */
   waiting: number;
   /** 0 for the first route from `from` to `to`, 1 for a second one… (drawn one lane further out). */
   lane: number;
@@ -83,13 +82,12 @@ export function roundQty(x: number): number {
 }
 
 /**
- * The supply routes to draw: goods buy orders with a route to another town that
- * are still buying, or whose last loads are still on the road. Units on the road
- * are the larger of the order's own count and the Treasury wagons tagged with it.
+ * The carry rules to draw: every rule that is running, or whose last loads are still on the road
+ * (a paused rule with nothing moving is not drawn).
  */
 export function activeRoutes(s: SimState, lanes: Map<string, number> = new Map()): RouteInfo[] {
-  const orders = s.policy?.orders;
-  if (!orders || !orders.length) return [];
+  const cs = s.policy?.carries;
+  if (!cs || !cs.length) return [];
   const nt = s.towns.length;
   let carried: Map<number, number> | null = null;
   for (const sh of s.shipments) {
@@ -98,19 +96,18 @@ export function activeRoutes(s: SimState, lanes: Map<string, number> = new Map()
     carried.set(sh.order, (carried.get(sh.order) ?? 0) + Math.max(0, num(sh.qty)));
   }
   const out: RouteInfo[] = [];
-  for (const o of orders) {
-    const r = o?.route;
-    if (!r || o.market.kind !== 'good' || o.side !== 'buy') continue;
-    const from = o.market.town;
-    const to = r.to;
+  for (const c of cs) {
+    if (!c) continue;
+    const { from, to } = c;
     if (!(from >= 0 && from < nt && to >= 0 && to < nt) || from === to) continue;
-    const buying = !!o.enabled && !(o.until >= 0 && o.until < s.day) && !(o.total >= 0 && o.filled >= o.total) && o.qty > 0;
-    const inTransit = Math.max(Math.max(0, num(r.inTransit)), carried?.get(o.id) ?? 0);
+    const buying = !!c.enabled && !(c.until >= 0 && c.until < s.day);
+    const inTransit = carried?.get(c.id) ?? 0;
     if (!buying && !(inTransit > 1e-6)) continue;
     const key = from + '>' + to;
     const lane = lanes.get(key) ?? 0;
     lanes.set(key, lane + 1);
-    out.push({ order: o.id, from, to, good: o.market.good, perDay: Math.max(0, num(o.qty)), buying, inTransit, waiting: Math.max(0, num(r.waiting)), lane });
+    const held = Math.max(0, num(s.treasury?.goods?.[from]?.[c.good]));
+    out.push({ order: c.id, from, to, good: c.good, perDay: c.qty >= 0 ? num(c.qty) : -1, buying, inTransit, waiting: held, lane });
   }
   return out;
 }
@@ -148,10 +145,10 @@ function goodWord(g: number): string {
   return (GOODS[g]?.name ?? 'goods').toLowerCase();
 }
 
-/** Pill text: "bread · 20/day → Saltmere" (or "… · 12 on the road → …" once it has stopped buying). */
+/** Pill text: "bread · 20/day → Saltmere", "bread · all → Saltmere" (or "… · 12 on the road → …" once it has stopped). */
 export function routeLabel(r: RouteInfo, toName: string): string {
   if (r.line) return `freight line ⇄ ${toName} · ${fmtNum(num(r.out))}/${fmtNum(num(r.wagons))} out`;
-  const what = r.buying ? `${fmtNum(roundQty(r.perDay))}/day` : `${fmtNum(roundQty(r.inTransit))} on the road`;
+  const what = r.buying ? (r.perDay < 0 ? 'all' : `${fmtNum(roundQty(r.perDay))}/day`) : `${fmtNum(roundQty(r.inTransit))} on the road`;
   return `${goodWord(r.good)} · ${what} → ${toName}`;
 }
 
@@ -379,7 +376,7 @@ export function createRouteLayer(): RouteLayer {
       ctx.strokeStyle = ROUTE_SHADE;
       ctx.lineWidth = (ROUTE_WIDTH + (on ? 3 : 1.8)) * d;
       ctx.stroke();
-      // supply routes are dashed; freight lines are solid (a standing service)
+      // carry rules are dashed; freight lines are solid (a standing service)
       ctx.setLineDash(r.line ? [] : [ROUTE_DASH[0] * d, ROUTE_DASH[1] * d]);
       ctx.lineDashOffset = 0;
       ctx.strokeStyle = r.line ? LINE_COLOR : ROUTE_COLOR;

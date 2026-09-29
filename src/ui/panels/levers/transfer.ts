@@ -317,7 +317,7 @@ export function transferLever(): Lever {
     }
     const need = Number.isFinite(each) && each > 0 ? each * t.n : NaN;
     const forFirms = !GOODS[good]?.consumer ? ' Only workshops can use it.' : '';
-    setText(heldHint, held > 0.005 ? `${fmtQ(held)} ${u} held there.${forFirms}` : `None held in ${townName(s, gTown)} — buy some there with Trade, or move goods in.${forFirms}`);
+    setText(heldHint, held > 0.005 ? `${fmtQ(held)} ${u} held there.${forFirms}` : `None held in ${townName(s, gTown)} — buy some there with Trade, or carry some in.${forFirms}`);
     heldHint.classList.toggle('warn', !(held > 0.005));
     setText(vCount, fmtInt(t.n));
     setText(vCountL, t.n === 1 ? 'recipient' : 'recipients');

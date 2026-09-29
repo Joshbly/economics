@@ -422,7 +422,7 @@ that pay ¤5 per year each, forever). Seven primitives:
    the crew is let go as the projects finish), the IOU market
    (selling = issuing new IOUs, buying = retiring them), the Gold market.
    Price limit, quantity per day, duration (once / N days / standing), optional
-   total cap. Also *Move goods* between towns (pays freight).
+   total cap. Also **Carry** between the Treasury's stores (below).
    * **Price mode** (`priceMode`): `fixed` uses `price`; `follow` re-sets the limit
      every morning from the market's **own** going price (`MarketState.ownEma`: the
      EMA of what each day's auction would have cleared at without the Treasury's
@@ -437,29 +437,36 @@ that pay ¤5 per year each, forever). Seven primitives:
      `any` has no effective limit (buy: going price × ORDER_ANY_MULT; sell: the floor),
      with the daily budget reserved at going price × ORDER_ANY_BUDGET_MULT. Typing a
      price switches an order back to `fixed`.
-   * **Supply route** (a goods *buy* order with `route`): everything the order buys
-     is carried to another town and offered there. Every step is a real flow: the
-     purchase clears in the origin's auction; the day's purchases are loaded onto
-     the Treasury's wagons with freight paid from the Purse to the origin's trading
-     house (its free wagons and fuel, the full-wagon trip cost + TREASURY_FREIGHT_PREMIUM,
-     exempt from shipment levies and quotas — as *Move goods*); a load leaves once
-     it fills ROUTE_LOAD_SHARE of a wagon or amounts to ROUTE_HOLD_DAYS of the daily
-     quantity (the rest leaves when the buying ends), each cargo tagged with the
-     order (`Shipment.order`) and valued at its landed cost (purchase price + freight
-     per unit). On arrival it waits in the Treasury's stores there (`route.waiting`,
-     average `route.landed`) and is offered every day as an exempt Treasury ask at a
-     floor set by the route's rule: a fixed price, landed cost × (1 + margin), or a
-     token ROUTE_MARKET_FLOOR_SHARE of the local price ("for whatever it fetches").
-     Perishables spoil on the road and in store like any cargo. When the freight
-     cannot be paid (auto-mint off) the goods wait at the origin — counted as the
-     order's units bought minus units loaded, capped by the Treasury's holdings there
-     — and leave the next day it can. The sales go on after the buy side ends; the
-     order lapses only once nothing is held, carried or waiting. Cancelling stops the
-     buying; what it bought stays in the Treasury's stores as ordinary holdings.
-   * *Move goods* may also offer the goods on arrival: an ordinary Treasury sell
-     order at the destination capped at the quantity moved, at a fixed price, at
-     landed cost (the goods' price where they came from + freight per unit) ×
-     (1 + margin), or at the token floor.
+   * **Stores.** Whatever the Treasury buys lands in its store in that town
+     (`treasury.goods[town][good]`); cargo lands in the store where it arrives; a
+     sell order offers what the store holds (re-sized before every session, so what an
+     earlier session bought or a wagon brought in can be sold later the same day); a
+     transfer in kind hands it out. Perishables spoil in store like anywhere else.
+   * **Carry** (`s.policy.carries`, policy/carry.ts): move the Treasury's goods from
+     its store in one town to its store in another. It neither buys nor sells — a
+     "supply line" is three rules side by side: a buy order in A, a carry A → B, a
+     sell order in B, each listed, paused and changed on its own. `once` sends now
+     (`qty`, or everything held) and keeps no rule; a standing rule (`CarryRule`)
+     carries up to `qty` a day, or everything held (`qty` −1, as it comes in), for N
+     days or until removed. After every market session each rule loads what it may
+     (traders.sendTreasuryCargo: a Treasury freight line on the road first, without a
+     fare, else the origin's trading house for the full-wagon trip cost +
+     TREASURY_FREIGHT_PREMIUM from the Purse — its free wagons and fuel; exempt from
+     shipment levies and quotas); wagons leave at noon or after the session that
+     filled them and land before the next session at the destination. `wagons:
+     'full'` (the default) waits for a wagon CARRY_FULL_SHARE full — or until the
+     goods have waited as long as they keep (carryHoldDays: until spoilage would take
+     CARRY_SPOIL_BUDGET; bread 2 days; at most CARRY_MAX_HOLD_DAYS), a freight line on
+     the road has room, or the close of the rule's last day; `'now'` sends what is
+     held after every session. A daily amount accrues each morning and is banked
+     while goods wait for a fuller wagon (at most CARRY_MAX_HOLD_DAYS of it). When the
+     freight cannot be paid (auto-mint off) the goods stay in the store and the rule
+     tries after the next session. Uses of one store never double-count: whatever a
+     sell order, a transfer or an earlier rule took is no longer held. Cargo is tagged
+     with the rule (`Shipment.order`) for the map and the stores view. Saves from
+     before carry rules had *supply routes* (a buy order with `route`): loading turns
+     each into its buy order, a carry rule (everything, same wagons) and a sell order
+     at the destination (save.fillOrders).
 3. **Levy** — attach a signed rate to any flow. Positive = the Treasury takes,
    negative ("give") = the Treasury pays. Bases:
    * `sale` of a good (payer: buyer or seller; % of value or ¤ per unit)
@@ -548,8 +555,8 @@ that pay ¤5 per year each, forever). Seven primitives:
      LINE_COST_FLOOR_MULT … LINE_COST_CAP_MULT of it, or `free`. The gap between the
      fares and the running cost is paid by the Purse and shown as such (the line's
      card: fares in, drivers, fuel & wear, result). The Treasury's own cargo
-     between the two towns (supply routes, Move goods) rides the line first, without
-     a fare (landed cost + the line's cost per unit), the rest with the trading house
+     between the two towns (carry rules, and goods carried once) rides the line first,
+     without a fare (the cargo's basis counts the line's cost per unit), the rest with the trading house
      as before. Paused: no loads, no purchases, only the drivers on the road kept.
      Closing hands the line's tools and oil to the Treasury's stores in `a` (cargo on
      the road still arrives).
@@ -578,10 +585,10 @@ composing these primitives.
 
 ```
 beginDay            calendar, season, random events, reset daily accumulators
-policyBeginDay      expire orders/levies/limits; freight lines' morning (wagons home, wear, fare,
+policyBeginDay      expire orders/levies/limits/carry rules (carry allowances); freight lines' morning (wagons home, wear, fare,
                     drivers wanted) and the Treasury crews (labour orders + line drivers)
 bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisation, window
-tradersBeginDay     shipments arrive (a supply route's cargo joins its waiting stock), wagons return
+tradersBeginDay     shipments arrive (the Treasury's cargo due by the opening lands in its stores), wagons return
 firmsPlan           employment targets, wage adjustments, vacancies
 constructionPlan    builders' workforce targets
 laborMarket         layoffs, job search, matching, Treasury workers
@@ -592,20 +599,19 @@ householdsBeginDay  income EMA, expectations, budgets
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
   traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
-  playerOrders (incl. supply routes' asks at their destinations and the freight
-  lines' bids for tools and oil)
+  playerOrders (incl. the freight lines' bids for tools and oil)
 clearAll            three market sessions (MARKET_SESSIONS; SESSION_TIMES 0.3 / 0.5 / 0.7): each
                     releases SESSION_RELEASE (⅓, ½, all) of what every order still has to trade (an
                     order aimed at one session — PlayerOrder.session — all of it there), the
                     Treasury's crossing orders cancel (netStateOrders), auction + settlement (money
                     via ledger, goods moved); between sessions (hooks) Treasury cargo due by then
-                    lands (traders.deliverTreasuryDue), supply routes offer what now waits, the
-                    Treasury's sell orders offer what it holds now, fills are credited and route
-                    wagons leave (Right away: after each session; departures ≥ noon). After the
+                    lands (traders.deliverTreasuryDue), the Treasury's sell orders offer what its
+                    stores hold now, fills are credited and the carry rules load (carry.runCarries;
+                    Right away: after each session; departures ≥ noon). After the
                     close each market records the day (volume-weighted price, EMA, own price,
                     history, curve with the day's quantities); orders keep the day's totals.
 tradersDispatch     filled purchases → shipments (loads on a freight line pay its fare)
-playerAfterClear    Treasury order bookkeeping; supply routes: credit sales, load the purchases;
+playerAfterClear    Treasury order bookkeeping (patient steps, Treasury workers, once-orders);
                     freight lines: purchases into their stores, today's loads leave, accounts
 householdsConsume   eating, heating, ale, furniture wear, health, contentment
 housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
@@ -615,7 +621,7 @@ stockLevies         money/goods/head/building levies
 entryStep           (monthly) new firms, expansions, houses
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance
-spoilage            perishables decay everywhere (a route's counts of goods on the road / in store too)
+spoilage            perishables decay everywhere (stores, pantries, cargo on the road)
 statsStep           indicators, series, national accounts
 eventsStep          news, strikes
 day += 1

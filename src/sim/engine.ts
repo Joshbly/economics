@@ -9,7 +9,6 @@ import { isMonthStart } from './calendar';
 
 import { openBooks, clearAll } from './market/markets';
 import { policyBeginDay, playerOrders, playerAfterClear, playerBeforeSession, playerAfterSession } from './policy/player';
-import { spoilRoutes } from './policy/routes';
 import { stockLevies, levyMonthRollover } from './policy/levies';
 import { householdsBeginDay, householdOrders, householdPortfolioOrders, householdsConsume } from './agents/households';
 import { laborMarket } from './agents/labor';
@@ -105,7 +104,6 @@ export function spoilage(s: SimState): void {
     const r = rates[sh.good];
     if (r < 1) sh.qty *= r;
   }
-  spoilRoutes(s); // a supply route's counts of goods on the road / in store decay with them
 }
 
 /** Run `n` days. */

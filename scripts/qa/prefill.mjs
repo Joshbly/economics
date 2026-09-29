@@ -1,5 +1,5 @@
 // Prefill links (Markets / Inspect town) land in the right lever with the right values;
-// Move goods; form validation; end conditions.
+// Carry (once); form validation; end conditions.
 import { open, report } from './lib.mjs';
 const q = await open({});
 await q.ready();
@@ -46,7 +46,7 @@ await page.waitForTimeout(500);
 const tv = await selVals('trade');
 check('Town "Trade here" -> Trade in that town', tv.some((v) => /Sootfell/.test(v)) || tv.includes(await q.s('s.towns[2].name')), tv.join('/'));
 
-// Move goods: buy bread once at +20%, run 2 days, move all to another town
+// Carry once: buy bread once at +20%, run 2 days, send all of it to another town
 await q.lever('mint');
 await page.locator(`${L('mint')} input.num-field`).first().fill('50k');
 await page.locator(`${L('mint')} .lv-submit`).click();
@@ -67,23 +67,26 @@ await q.s('R.setSpeed(0)');
 await page.waitForTimeout(400);
 const held = await q.s('s.treasury.goods[0][8]');
 console.log('   bread held in town 0:', held);
-const mv = page.locator(`${T} .lv-subform form`);
-check('holdings + move form visible after buying', held > 0 && (await mv.isVisible()), `held=${held}`);
+await page.locator(`${T} .seg-btn:text-is("Carry")`).click();
+await page.waitForTimeout(300);
+const mv = page.locator(`${T} .lv-carry form`);
+check('holdings + carry form visible after buying', held > 0 && (await mv.isVisible()), `held=${held}`);
 await q.shot('pf-holdings');
 if (await mv.isVisible()) {
   const ms = mv.locator('select');
-  console.log('   from options:', (await ms.nth(0).locator('option').allTextContents()).join('/'), ' to:', (await ms.nth(1).locator('option').allTextContents()).join('/'));
+  await ms.nth(0).selectOption({ index: 0 });
   await ms.nth(2).selectOption({ label: 'Bread' });
-  await mv.locator('.lv-chip:text-is("All")').click();
+  await mv.locator('.seg-btn:text-is("Everything")').click();
+  await mv.locator('.seg-btn:text-is("Once, now")').click();
   await page.waitForTimeout(150);
-  console.log('   qty after All:', await mv.locator('input.num-field').inputValue(), 'preview:', await mv.locator('.lv-preview').textContent());
+  console.log('   preview:', await mv.locator('.lv-preview').textContent());
   const sh0 = await q.s('s.shipments.filter(x => x).length');
   await mv.locator('.lv-submit').click();
   await page.waitForTimeout(400);
   const msg = await mv.locator('.lv-msg').textContent().catch(() => '');
   const g1 = await q.s('s.treasury.goods[0][8]');
   const sh1 = await q.s('s.shipments.filter(x => x).length');
-  check('move goods dispatches', g1 < held, `held ${held} -> ${g1}; shipments ${sh0}->${sh1}; msg=${msg}`);
+  check('carry once dispatches', g1 < held && (await q.s('s.policy.carries.length')) === 0, `held ${held} -> ${g1}; shipments ${sh0}->${sh1}; msg=${msg}`);
 }
 
 // Validation: bad numbers
@@ -120,8 +123,9 @@ const lm = await q.s('s.policy.limits.at(-1)');
 check('limit with end date', lm && lm.until > (await q.s('s.day')), JSON.stringify(lm).slice(0, 220));
 // trade N days + total cap
 await q.lever('trade');
-await page.locator(`${T} .seg-btn:text-is("N days")`).click();
-const daysInp = page.locator(`${T} .lv-row`).filter({ has: page.locator('.lv-lab:text-is("Duration")') }).locator('input');
+await page.locator(`${T} .seg-btn:text-is("Goods")`).click();
+await page.locator(`${T} .seg-btn:text-is("N days"):visible`).click();
+const daysInp = page.locator(`${T} form:visible .lv-row`).filter({ has: page.locator('.lv-lab:text-is("Duration")') }).locator('input');
 await daysInp.fill('7');
 await daysInp.press('Tab');
 const totInp = page.locator(`${T} .lv-row`).filter({ has: page.locator('.lv-lab:text-is("In all")') }).locator('input');

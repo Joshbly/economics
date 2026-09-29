@@ -268,9 +268,9 @@ function palaceView(): View {
       rAuto.text(t.autoMint ? 'on' : 'off');
       rIou.text(`${fmtInt(t.iouOutstanding)} · ${fmtMoneyShort(t.iouOutstanding * IOU_COUPON)} a year`);
       rWin.text(`pays ${fmtRate(t.reserveRate)} · charges ${fmtRate(t.lendRate)}`);
-      const pol = s.policy ?? { levies: [], limits: [], orders: [], lines: [] };
+      const pol = s.policy ?? { levies: [], limits: [], orders: [], lines: [], carries: [] };
       const on = (a: { enabled: boolean }[]) => a.filter((x) => x.enabled).length;
-      rPolicy.text(`${on(pol.levies)} levies · ${on(pol.limits)} limits · ${on(pol.orders)} orders`);
+      rPolicy.text(`${on(pol.levies)} levies · ${on(pol.limits)} limits · ${on(pol.orders)} orders${pol.carries?.length ? ` · ${on(pol.carries)} carry rules` : ''}`);
       warn.hidden = !t.givesSuspended;
       warn.textContent = t.givesSuspended ? 'The Purse is empty: payments you promised (negative levies, transfers) are suspended today. Mint, collect, or turn on auto-mint.' : '';
       const keys = new Set([...Object.keys(t.flows ?? {}), ...Object.keys(t.flowsMonth ?? {}), ...Object.keys(t.flowsLastMonth ?? {})]);

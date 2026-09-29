@@ -1,14 +1,13 @@
 // ============================================================================
 // Lever II — Trade: post Treasury orders in any market (a good in a town, a
-// town's labour market, the national IOU and Gold markets), compose supply
-// routes (buy in one town → carry → offer in another; ./route.ts), and look
-// after the Treasury's stores and wagons (./flows.ts, with Move goods).
+// town's labour market, the national IOU and Gold markets), carry the
+// Treasury's goods between its stores (./carry.ts), and see its stores and
+// wagons (./flows.ts). Buying in one town, carrying and selling in another is
+// three rules side by side, each listed in In force.
 // Treasury orders trade at the base price and are exempt from levies.
 // ============================================================================
-import { IOU_COUPON, IOU_PAR, PLAYER_MAX_PRICE, PLAYER_MAX_QTY, PLAYER_MAX_WORKERS, ROUTE_MARGIN_MAX, ROUTE_MARGIN_MIN, TREASURY_FREIGHT_PREMIUM, WAGON_CAPACITY } from '../../../sim/config';
-import { freightPerUnit } from '../../../sim/agents/traders';
-import { GOODS, G, N_GOODS } from '../../../sim/goods';
-import { routeBetweenTowns } from '../../../sim/world/paths';
+import { IOU_COUPON, IOU_PAR, PLAYER_MAX_PRICE, PLAYER_MAX_QTY, PLAYER_MAX_WORKERS } from '../../../sim/config';
+import { G, N_GOODS } from '../../../sim/goods';
 import type { MarketState, OrderMarket, SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
@@ -29,7 +28,6 @@ import {
   optNumber,
   row,
   run,
-  safe,
   sessionSeg,
   sessionWords,
   setNumUnit,
@@ -41,10 +39,9 @@ import {
   type Lever,
 } from './common';
 import { flowsView } from './flows';
-import { priceIn, routeComposer, type SellMode } from './route';
+import { carryForm } from './carry';
 
-type MKind = 'good' | 'route' | 'labor' | 'iou' | 'gold';
-type Then = 'hold' | 'fixed' | 'cost' | 'market';
+type MKind = 'good' | 'carry' | 'labor' | 'iou' | 'gold';
 type Dur = 'once' | 'days' | 'standing';
 
 export function tradeLever(): Lever {
@@ -72,7 +69,7 @@ export function tradeLever(): Lever {
   const kindSeg = segmented<MKind>({
     options: [
       { value: 'good', label: 'Goods', title: 'A good in one town’s market' },
-      { value: 'route', label: 'Route', title: 'Buy in one town, carry by wagon, offer in another' },
+      { value: 'carry', label: 'Carry', title: 'Carry the Treasury’s goods from its store in one town to another, by wagon' },
       { value: 'labor', label: 'Labour', title: 'Hire Treasury workers in a town' },
       { value: 'iou', label: 'IOUs', title: 'Issue or buy back the Treasury’s IOUs (national market)' },
       { value: 'gold', label: 'Gold', title: 'Buy or sell gold (national market)' },
@@ -80,12 +77,12 @@ export function tradeLever(): Lever {
     value: kind,
     full: true,
     onChange: (v) => {
-      if (v === 'route') {
-        if (kind === 'good' && last) routes.seed(last, town, good);
+      if (v === 'carry') {
+        if (kind === 'good' && last) carries.seed(last, town, good);
         kind = v;
         kindSeg.set(v);
         showMode();
-        if (last) routes.update(last);
+        if (last) carries.update(last);
         return;
       }
       kind = v;
@@ -93,7 +90,22 @@ export function tradeLever(): Lever {
       marketChanged();
     },
   });
-  const routes = routeComposer();
+  // Carry → "Sell in B…": the Goods form on that market, selling.
+  const carries = carryForm({
+    sellThere: (t, g, perDay) => {
+      kind = 'good';
+      town = t;
+      good = g;
+      side = 'sell';
+      priceFor = '';
+      marketChanged();
+      if (perDay > 0) {
+        qty.set(perDay >= 50 ? Math.round(perDay / 10) * 10 : Math.round(perDay * 10) / 10);
+        paint();
+      }
+      price.focus();
+    },
+  });
   const townSel = selectInput<number>({ options: [{ value: 0, label: '—' }], value: 0, onChange: (v) => ((town = v), marketChanged()) });
   const goodSel = selectInput<number>({ options: goodOptions(), value: good, onChange: (v) => ((good = v), marketChanged()) });
   const nationalNote = h('span', { class: 'lv-static' }, 'National market');
@@ -231,73 +243,29 @@ export function tradeLever(): Lever {
   const goldLine = h('div', { class: 'lv-hold-line' });
   const iouLine = h('div', { class: 'lv-hold-line' });
 
-  // move goods
-  const moveMsg = msgLine();
-  // The form follows the stores: a good jumps the origin to where it is held, an origin
-  // jumps the good to what is held there, and an untouched form starts at the largest holding.
-  let mvTouched = false;
-  const mvFrom = selectInput<number>({ options: [{ value: 0, label: '—' }], value: 0, onChange: () => ((mvTouched = true), followStores('from'), paintMove()) });
-  const mvTo = selectInput<number>({ options: [{ value: 1, label: '—' }], value: 1, onChange: () => ((mvTouched = true), paintMove()) });
-  const mvGood = selectInput<number>({ options: goodOptions(), value: G.bread, onChange: () => ((mvTouched = true), followStores('good'), paintMove()) });
-  const mvQty = numberInput({ value: 40, min: 0, max: PLAYER_MAX_QTY, unit: 'loaves', width: '130px', onChange: () => paintMove() });
-  const mvAll = chip('All', () => {
-    if (!last) return;
-    mvQty.set(Math.floor(fin(last.treasury.goods[mvFrom.value]?.[mvGood.value]) * 100) / 100);
-    paintMove();
-  }, 'Everything held there');
-  // …then offer it there
-  let then: Then = 'hold';
-  const thenSeg = segmented<Then>({
-    options: [
-      { value: 'hold', label: 'Keep', title: 'Add them to the Treasury’s stores there' },
-      { value: 'fixed', label: 'Offer at ¤', title: 'Offer them there for no less than a price' },
-      { value: 'cost', label: 'Cost + %', title: 'Offer them there for no less than what they cost, plus a margin' },
-      { value: 'market', label: 'Any price', title: 'Offer them there for whatever they fetch' },
-    ],
-    value: then,
-    size: 'sm',
-    onChange: (v) => ((then = v), moveMsg.clear(), paintMove()),
-  });
-  const mvPrice = numberInput({ value: NaN, prefix: '¤', min: 0, max: PLAYER_MAX_PRICE, unit: '/loaf', width: '112px', onChange: () => paintMove() });
-  const mvMargin = numberInput({ value: 0.1, percent: true, min: ROUTE_MARGIN_MIN, max: ROUTE_MARGIN_MAX, width: '82px', onChange: () => paintMove() });
-  const mvThenHint = hint();
-  let mvPriceFor = '';
-  const mvPreview = h('div', { class: 'lv-preview' });
-  const mvBtn = submitButton('Move goods');
-  const moveForm = formEl(
-    () => doMove(),
-    row('Route', mvFrom.el, h('span', { class: 'lv-w' }, 'to'), mvTo.el),
-    row('Goods', mvGood.el),
-    row('Quantity', mvQty.el, mvAll),
-    row('Then', thenSeg.el, mvPrice.el, mvMargin.el, mvThenHint),
-    formFoot(mvPreview, moveMsg, mvBtn),
-  );
-  const moveBox = h('div', { class: 'lv-subform' }, subhead('Move goods'), moveForm);
-
   const body = h(
     'div',
     { class: 'lv-body-in' },
     h('div', { class: 'lv-row lv-row-full lv-kindrow' }, kindSeg.el),
     form,
-    routes.el,
+    carries.el,
     h('div', { class: 'lv-sep' }),
     subhead('Treasury stores & wagons'),
     flows.el,
     goldLine,
     iouLine,
-    moveBox,
   );
 
   function showMode(): void {
-    show(form, kind !== 'route');
-    show(routes.el, kind === 'route');
+    show(form, kind !== 'carry');
+    show(carries.el, kind === 'carry');
   }
 
   // ---- helpers ------------------------------------------------------------------
   function market(s: SimState): MarketState | undefined {
     if (kind === 'iou') return s.iouMarket;
     if (kind === 'gold') return s.goldMarket;
-    if (kind === 'good' || kind === 'route') return s.markets[town * N_GOODS + good];
+    if (kind === 'good') return s.markets[town * N_GOODS + good];
     return undefined;
   }
   /** The going price the simulation follows (the market's smoothed clearing price). */
@@ -541,7 +509,7 @@ export function tradeLever(): Lever {
       bits.push(pmode === 'any' ? 'About ' : 'Up to ', B(fmtM(perDay)), ' a day from the Purse at today’s prices', span, pmode === 'any' ? ' — more if the price climbs.' : '.');
     } else if (kind === 'good') {
       const have = fin(t.goods[town]?.[good]);
-      bits.push('Sells from your holdings in ', townName(s, town), ': ', B(`${fmtQ(have)} available`), have > 0 ? `, raising at least ${fmtM(perDay)} a day if all ${q === 1 ? 'of it sells' : 'sell'}` : ' — buy some there or move goods in first', '.');
+      bits.push('Sells from your holdings in ', townName(s, town), ': ', B(`${fmtQ(have)} available`), have > 0 ? `, raising at least ${fmtM(perDay)} a day if all ${q === 1 ? 'of it sells' : 'sell'}` : ' — buy some there, or carry some in (Carry)', '.');
     } else if (kind === 'iou' && side === 'sell') {
       bits.push('Issues up to ', B(plural(q, 'new IOU')), ' a day, each paying ', B(fmtM(IOU_COUPON) + ' a year'), ' forever: raises at least ', B(fmtM(perDay)), ' a day if all sell, and adds up to ', B(fmtM(q * IOU_COUPON)), ' a year to what the Purse pays out.');
     } else if (kind === 'iou') {
@@ -563,7 +531,7 @@ export function tradeLever(): Lever {
   }
 
   function submit(): void {
-    if (!last || kind === 'route') return;
+    if (!last || kind === 'carry') return;
     const p = pmode === 'fixed' ? price.value : 0;
     const q = qty.value;
     if (pmode === 'fixed' && !Number.isFinite(p)) return msg.err(price.error ?? 'Set a price limit.');
@@ -591,7 +559,7 @@ export function tradeLever(): Lever {
     );
   }
 
-  // ---- stores, wagons & move ---------------------------------------------------------
+  // ---- stores & wagons ------------------------------------------------------------
   function paintStores(s: SimState): void {
     const t = s.treasury;
     flows.update(s);
@@ -603,116 +571,6 @@ export function tradeLever(): Lever {
       h('span', { class: 'lv-hold-v' }, fmtNum(owed)),
       h('span', { class: 'muted' }, owed > 0 ? ` · the Purse pays ${fmtM(owed * IOU_COUPON)} a year` : ''),
     );
-    let any = false;
-    for (let k = 0; k < s.towns.length && !any; k++) for (let g = 0; g < N_GOODS; g++) if (fin(t.goods[k]?.[g]) > 0.005) any = true;
-    show(moveBox, any);
-  }
-
-  function followStores(what: 'from' | 'good' | 'auto'): void {
-    const s = last;
-    if (!s) return;
-    const tg = s.treasury.goods;
-    const held = (t: number, g: number) => fin(tg[t]?.[g]);
-    if (held(mvFrom.value, mvGood.value) > 0.005) return;
-    let bt = -1;
-    let bg = -1;
-    let bq = 0.005;
-    for (let t = 0; t < s.towns.length; t++)
-      for (let g = 0; g < N_GOODS; g++) {
-        if (what === 'good' && g !== mvGood.value) continue;
-        if (what === 'from' && t !== mvFrom.value) continue;
-        const q = held(t, g);
-        if (q > bq) {
-          bq = q;
-          bt = t;
-          bg = g;
-        }
-      }
-    if (bt < 0) return;
-    mvFrom.set(bt);
-    mvGood.set(bg);
-    if (mvTo.value === bt && s.towns.length > 1) mvTo.set((bt + 1) % s.towns.length);
-  }
-
-  function paintMove(): void {
-    const s = last;
-    if (!s) return;
-    const from = mvFrom.value;
-    const to = mvTo.value;
-    const g = mvGood.value;
-    setNumUnit(mvQty, unitsOf(g));
-    setNumUnit(mvPrice, '/' + unitOf(g));
-    show(mvPrice.el, then === 'fixed');
-    show(mvMargin.el, then === 'cost');
-    const pk = `${to}:${g}`;
-    if (pk !== mvPriceFor) {
-      mvPriceFor = pk;
-      const r = priceIn(s, to, g);
-      mvPrice.set(r > 0 ? niceRound(r) : NaN);
-    }
-    const refTo = priceIn(s, to, g);
-    setText(
-      mvThenHint,
-      then === 'hold'
-        ? `On arrival they join the Treasury’s stores in ${townName(s, to)}.`
-        : then === 'fixed'
-          ? `Offered in ${townName(s, to)} until sold${refTo > 0 ? ` (${fmtPrice(refTo)} there today)` : ''}.`
-          : then === 'cost'
-            ? `Offered in ${townName(s, to)} for no less than what they are worth in ${townName(s, from)} plus freight, plus the margin.`
-            : `Offered in ${townName(s, to)}’s auction for whatever they fetch.`,
-    );
-    const have = fin(s.treasury.goods[from]?.[g]);
-    const q = Math.min(fin(mvQty.value), have);
-    const B = (x: string) => h('b', null, x);
-    if (from === to) {
-      mvPreview.replaceChildren('Choose two different towns.');
-      mvBtn.disabled = true;
-      return;
-    }
-    if (!(have > 0.005)) {
-      mvPreview.replaceChildren(`The Treasury holds no ${goodName(g).toLowerCase()} in ${townName(s, from)}.`);
-      mvBtn.disabled = true;
-      return;
-    }
-    const fpu = safe(() => freightPerUnit(s, from, to), -1);
-    if (!(fpu >= 0)) {
-      mvPreview.replaceChildren(`No wagon road links ${townName(s, from)} and ${townName(s, to)}.`);
-      mvBtn.disabled = true;
-      return;
-    }
-    if (!(q > 0)) {
-      mvPreview.replaceChildren(`${fmtQ(have)} ${unitsOf(g)} held in ${townName(s, from)}. Set a quantity.`);
-      mvBtn.disabled = true;
-      return;
-    }
-    const wagons = Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9));
-    const fee = fpu * WAGON_CAPACITY * wagons * (1 + TREASURY_FREIGHT_PREMIUM);
-    const dd = safe(() => routeBetweenTowns(s, from, to).days, NaN);
-    mvPreview.replaceChildren(
-      'Freight ≈ ',
-      B(fmtM(fee)),
-      ` for ${plural(wagons, 'wagon')}`,
-      Number.isFinite(dd) && dd > 0 ? ` · about ${fmtNum(Math.max(0.5, dd))} days on the road` : '',
-      '. ',
-      h('span', { class: 'faint' }, `${fmtQ(have)} held.`),
-    );
-    mvBtn.disabled = (then === 'fixed' && !(mvPrice.value > 0)) || (then === 'cost' && (!Number.isFinite(mvMargin.value) || !!mvMargin.error));
-    setText(mvBtn, then === 'hold' ? 'Move goods' : 'Move & offer');
-  }
-
-  function doMove(): void {
-    if (!last) return;
-    const q = mvQty.value;
-    if (!(q > 0)) return moveMsg.err(mvQty.error ?? 'Set a quantity.');
-    if (then === 'cost' && (!Number.isFinite(mvMargin.value) || mvMargin.error)) return moveMsg.err(mvMargin.error ?? 'Set a margin (0 for at cost).');
-    let sell: { mode: SellMode; price?: number; margin?: number } | undefined;
-    if (then === 'fixed') {
-      if (!(mvPrice.value > 0)) return moveMsg.err(mvPrice.error ?? 'Set the lowest price to ask (above zero).');
-      sell = { mode: 'fixed', price: mvPrice.value };
-    } else if (then === 'cost') {
-      sell = { mode: 'cost', margin: mvMargin.value };
-    } else if (then === 'market') sell = { mode: 'market' };
-    run({ type: 'moveGoods', from: mvFrom.value, to: mvTo.value, good: mvGood.value, qty: q, sell }, moveMsg, sell ? '✓ On its way — it will be offered on arrival.' : '✓ On its way.');
   }
 
   function applyUiMarket(s: SimState): void {
@@ -720,8 +578,8 @@ export function tradeLever(): Lever {
     if (k === uiMarketApplied) return;
     uiMarketApplied = k;
     if (ui.marketTown >= 0 && ui.marketTown < s.towns.length && ui.marketGood >= 0 && ui.marketGood < N_GOODS) {
-      if (kind === 'route') {
-        routes.seed(s, ui.marketTown, ui.marketGood);
+      if (kind === 'carry') {
+        carries.seed(s, ui.marketTown, ui.marketGood);
         town = ui.marketTown;
         good = ui.marketGood;
         return;
@@ -739,31 +597,23 @@ export function tradeLever(): Lever {
     tagline: 'Goods, labour, IOUs and gold',
     body,
     summary(s) {
-      const on = s.policy.orders.filter((o) => o.enabled);
-      const nr = on.filter((o) => !!o.route).length;
-      const n = on.length - nr;
-      if (!on.length) return { text: 'No orders' };
-      return { text: [n ? plural(n, 'order') : '', nr ? plural(nr, 'route') : ''].filter(Boolean).join(' · ') };
+      const n = s.policy.orders.filter((o) => o.enabled).length;
+      const nc = (s.policy.carries ?? []).filter((c) => c.enabled).length;
+      if (!n && !nc) return { text: 'No orders' };
+      return { text: [n ? plural(n, 'order') : '', nc ? plural(nc, 'carry rule') : ''].filter(Boolean).join(' · ') };
     },
     update(s) {
       const fresh = last !== s;
       last = s;
       townSel.setOptions(townOptions(s), town);
       town = townSel.value;
-      mvFrom.setOptions(townOptions(s));
-      mvTo.setOptions(townOptions(s));
-      if (fresh) {
-        if (mvTo.value === mvFrom.value && s.towns.length > 1) mvTo.set((mvFrom.value + 1) % s.towns.length);
-        applyUiMarket(s);
-      }
-      if (kind === 'route') routes.update(s);
+      if (fresh) applyUiMarket(s);
+      if (kind === 'carry') carries.update(s);
       else {
         syncDefaults(s);
         paint();
       }
       paintStores(s);
-      if (!mvTouched) followStores('auto');
-      paintMove();
     },
     tabShown(s) {
       last = s;
@@ -789,14 +639,12 @@ export function tradeLever(): Lever {
       paint();
       return true;
     },
-    focus: () => (kind === 'route' ? routes.focus() : price.focus()),
+    focus: () => (kind === 'carry' ? carries.focus() : price.focus()),
     reset() {
       priceFor = '';
-      mvPriceFor = '';
-      mvTouched = false;
       uiMarketApplied = '';
       last = null;
-      routes.reset();
+      carries.reset();
     },
   };
 }

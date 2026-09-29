@@ -302,7 +302,7 @@ describe('freight lines — carrying', () => {
     ledgerOk(s);
   });
 
-  it('carries the Treasury’s own goods without a fare (Move goods)', () => {
+  it('carries the Treasury’s own goods without a fare (a carry, once)', () => {
     const w = world();
     const { s, trader } = w;
     const L = openStocked(w, 'fixed', 0.5);
@@ -310,7 +310,7 @@ describe('freight lines — carrying', () => {
     s.treasury.goods[0][G.bread] = 50;
     const cash0 = trader.cash;
     const purse0 = s.treasury.purse - s.treasury.minted;
-    const r = dispatch(s, { type: 'moveGoods', from: 0, to: 1, good: G.bread, qty: 50 });
+    const r = dispatch(s, { type: 'carry', from: 0, to: 1, good: G.bread, qty: 50, once: true });
     expect(r.ok, r.message).toBe(true);
     expect(r.message).toMatch(/on the Treasury's freight line/);
     expect(r.message).not.toMatch(FORBIDDEN);
@@ -318,7 +318,7 @@ describe('freight lines — carrying', () => {
     expect(sh.length).toBe(1);
     expect(sh[0].owner).toBe(STATE);
     expect(sh[0].qty).toBeCloseTo(50);
-    expect(sh[0].basis).toBeCloseTo(costPerUnit(s, L), 9); // Move goods keeps no purchase cost: the landed cost is the line's cost per unit
+    expect(sh[0].basis).toBeCloseTo(costPerUnit(s, L), 9); // a carry keeps no purchase cost: the cargo's basis is the line's cost per unit
     expect(costPerUnit(s, L)).toBeGreaterThan(0);
     expect(trader.cash).toBe(cash0); // the trading house was not paid
     expect(s.treasury.purse - s.treasury.minted).toBeCloseTo(purse0, 9);
@@ -377,7 +377,7 @@ describe('freight lines — on the map', () => {
     expect(activeLines(s)).toEqual([]);
     const L = openStocked(w, 'free', undefined, 3);
     day(w);
-    const lanes = new Map<string, number>([['0>1', 1]]); // a supply route already on the road 0 → 1
+    const lanes = new Map<string, number>([['0>1', 1]]); // a carry rule already on the road 0 → 1
     const r = activeLines(s, lanes);
     expect(r.length).toBe(2);
     expect(r.map((x) => [x.from, x.to, x.lane, x.pill, x.order])).toEqual([

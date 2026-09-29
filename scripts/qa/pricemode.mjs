@@ -53,19 +53,6 @@ const pills = await page.evaluate(() => [...document.querySelectorAll('.lv-if-he
 check('In force shows market ≤ +10% (patient, with today’s step) and any price', /market ≤ \+10% · /.test(pills) && /any price/.test(pills), pills.slice(0, 300));
 await q.shot('pm-inforce');
 
-// route composer: follow +20 %
-await q.lever('trade');
-await page.locator(`${body} .seg-btn:text-is("Route")`).first().click().catch(() => {});
-await page.waitForTimeout(300);
-await page.locator(`${body} .seg-btn:text-is("+20%"):visible`).first().click();
-await page.waitForTimeout(300);
-await q.shot('pm-route-follow');
-const nr = await q.s('s.policy.orders.length');
-await page.locator(`${body} .lv-submit:visible`).first().click();
-await page.waitForTimeout(500);
-const ro = await q.s(`s.policy.orders[s.policy.orders.length-1]`);
-check('route placed following the market', (await q.s('s.policy.orders.length')) === nr + 1 && !!ro.route && ro.priceMode === 'follow' && Math.abs(ro.band - 0.2) < 1e-9, JSON.stringify({ mode: ro.priceMode, band: ro.band, route: !!ro.route }));
-
 console.log(`\nFAILS: ${fails.length ? fails.join(', ') : 'none'}`);
 report(q, 'pricemode');
 await q.close();

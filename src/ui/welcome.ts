@@ -28,7 +28,7 @@ function remember(): void {
 
 const PRIMITIVES: [string, string, string][] = [
   ['mint', 'Mint', 'Create money in the Purse, or destroy it.'],
-  ['trade', 'Trade', 'Buy or sell goods, labour, IOUs or gold in any market; move goods between towns.'],
+  ['trade', 'Trade', 'Buy or sell goods, labour, IOUs or gold in any market; carry the Treasury’s goods between towns.'],
   ['levy', 'Levy', 'A rate on any flow — sales, wages, rents, money held… Positive, you take; negative, you pay.'],
   ['limit', 'Limit', 'Legal bounds on prices, pay, rents, the Bank, the port and the roads.'],
   ['window', 'Window', 'What the Bank’s reserves earn with you, and what it pays to borrow from you.'],

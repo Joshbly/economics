@@ -4,7 +4,7 @@
 // Draw order (device pixels):
 //   terrain chunks → water shimmer → overlay district tints → placement area
 //   → road works → selected person's path → buildings (+ construction bars)
-//   → Treasury supply routes (gold dashes, chevrons) → wagons & carts →
+//   → Treasury carry rules (gold dashes, chevrons) → wagons & carts →
 //   walkers → smoke → day/night tint → lights (windows, furnaces, lamps) →
 //   selection / hover rings → placement ghost → labels, overlay badges and
 //   route labels.
@@ -12,7 +12,7 @@
 // Safari gesture events) zooms at the cursor; +/− keys, double-click and the
 // buttons zoom smoothly; arrows pan. Hover shows a tooltip; click selects
 // (building, person, market hall, town label; a wagon selects its trading
-// house; a supply route or a Treasury wagon selects the destination town); in
+// house; a carry rule or a Treasury wagon selects the destination town); in
 // placement mode valid sites are tinted and a click commissions the building
 // through ui.game.dispatch.
 // ============================================================================
@@ -616,8 +616,8 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
           break;
         }
         case 'route': {
-          const o = s.policy?.orders.find((x) => x && x.id === t.id);
-          const to = o?.route?.to ?? s.policy?.lines?.find((x) => x && x.id === t.id)?.b ?? -1;
+          const c = s.policy?.carries?.find((x) => x && x.id === t.id);
+          const to = c?.to ?? s.policy?.lines?.find((x) => x && x.id === t.id)?.b ?? -1;
           sel = to >= 0 && s.towns[to] ? { kind: 'town', id: to } : ui.selection;
           break;
         }

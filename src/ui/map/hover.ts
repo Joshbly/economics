@@ -19,7 +19,7 @@ export type HoverTarget =
   | { kind: 'person'; id: number }
   | { kind: 'wagon'; id: number }
   | { kind: 'town'; id: number }
-  /** A Treasury supply route (id = the order's id) or freight line (id = the line's id). */
+  /** A Treasury carry rule (id = the rule's id) or freight line (id = the line's id). */
   | { kind: 'route'; id: number }
   | { kind: 'tile'; i: number }
   | null;
@@ -161,8 +161,8 @@ function wagonTip(s: SimState, id: number, dayFrac: number): Child[] {
     const out: Child[] = [title];
     out.push(tipKV('From', from));
     out.push(tipKV('On the way', fmtPct(shipmentProgress(s.day, dayFrac, sh.depart, sh.arrive), 0)));
-    const o = sh.order >= 0 ? s.policy?.orders.find((x) => x && x.id === sh.order) : undefined;
-    if (o && o.route) out.push(tipKV('Supply route', `${fmtNum(roundQty(o.qty))} a day`, 'gold'));
+    const c = sh.order >= 0 ? s.policy?.carries?.find((x) => x && x.id === sh.order) : undefined;
+    if (c) out.push(tipKV('Carry rule', c.qty >= 0 ? `up to ${fmtNum(roundQty(c.qty))} a day` : 'everything held', 'gold'));
     if (sh.line >= 0) out.push(tipKV('Carried by', 'the Treasury freight line', 'gold'));
     if (sh.wagons > 1) out.push(tipKV('Wagons', fmtNum(sh.wagons)));
     out.push(tipNote(`Click to open ${to}.`));
@@ -181,28 +181,28 @@ function wagonTip(s: SimState, id: number, dayFrac: number): Child[] {
 }
 
 function routeTip(s: SimState, id: number): Child[] {
-  const o = s.policy?.orders.find((x) => x && x.id === id);
-  if (!o || !o.route || o.market.kind !== 'good') return [];
-  const r = o.route;
-  const g = o.market.good;
-  const from = s.towns[o.market.town]?.name ?? '?';
-  const to = s.towns[r.to]?.name ?? '?';
+  const c = s.policy?.carries?.find((x) => x && x.id === id);
+  if (!c) return [];
+  const g = c.good;
+  const from = s.towns[c.from]?.name ?? '?';
+  const to = s.towns[c.to]?.name ?? '?';
   const name = (GOODS[g]?.name ?? 'Goods').toLowerCase();
-  const out: Child[] = [tipTitle('Supply route', `${name} · ${from} → ${to}`)];
-  out.push(tipKV(`Buys in ${from}`, `${qty(g, roundQty(o.qty))} a day, up to ${fmtPrice(o.price)}`));
+  const out: Child[] = [tipTitle('Treasury carry', `${name} · ${from} → ${to}`)];
+  out.push(tipKV('Carries', c.qty >= 0 ? `up to ${qty(g, roundQty(c.qty))} a day` : `all it holds in ${from}`));
+  out.push(tipKV('Wagons', c.wagons === 'now' ? 'right away' : 'full wagons'));
   let carried = 0;
   let carts = 0;
   for (const sh of s.shipments) {
-    if (!sh || sh.owner !== STATE || sh.order !== o.id) continue;
+    if (!sh || sh.owner !== STATE || sh.order !== c.id) continue;
     carts++;
     carried += Number.isFinite(sh.qty) ? sh.qty : 0;
   }
-  const onRoad = Math.max(Number.isFinite(r.inTransit) ? r.inTransit : 0, carried);
-  if (carts === 0 && !(onRoad > 0)) out.push(tipKV('On the road', 'nothing yet'));
-  else out.push(tipKV('On the road', qty(g, roundQty(onRoad)) + (carts ? ` · ${plural(carts, 'convoy')}` : '')));
-  if (r.waiting > 0) out.push(tipKV(`For sale in ${to}`, qty(g, roundQty(r.waiting))));
-  if (r.soldTotal > 0) out.push(tipKV('Sold so far', qty(g, roundQty(r.soldTotal))));
-  if (!o.enabled) out.push(tipKV('Status', 'Paused', 'warn'));
+  if (carts === 0) out.push(tipKV('On the road', 'nothing now'));
+  else out.push(tipKV('On the road', qty(g, roundQty(carried)) + ` · ${plural(carts, 'convoy')}`));
+  const held = s.treasury?.goods?.[c.from]?.[g] ?? 0;
+  if (held > 0.005) out.push(tipKV(`Held in ${from}`, qty(g, roundQty(held))));
+  if (c.carried > 0) out.push(tipKV('Carried so far', qty(g, roundQty(c.carried))));
+  if (!c.enabled) out.push(tipKV('Status', 'Paused', 'warn'));
   out.push(tipNote(`Gold dashes follow the road the Treasury’s wagons take; chevrons point toward ${to}. Click to open ${to}.`));
   return out;
 }

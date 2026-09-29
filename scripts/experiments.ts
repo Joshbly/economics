@@ -19,7 +19,8 @@
 //
 // This is a report: the exit code is 0 even when checks fail (1 only on a crash).
 // ============================================================================
-import { WARMUP_DAYS } from '../src/sim/config';
+import { TREASURY_FREIGHT_PREMIUM, WARMUP_DAYS } from '../src/sim/config';
+import { freightPerUnit } from '../src/sim/agents/traders';
 import { G, GOODS, N_GOODS, TRADABLE_GOODS } from '../src/sim/goods';
 import { Game } from '../src/sim/game';
 import { takeHomeWage } from '../src/sim/stats/stats';
@@ -207,7 +208,7 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   employed: { label: 'people employed', fn: (s) => L(s, 'employed') },
   harborBread: { label: 'bread price at the harbour', fn: (s, c) => mkt(s, c.harbor, G.bread)?.ema ?? 0 },
   farmBread: { label: 'bread price in the farm town', fn: (s, c) => mkt(s, c.farm, G.bread)?.ema ?? 0 },
-  routeSold: { label: 'supply route: units sold at the harbour/day', fn: (s) => s.policy.orders.reduce((a, o) => a + (o.route ? o.route.soldToday : 0), 0) },
+  routeSold: { label: 'Treasury bread sold at the harbour/day', fn: (s, c) => s.policy.orders.reduce((a, o) => a + (o.side === 'sell' && o.market.kind === 'good' && o.market.town === c.harbor && o.market.good === G.bread ? o.filledToday : 0), 0) },
   coalTools: { label: 'tools held by coal mines', fn: (s) => sumFirms(s, 'coalmine', -1, (f) => f.tools + f.inv[G.tools]) },
   coalWorkers: { label: 'coal miners employed', fn: (s) => sumFirms(s, 'coalmine', -1, (f) => f.workers.length) },
   coalProd: { label: 'coal dug/day', fn: (s) => L(s, 'prod_' + G.coal) },
@@ -585,30 +586,25 @@ const EXPERIMENTS: Experiment[] = [
   },
   {
     id: '11',
-    name: 'Supply route: bread from the farm town to the harbor at landed cost',
-    // The Treasury buys about the harbour's daily bread trade in the farm town (at up to 25 %
-    // over the going price there: headroom as prices drift through the year), carries it on its
-    // wagons and offers it at the harbour at what it cost to buy and carry: the harbour's bread
+    name: 'Bread from the farm town to the harbor at about its landed cost (buy · carry · sell)',
+    // Three primitives: the Treasury buys about the harbour's daily bread trade in the farm town
+    // (at up to 25 % over the going price there: headroom as prices drift through the year),
+    // carries everything it holds there to the harbour in full wagons, and offers it there for no
+    // less than the farm town's price plus the freight of a full wagon a unit: the harbour's bread
     // price falls toward that landed cost. Judged over the whole run: the harbour has one bakery
     // or none, which the Treasury's bread can crowd out and which may reopen later, so the last
     // months alone depend on when that happens.
     window: (d) => [30, d],
     arms: [
       {
-        name: 'supply route',
-        setup: (g, c) =>
-          act(
-            g,
-            {
-              type: 'placeOrder',
-              market: { kind: 'good', town: c.farm, good: G.bread },
-              side: 'buy',
-              price: Math.round(1.25 * c.price[c.farm][G.bread] * 100) / 100,
-              qty: Math.max(10, Math.round(c.vol[c.harbor][G.bread])),
-              route: { to: c.harbor, sell: 'cost' },
-            },
-            'supply route',
-          ),
+        name: 'buy · carry · sell',
+        setup: (g, c) => {
+          const qty = Math.max(10, Math.round(c.vol[c.harbor][G.bread]));
+          const landed = c.price[c.farm][G.bread] + freightPerUnit(g.s, c.farm, c.harbor) * (1 + TREASURY_FREIGHT_PREMIUM);
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.farm, good: G.bread }, side: 'buy', price: Math.round(1.25 * c.price[c.farm][G.bread] * 100) / 100, qty }, 'buy');
+          act(g, { type: 'carry', from: c.farm, to: c.harbor, good: G.bread, qty: -1 }, 'carry');
+          act(g, { type: 'placeOrder', market: { kind: 'good', town: c.harbor, good: G.bread }, side: 'sell', price: Math.round(landed * 100) / 100, qty: 2 * qty }, 'sell');
+        },
       },
     ],
     checks: [{ label: 'harbour bread price down (whole run)', metric: 'harborBread', kind: 'down', tol: 0.01 }],
@@ -655,7 +651,7 @@ const EXPERIMENTS: Experiment[] = [
         },
         hook: (g, c, d) => {
           const tg = g.s.treasury.goods;
-          if (d === 1 && tg[c.capital][G.tools] > 0) act(g, { type: 'moveGoods', from: c.capital, to: c.mining, good: G.tools, qty: tg[c.capital][G.tools] }, 'carry tools');
+          if (d === 1 && tg[c.capital][G.tools] > 0) act(g, { type: 'carry', from: c.capital, to: c.mining, good: G.tools, qty: -1, once: true }, 'carry tools');
           if (d >= 2 && tg[c.mining][G.tools] > 0.5 && !g.s.shipments.some((sh) => sh.owner === -1 && sh.to === c.mining && sh.good === G.tools))
             act(g, { type: 'transfer', group: 'firms', town: c.mining, amount: 3, dir: 1, good: G.tools, sector: 'coalmine' }, 'hand out tools');
         },

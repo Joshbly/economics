@@ -11,7 +11,7 @@ import { commuteTrip, hash01, Leg, polyFromPoints, polyFromTiles, samplePoly, sh
 import { fadeIn, forestTrees, grassBush, standInOrder } from '../src/ui/map/terrain';
 import { newMarket, newPerson, newShipment, newSimState, newTown } from '../src/sim/factory';
 import { G, N_GOODS } from '../src/sim/goods';
-import { STATE, Terrain, type PlayerOrder } from '../src/sim/types';
+import { STATE, Terrain, type CarryRule } from '../src/sim/types';
 import { generateMap } from '../src/sim/world/mapgen';
 
 describe('camera', () => {
@@ -433,63 +433,62 @@ describe('terrain features and levels of detail', () => {
   });
 });
 
-describe('supply routes', () => {
+describe('carry rules on the map', () => {
   function state() {
     const n = 20 * 12;
     const s = newSimState(1, { w: 20, h: 12, terrain: new Array(n).fill(3), elev: new Array(n).fill(0.3), fert: new Array(n).fill(0.5), deposit: new Array(n).fill(0), river: new Array(n).fill(0), road: new Array(n).fill(0), occ: new Array(n).fill(-1), district: new Array(n).fill(0) });
     s.towns.push(newTown(0, 'Kingsbridge', 'capital', 3, 5, 4), newTown(1, 'Saltmere', 'harbor', 16, 6, 3));
     return s;
   }
-  function order(s: ReturnType<typeof state>, patch: Partial<PlayerOrder> = {}): PlayerOrder {
-    const o: PlayerOrder = {
+  function carry(s: ReturnType<typeof state>, patch: Partial<CarryRule> = {}): CarryRule {
+    const c: CarryRule = {
       id: s.ids.policy++,
       label: '',
       enabled: true,
-      market: { kind: 'good', town: 0, good: G.bread },
-      side: 'buy',
-      price: 5,
+      from: 0,
+      to: 1,
+      good: G.bread,
       qty: 20,
-      total: -1,
+      wagons: 'full',
       until: -1,
-      once: false,
-      filled: 0,
-      value: 0,
-      filledToday: 0,
       created: 0,
-      route: { to: 1, sell: 'market', sellPrice: 0, sellMargin: 0, inTransit: 0, waiting: 0, landed: 0, shippedToday: 0, soldToday: 0, shippedTotal: 0, soldTotal: 0, freightPaid: 0, revenue: 0 },
-      priceMode: 'fixed',
-      band: 0,
+      allow: 20,
+      heldSince: -1,
+      carriedToday: 0,
+      carried: 0,
+      freightToday: 0,
+      freight: 0,
       ...patch,
     };
-    s.policy.orders.push(o);
-    return o;
+    s.policy.carries.push(c);
+    return c;
   }
 
-  it('lists active route orders only, with lanes, and counts Treasury wagons on the road', () => {
+  it('lists running carry rules, with lanes, and counts Treasury wagons on the road', () => {
     const s = state();
     s.day = 10;
-    const a = order(s);
-    order(s, { route: null }); // an ordinary order
-    order(s, { side: 'sell' });
-    order(s, { enabled: false }); // paused and nothing on the road
-    order(s, { until: 5 }); // lapsed
-    const b = order(s, { qty: 7.25 }); // a second route on the same road
-    const c = order(s, { enabled: false }); // paused, but its last load is still travelling
+    const a = carry(s);
+    carry(s, { enabled: false }); // paused and nothing on the road
+    carry(s, { until: 5 }); // lapsed
+    const b = carry(s, { qty: 7.25 }); // a second rule on the same road
+    const all = carry(s, { qty: -1 }); // everything held
+    const c = carry(s, { enabled: false }); // paused, but its last load is still travelling
     const sh = newShipment(s, STATE, 0, 1, G.bread, 12, 3, 9, 12, 1);
     sh.order = c.id;
     const r = activeRoutes(s);
-    expect(r.map((x) => x.order)).toEqual([a.id, b.id, c.id]);
-    expect(r.map((x) => x.lane)).toEqual([0, 1, 2]);
-    expect(r[2].buying).toBe(false);
-    expect(r[2].inTransit).toBe(12);
+    expect(r.map((x) => x.order)).toEqual([a.id, b.id, all.id, c.id]);
+    expect(r.map((x) => x.lane)).toEqual([0, 1, 2, 3]);
+    expect(r[3].buying).toBe(false);
+    expect(r[3].inTransit).toBe(12);
     expect(routeLabel(r[0], 'Saltmere')).toBe('bread · 20/day → Saltmere');
     expect(routeLabel(r[1], 'Saltmere')).toBe('bread · 7.3/day → Saltmere');
-    expect(routeLabel(r[2], 'Saltmere')).toBe('bread · 12 on the road → Saltmere');
-    // no orders, a route to its own town, or to a town that does not exist: nothing
+    expect(routeLabel(r[2], 'Saltmere')).toBe('bread · all → Saltmere');
+    expect(routeLabel(r[3], 'Saltmere')).toBe('bread · 12 on the road → Saltmere');
+    // no rules, a rule to its own town, or to a town that does not exist: nothing
     expect(activeRoutes(state())).toEqual([]);
     const s2 = state();
-    order(s2, { route: { ...a.route!, to: 0 } });
-    order(s2, { route: { ...a.route!, to: 9 } });
+    carry(s2, { to: 0 });
+    carry(s2, { to: 9 });
     expect(activeRoutes(s2)).toEqual([]);
   });
 

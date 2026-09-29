@@ -97,7 +97,7 @@ export const CONVOY_MAX = 3;
 /** Visual delivery trips per producer per day (small handcarts to the market hall). */
 export const DELIVERY_MIN_PATH = 3;
 
-// ---- Treasury supply routes ---------------------------------------------------
+// ---- Treasury carry rules -----------------------------------------------------
 /** Line colour (dashes and chevrons) and its dark under-stroke. */
 export const ROUTE_COLOR = 'rgba(242,205,114,0.85)';
 export const ROUTE_SHADE = 'rgba(18,14,6,0.42)';

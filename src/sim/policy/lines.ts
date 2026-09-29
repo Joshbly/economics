@@ -21,7 +21,7 @@
 // the cargo stays the house's). Cheaper freight enters the houses' break-even bids, so
 // they buy more at home and sell more at the destination: price gaps between the towns
 // narrow through the ordinary arbitrage. The Treasury's own cargo between the two towns
-// (supply routes, Move goods) rides the line too, without a fare
+// (carry rules, and goods carried once) rides the line too, without a fare
 // (traders.sendTreasuryCargo).
 //
 // A day on the line:
@@ -63,7 +63,7 @@ import { G, N_GOODS } from '../goods';
 import { addBid, bookFor, marketOf, type Books } from '../market/markets';
 import { rt, type Route } from '../runtime';
 import { STATE } from '../types';
-import type { Firm, FreightLine, LineFare, Order, PlayerOrder, SimState, TownId } from '../types';
+import type { Firm, FreightLine, LineFare, Order, SimState, TownId } from '../types';
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 
@@ -647,23 +647,13 @@ export function linesAfterClear(s: SimState): void {
 export function takeStoredTools(s: SimState, L: FreightLine): number {
   const held = s.treasury.goods[L.a];
   if (!held) return 0;
-  const q = Math.min(toolsWanted(L), Math.max(0, held[G.tools]) - reservedByRoutes(s, L.a));
+  const q = Math.min(toolsWanted(L), Math.max(0, held[G.tools]));
   if (!(q > 1e-9)) return 0;
   held[G.tools] -= q;
   if (held[G.tools] < 1e-9) held[G.tools] = 0;
   L.tools += q;
   L.wagons = Math.floor(L.tools / TOOLS_PER_WAGON + 1e-9);
   return q;
-}
-
-/** Tools in a town's stores that a Treasury supply route bought and still has to carry away. */
-function reservedByRoutes(s: SimState, town: TownId): number {
-  let n = 0;
-  for (const o of s.policy.orders as PlayerOrder[]) {
-    if (!o.route || o.market.kind !== 'good' || o.market.town !== town || o.market.good !== G.tools) continue;
-    n += Math.max(0, o.filled - o.route.shippedTotal);
-  }
-  return n;
 }
 
 /**

@@ -1,5 +1,5 @@
-// Drive the market sessions in the built game: the Trade form's When choice, the route composer's,
-// the market detail's session prices and the clock's session name.
+// Drive the market sessions in the built game: the Trade form's When choice, a carry rule sent
+// right away, the market detail's session prices and the clock's session name.
 //   node scripts/qa/sessions.mjs
 import { open, report } from './lib.mjs';
 
@@ -29,16 +29,15 @@ check('order placed for the opening', (await q.s('s.policy.orders.length')) === 
 const desc = await page.evaluate(() => [...document.querySelectorAll('.lv-if-d')].map((e) => e.textContent).join(' | '));
 check('In force says at the opening', /a day at the opening in /.test(desc), desc.slice(0, 200));
 
-// route composer: buy at midday, send right away
-await page.locator(`${body} .seg-btn:text-is("Route")`).first().click().catch(() => {});
+// carry what that order buys right away (after each session)
+await page.locator(`${body} .seg-btn:text-is("Carry")`).first().click();
 await page.waitForTimeout(300);
-await page.locator(`${body} .seg-btn:text-is("Midday"):visible`).first().click();
 await page.locator(`${body} .seg-btn:text-is("Right away"):visible`).first().click();
 await page.waitForTimeout(250);
 await page.locator(`${body} .lv-submit:visible`).first().click();
 await page.waitForTimeout(400);
-const ro = await q.s('s.policy.orders.filter(x => x.route).pop()');
-check('route bought at midday, sent right away', ro && ro.session === 1 && ro.route.dispatch === 'daily', JSON.stringify(ro && { session: ro.session, dispatch: ro.route.dispatch }));
+const cr = await q.s('s.policy.carries[s.policy.carries.length - 1]');
+check('carry rule sent right away', cr && cr.wagons === 'now' && cr.qty === -1, JSON.stringify(cr && { wagons: cr.wagons, qty: cr.qty, from: cr.from, to: cr.to }));
 
 // run a few days; market detail shows the sessions
 await q.s(`R.setSpeed(3)`);

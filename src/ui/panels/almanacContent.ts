@@ -36,7 +36,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
       {
         title: 'Your seven levers',
         body: `- **Mint** — create money in the Purse, or destroy money you hold.
-- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. You can also move goods you hold between towns, and set up supply routes: buy in one town, carry by wagon, offer in another.
+- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. **Carry** moves the goods you hold from your store in one town to your store in another, once or as a standing rule. Buying in one town and selling in another is simply a buy order there, a carry, and a sell order here — three rules, each listed and changed on its own.
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a price moving more than a set share in a day; a loan rate above or below a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital (the standing 8 % rule can be raised or lowered).
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
@@ -222,14 +222,16 @@ A Limit can cap the bank's loan rates (it then turns away the borrowers it would
 The shipping rate on the top bar is what it costs to move one unit ten tiles.`,
       },
       {
-        title: 'Your wagons and supply routes',
-        body: `Unless it runs a freight line (below), the Treasury has no wagons of its own. To move goods it hires the trading house of the town they leave from: it pays the carters' wages, the oil and the wear for the round trip, plus a little more, for every wagon it needs. A wagon carries 120 units; a half-empty wagon costs as much as a full one.
+        title: 'Your stores, and carrying goods',
+        body: `Whatever the Treasury buys is kept in its **store** in the town where it was bought. A sell order there offers what the store holds; a transfer in kind hands it out; and **Carry** moves it to the store of another town. Goods that spoil go on spoiling in store and on the road.
 
-**Move goods** sends goods you already hold. You can keep them in store where they arrive, or offer them there: at a price you set, at what they cost (freight included) plus a margin, or for whatever they fetch.
+Unless it runs a freight line (below), the Treasury has no wagons of its own. To carry goods it hires the trading house of the town they leave from: it pays the carters' wages, the oil and the wear for the round trip, plus a little more, for every wagon it needs. A wagon carries 120 units; a half-empty wagon costs as much as a full one.
 
-A **supply route** chains three ordinary steps every day: a buy order in one town, the wagons that carry what it bought, and an offer in the destination's market. The offer can be at a price you set, at landed cost (what each unit cost to buy and carry) plus a margin, or for whatever the goods fetch. Nothing is exempt from the markets: your purchases raise the price where you buy, your offers lower it where you sell, and goods that spoil go on spoiling on the road and while they wait.
+A carry can be sent **once, now** (an amount, or everything held there), or kept as a **rule**: everything the store holds, as it comes in, or up to an amount a day — for a number of days or until you remove it. A rule loads after each market session, and its wagons leave at noon or after the session that filled them, so bread bought at the opening can be on the road the same day. With **full wagons** it waits until a wagon is nine-tenths full — or until the goods have waited as long as they keep (bread two days, at most a week), or a freight line of yours on that road has room. **Right away** sends what is held after every session: quicker, but a small load pays for a whole wagon.
 
-**Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town, every Treasury wagon on the road with its arrival, and each route's pipeline: bought today, on the road, waiting to sell, sold today — and what it has earned against what it cost.`,
+A carry neither buys nor sells. To keep a town supplied from another, place a buy order in the first, a carry to the second, and a sell order there; the Carry form's *Sell in …* opens that order for you. Each piece stays an ordinary rule: your purchases raise the price where you buy, your offers lower it where you sell, and you can change or pause any one of them without touching the others.
+
+**Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town (a dot marks goods a carry rule takes on elsewhere), every Treasury wagon on the road with its arrival, and what freight has cost this month.`,
       },
       {
         title: 'Freight lines',
