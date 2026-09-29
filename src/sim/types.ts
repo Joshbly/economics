@@ -451,6 +451,8 @@ export interface MarketState {
   /** The last MARKET_BALANCE_DAYS days' shortage and surplus (markets.recentBalance averages them). */
   shortHist?: number[];
   surplusHist?: number[];
+  /** …and what the Treasury's own asks sold here each of those days. */
+  stateHist?: number[];
   traded: boolean; // true if volume > 0 today
   bestBid: number;
   bestAsk: number;
@@ -704,6 +706,12 @@ export interface CarryRule {
   label: string;
   enabled: boolean;
   from: TownId;
+  /**
+   * The town it carries to, or −1: wherever the good runs short — each load goes to the town, among
+   * those where the Treasury has a sell order for the good, that needs it most (carry.shortTargets:
+   * its 14-day shortage plus what the Treasury sells there a day, over the days a load takes, less
+   * what the Treasury holds there or has on the road to it).
+   */
   to: TownId;
   good: GoodId;
   /** Units a day at most; −1 = everything the Treasury holds of the good in `from`, as it comes in. */

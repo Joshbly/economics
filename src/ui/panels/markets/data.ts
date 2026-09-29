@@ -95,7 +95,7 @@ export function nationalGood(s: SimState, g: number): NationalGood {
   let surplus = 0;
   let traded = false;
   let len = 0;
-  const bal = { days: 0, shortage: 0, surplus: 0, volume: 0 };
+  const bal = { days: 0, shortage: 0, surplus: 0, volume: 0, treasury: 0 };
   for (let t = 0; t < s.towns.length; t++) {
     const m = marketAt(s, t, g);
     if (!m) continue;
@@ -114,6 +114,7 @@ export function nationalGood(s: SimState, g: number): NationalGood {
     bal.shortage += b.shortage;
     bal.surplus += b.surplus;
     bal.volume += b.volume;
+    bal.treasury += b.treasury;
     traded = traded || !!m.traded;
     len = Math.max(len, m.hist?.length ?? 0);
   }

@@ -480,7 +480,18 @@ that pay ¤5 per year each, forever). Seven primitives:
      freight cannot be paid (auto-mint off) the goods stay in the store and the rule
      tries after the next session. Uses of one store never double-count: whatever a
      sell order, a transfer or an earlier rule took is no longer held. Cargo is tagged
-     with the rule (`Shipment.order`) for the map and the stores view. Saves from
+     with the rule (`Shipment.order`) for the map and the stores view. **Where it runs
+     short** (`to` −1, standing rules only): the rule serves the towns where the Treasury
+     has a running sell order for the good (the sell orders say where goods are offered;
+     a carry only moves them); each load goes to the neediest (carry.shortTargets): need =
+     min(its average daily shortage over the last MARKET_BALANCE_DAYS days + what the
+     Treasury's asks sold there a day, what its sell orders there offer a day) × (days a
+     load takes + 1) − what the Treasury holds there − what is on the road to it; no load
+     smaller than it needs goes further, 'full' rules keep collecting below a full wagon,
+     and when no served town needs any the goods wait. (In runs, fish carried this way
+     from the harbour cut the served towns' shortage by about a third with less left unsold
+     than a fixed carry — but no more fish was traded: the Treasury's buying and selling
+     displaced the trading houses' own carting.) Saves from
      before carry rules had *supply routes* (a buy order with `route`): loading turns
      each into its buy order, a carry rule (everything, same wagons) and a sell order
      at the destination (save.fillOrders).

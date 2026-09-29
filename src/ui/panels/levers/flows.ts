@@ -195,7 +195,7 @@ export function flowsView(opts: { place: 'levers' | 'ledger' }): FlowsView {
     for (const c of s.policy.carries ?? []) {
       if (!c.enabled || (c.until >= 0 && c.until < s.day)) continue;
       const k = c.from * N_GOODS + c.good;
-      (onward[k] ??= []).push(townName(s, c.to));
+      (onward[k] ??= []).push(c.to >= 0 ? townName(s, c.to) : 'where it runs short');
     }
     for (const k in onward) sig += `|c${k}:${onward[k].join(',')}`;
     for (let g = 0; g < N_GOODS; g++) {

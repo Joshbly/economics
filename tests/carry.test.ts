@@ -349,3 +349,41 @@ describe('carry — full wagons (pure)', () => {
     expect(carryLoadNow(30, 'full', false, 0, G.tools, 0)).toBe(30); // the rule's last close
   });
 });
+
+describe('carry — wherever it runs short', () => {
+  it('sends each load to the served town that needs it most, and only what it needs', () => {
+    const { s } = world();
+    s.treasury.autoMint = true;
+    setRoute(s, 0, 2, 40, 1); // Hollow reachable in a day for this test
+    expect(dispatch(s, { type: 'carry', from: 0, to: -1, good: G.tools, qty: -1, once: true }).ok).toBe(false); // once needs a town
+    const r = dispatch(s, { type: 'carry', from: 0, to: -1, good: G.tools, qty: -1, wagons: 'now' });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.message).toMatch(/to wherever it runs short — each load to the town, of those where it sells tools, that needs it most/);
+    expect(r.message).toMatch(/sells tools in no other town yet/);
+    expect(r.message).not.toMatch(FORBIDDEN);
+    const c = rule(s, r.id!);
+    expect(c.label).toBe('Carry tools · Millbrook → where it runs short · all · right away');
+    s.treasury.goods[0][G.tools] = 200;
+    marketDay(s);
+    expect(s.shipments.length).toBe(0); // no town to serve: the goods wait
+    // sell orders say where the goods are offered; Hollow has been short 20 a day, Kingsbridge not at all
+    dispatch(s, { type: 'placeOrder', market: { kind: 'good', town: 1, good: G.tools }, side: 'sell', price: 20, qty: 30 });
+    dispatch(s, { type: 'placeOrder', market: { kind: 'good', town: 2, good: G.tools }, side: 'sell', price: 20, qty: 30 });
+    s.markets[2 * N_GOODS + G.tools].shortHist = new Array(14).fill(20);
+    s.markets[2 * N_GOODS + G.tools].surplusHist = new Array(14).fill(0);
+    s.markets[1 * N_GOODS + G.tools].shortHist = new Array(14).fill(0);
+    s.markets[1 * N_GOODS + G.tools].surplusHist = new Array(14).fill(0);
+    marketDay(s);
+    const out = s.shipments.filter((x) => x.owner === STATE && x.order === c.id);
+    expect(out.length).toBe(1);
+    expect(out[0].to).toBe(2);
+    expect(out[0].qty).toBeCloseTo(40, 6); // 20 a day × (1 day on the road + 1)
+    expect(s.treasury.goods[0][G.tools]).toBeCloseTo(160, 6);
+    marketDay(s); // what is on the road counts: nothing more is needed yet
+    expect(s.shipments.filter((x) => x.order === c.id).length).toBeLessThanOrEqual(1);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+    // a save keeps the rule
+    const g2 = deserialize(serialize(s));
+    expect(g2.policy.carries[0].to).toBe(-1);
+  });
+});

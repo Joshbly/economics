@@ -260,30 +260,36 @@ export interface Balance {
   volume: number; // traded a day
   /** Signed: + short (unmet ÷ what buyers wanted), − surplus (unsold ÷ what sellers offered); 0 balanced. */
   net: number;
+  /** What the Treasury's own asks sold a day over the same days. */
+  treasury: number;
 }
 
-export function recentBalance(m: Pick<MarketState, 'shortHist' | 'surplusHist' | 'volHist' | 'shortage' | 'surplus' | 'volume'> | undefined | null): Balance {
-  if (!m) return { days: 0, shortage: 0, surplus: 0, volume: 0, net: 0 };
+export function recentBalance(m: Pick<MarketState, 'shortHist' | 'surplusHist' | 'volHist' | 'shortage' | 'surplus' | 'volume' | 'stateHist'> | undefined | null): Balance {
+  if (!m) return { days: 0, shortage: 0, surplus: 0, volume: 0, net: 0, treasury: 0 };
   const sh = m.shortHist ?? [];
   const su = m.surplusHist ?? [];
   const n = Math.min(sh.length, su.length);
-  if (n === 0) return withNet(1, Math.max(0, m.shortage), Math.max(0, m.surplus), Math.max(0, m.volume));
+  if (n === 0) return withNet(1, Math.max(0, m.shortage), Math.max(0, m.surplus), Math.max(0, m.volume), 0);
   const vh = m.volHist ?? [];
+  const th = m.stateHist ?? [];
   let a = 0;
   let b = 0;
   let v = 0;
+  let tr = 0;
   for (let i = 0; i < n; i++) {
     a += Math.max(0, sh[sh.length - 1 - i]);
     b += Math.max(0, su[su.length - 1 - i]);
     const x = vh[vh.length - 1 - i];
     v += x > 0 && Number.isFinite(x) ? x : 0;
+    const y = th[th.length - 1 - i];
+    tr += y > 0 && Number.isFinite(y) ? y : 0;
   }
-  return withNet(n, a / n, b / n, v / n);
+  return withNet(n, a / n, b / n, v / n, tr / n);
 }
 
-function withNet(days: number, shortage: number, surplus: number, volume: number): Balance {
+function withNet(days: number, shortage: number, surplus: number, volume: number, treasury: number): Balance {
   const net = shortage >= surplus ? (shortage > 0 ? (shortage - surplus) / (volume + shortage) : 0) : -(surplus - shortage) / (volume + surplus);
-  return { days, shortage, surplus, volume, net: Number.isFinite(net) ? net : 0 };
+  return { days, shortage, surplus, volume, net: Number.isFinite(net) ? net : 0, treasury };
 }
 
 export function bookFor(books: Books, town: TownId, good: number): Book {
@@ -937,6 +943,11 @@ function finalizeDay(s: SimState, d: DayMarket): void {
   m.surplus = t.surplus;
   pushCapped((m.shortHist ??= []), t.shortage, MARKET_BALANCE_DAYS);
   pushCapped((m.surplusHist ??= []), t.surplus, MARKET_BALANCE_DAYS);
+  if (kind === K_GOODS) {
+    let sold = 0;
+    for (const o of book.asks) if (o.ref === STATE) sold += Math.max(0, o.filledDay ?? o.filled);
+    pushCapped((m.stateHist ??= []), sold, MARKET_BALANCE_DAYS);
+  }
   m.bestBid = t.bestBid;
   m.bestAsk = t.bestAsk;
   m.sess = t.sess.map(r4);

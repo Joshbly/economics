@@ -17,7 +17,7 @@ import { PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../..
 import { GOODS } from '../../../sim/goods';
 import { isAimed } from '../../../sim/policy/levies';
 import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
-import { carryHoldDays, carryOnRoad, describeCarry } from '../../../sim/policy/carry';
+import { carryDest, carryHoldDays, carryOnRoad, describeCarry, shortTargets } from '../../../sim/policy/carry';
 import { CARRY_FULL_SHARE, WAGON_CAPACITY } from '../../../sim/config';
 import type { CarryRule, Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
@@ -404,7 +404,7 @@ function paintCarry(s: SimState, v: CarryRow, c: CarryRule): void {
   v.sw.set(c.enabled);
   toggleClass(v.el, 'off', !c.enabled);
   const A = s.towns[c.from]?.name ?? '';
-  const B = s.towns[c.to]?.name ?? '';
+  const B = carryDest(s, c);
   setText(v.title, `${GOODS[c.good]?.name ?? 'Goods'} · ${A} → ${B}`);
   const have = fin(s.treasury.goods[c.from]?.[c.good]);
   let state = '';
@@ -412,6 +412,13 @@ function paintCarry(s: SimState, v: CarryRow, c: CarryRule): void {
     const fill = Math.min(100, Math.round((100 * Math.min(have, c.qty >= 0 ? fin(c.allow) : have)) / WAGON_CAPACITY));
     state = ` Filling a wagon: ${fill}% (it leaves at ${Math.round(CARRY_FULL_SHARE * 100)}%, or after ${plural(carryHoldDays(c.good), 'day')} of waiting — ${plural(s.day - c.heldSince, 'day')} so far).`;
   } else if (c.enabled && !(have > 0.005)) state = ` Nothing held in ${A} now: it carries what comes in.`;
+  if (c.to < 0) {
+    // the towns it serves (where the Treasury sells the good), neediest first
+    const t = safe(() => shortTargets(s, c), []);
+    state += t.length
+      ? ` Serves ${t.map((x) => `${s.towns[x.town]?.name ?? ''} (${x.need > 0.5 ? `needs ${fmtQ(x.need)}` : 'supplied'})`).join(', ')}.`
+      : ` The Treasury sells ${(GOODS[c.good]?.name ?? 'it').toLowerCase()} in no other town yet: a sell order in a town adds it.`;
+  }
   setText(v.desc, tersely(safe(() => describeCarry(s, c), c.label)) + state);
   setText(v.held.v, fmtQ(have));
   setText(v.road.v, fmtQ(safe(() => carryOnRoad(s, c.id), 0)));

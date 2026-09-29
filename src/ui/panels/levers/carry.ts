@@ -3,16 +3,18 @@
 // one town to its store in another (dispatches `carry`; the rule's daily running
 // lives in sim/policy/carry.ts).
 //
-//   From [town] to [town] · Goods [good] · Amount [Everything | Up to n a day]
+//   From [town] to [town | where it runs short] · Goods [good] · Amount [Everything | Up to n a day]
 //   Wagons [Full wagons | Right away] · Duration [Once | N days | Until removed]
 //
 // A carry neither buys nor sells: a buy order fills the store at the origin, a
 // sell order empties the store at the destination. So a supply line is three
 // rows in In force (buy · carry · sell), each changed on its own; the form ends
 // with a one-click "Sell in B" that opens the Goods form on that market.
+// "Where it runs short" sends each load to whichever of the towns where the
+// Treasury sells the good needs it most (sim/policy/carry.ts shortTargets).
 // ============================================================================
 import { CARRY_FULL_SHARE, PLAYER_MAX_QTY, TREASURY_FREIGHT_PREMIUM, WAGON_CAPACITY } from '../../../sim/config';
-import { carryHoldDays } from '../../../sim/policy/carry';
+import { carryHoldDays, shortTargets } from '../../../sim/policy/carry';
 import { lineBetween } from '../../../sim/policy/lines';
 import { freightPerUnit } from '../../../sim/agents/traders';
 import { G, N_GOODS } from '../../../sim/goods';
@@ -112,13 +114,15 @@ export function carryForm(opts: { sellThere: (town: number, good: number, perDay
     const B = to.value;
     const g = good.value;
     const once = dur === 'once';
+    const short = B < 0;
     const have = fin(s.treasury.goods[A]?.[g]);
     setText(heldHint, `Held in ${townName(s, A)}: ${fmtQ(have)} ${unitsOf(g)}`);
     show(qty.el, amount === 'some');
     setNumUnit(qty, once ? unitsOf(g) : `${unitsOf(g)}/day`);
     show(wagonRow, !once);
     show(days.el, dur === 'days');
-    setText(sellChip, `Sell in ${townName(s, B)}…`);
+    show(sellChip, !short);
+    setText(sellChip, `Sell in ${short ? '…' : townName(s, B)}…`);
     setText(
       wagonHint,
       wagons === 'full'
@@ -131,6 +135,25 @@ export function carryForm(opts: { sellThere: (town: number, good: number, perDay
       btn.disabled = true;
     };
     if (A === B) return fail('Choose two different towns.');
+    if (short) {
+      if (once) return fail('Once, now needs a town to carry to: choose one, or make this a standing rule.');
+      if (amount === 'some' && !(qty.value > 0)) return fail('Set an amount.');
+      const served = safe(() => shortTargets(s, { from: A, good: g }), []);
+      const gn = goodName(g).toLowerCase();
+      const bits: (string | Node)[] = [
+        amount === 'all' ? `Carries the ${gn} held in ${townName(s, A)}` : `Carries up to ${fmtQ(qty.value)} ${unitsOf(g)} a day`,
+        ' to wherever it runs short: each load goes to the town, of those where you sell ',
+        gn,
+        ', that needs it most — its shortage over the last 14 days plus what you sell there a day, less what you hold there or have on the road. ',
+      ];
+      if (served.length)
+        bits.push(h('b', null, 'Serves '), served.map((x) => `${townName(s, x.town)} (${x.need > 0.5 ? `needs ${fmtQ(x.need)}` : 'supplied'})`).join(', '), '. ', h('span', { class: 'faint' }, 'A sell order in another town adds it.'));
+      else bits.push(h('span', { class: 'warn' }, `You sell ${gn} in no other town yet: place a sell order (Goods) in each town it should serve.`));
+      preview.replaceChildren(...bits);
+      btn.disabled = dur === 'days' && !(days.value > 0);
+      setText(btn, 'Carry');
+      return;
+    }
     const fpu = safe(() => freightPerUnit(s, A, B), -1);
     if (!(fpu >= 0)) return fail(`No wagon road links ${townName(s, A)} and ${townName(s, B)}.`);
     if (amount === 'some' && !(qty.value > 0)) return fail('Set an amount.');
@@ -192,13 +215,15 @@ export function carryForm(opts: { sellThere: (town: number, good: number, perDay
     return best;
   }
   let touched = false;
+  /** The towns, and "where it runs short". */
+  const toOptions = (s: SimState) => [...townOptions(s), { value: -1, label: 'Where short', title: 'Wherever it runs short: each load to the town, of those where you sell it, that needs it most' }];
 
   return {
     el,
     update(s) {
       last = s;
       from.setOptions(townOptions(s));
-      to.setOptions(townOptions(s));
+      to.setOptions(toOptions(s));
       if (!touched) {
         touched = true;
         const b = largestHolding(s);
@@ -214,7 +239,7 @@ export function carryForm(opts: { sellThere: (town: number, good: number, perDay
       last = s;
       touched = true;
       from.setOptions(townOptions(s));
-      to.setOptions(townOptions(s));
+      to.setOptions(toOptions(s));
       from.set(town);
       good.set(g);
       if (to.value === town && s.towns.length > 1) to.set((town + 1) % s.towns.length);

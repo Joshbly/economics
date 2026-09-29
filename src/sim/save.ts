@@ -312,7 +312,7 @@ function fillOrders(s: SimState): void {
   for (const x of added) (s.policy.orders as unknown as Obj[]).push(x);
   const carries: Obj[] = [];
   for (const c of [...(pol.carries as unknown[]), ...newCarries]) {
-    if (!isObj(c) || !isNum(c.id) || !okTown(c.from) || !okTown(c.to) || c.from === c.to || !okGood(c.good)) continue;
+    if (!isObj(c) || !isNum(c.id) || !okTown(c.from) || !(okTown(c.to) || c.to === -1) || c.from === c.to || !okGood(c.good)) continue;
     for (const k of CARRY_NUMS) if (!isNum(c[k])) c[k] = k === 'qty' || k === 'until' || k === 'heldSince' ? -1 : 0;
     if (c.wagons !== 'full' && c.wagons !== 'now') c.wagons = 'full';
     if (typeof c.enabled !== 'boolean') c.enabled = true;

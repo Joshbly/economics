@@ -72,7 +72,7 @@ import type {
 } from '../types';
 import { addAsk, addBid, type Books } from '../market/markets';
 import { aimedRateAt, bankClaimRoom, inGroup, isAimed, isTargetedSale, primeAimedRates, rateIn, steerLevies } from './levies';
-import { carriesBeginDay, carryById, carryLabel, describeCarry, runCarries } from './carry';
+import { carriesBeginDay, carryById, carryLabel, describeCarry, runCarries, shortTargets } from './carry';
 import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject, treasuryCrewWanted } from '../agents/construction';
 import { deliverTreasuryDue, freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
@@ -1410,7 +1410,10 @@ function checkCarryPath(s: SimState, from: unknown, to: unknown, good: unknown):
  * and keeps no rule; otherwise a standing CarryRule (policy/carry.ts) loads after every session.
  */
 function carry(s: SimState, a: Extract<PlayerAction, { type: 'carry' }>): ActionResult {
-  const err = checkCarryPath(s, a.from, a.to, a.good);
+  // to −1: wherever it runs short (a standing rule; policy/carry.ts shortTargets)
+  const short = a.to === -1;
+  if (short && a.once) return fail('Carrying once needs a town to carry to.');
+  const err = short ? (!validTown(s, a.from) ? 'Unknown town.' : !validGood(a.good) ? 'Unknown good.' : null) : checkCarryPath(s, a.from, a.to, a.good);
   if (err) return fail(err);
   if (!isNum(a.qty) || (a.qty !== -1 && a.qty <= 0)) return fail('The quantity must be a positive number (or all of it).');
   if (a.qty > PLAYER_MAX_QTY) return fail(`The quantity can be at most ${qtyText(PLAYER_MAX_QTY)}${a.once ? '' : ' a day'}.`);
@@ -1451,7 +1454,13 @@ function carry(s: SimState, a: Extract<PlayerAction, { type: 'carry' }>): Action
   (s.policy.carries ??= []).push(c);
   let note = '';
   if (have <= 1e-9) note = ` The Treasury holds no ${goodLower(a.good)} in ${townName(s, a.from)} yet; the rule carries it as it comes in (an order buying it there, or cargo landing).`;
-  if (!traderOf(s, a.from) && !lineBetween(s, a.from, a.to)) note += ` There is no trading house in ${townName(s, a.from)} yet to carry it.`;
+  if (!traderOf(s, a.from) && (short || !lineBetween(s, a.from, a.to))) note += ` There is no trading house in ${townName(s, a.from)} yet to carry it.`;
+  if (short) {
+    const served = shortTargets(s, c).map((x) => townName(s, x.town));
+    note += served.length
+      ? ` It serves ${served.join(', ')} — the towns where the Treasury sells ${goodLower(a.good)}; a sell order in another town adds it.`
+      : ` The Treasury sells ${goodLower(a.good)} in no other town yet: place a sell order in each town it should serve.`;
+  }
   const text = describeCarry(s, c);
   policyNews(s, text, a.from);
   return { ok: true, message: text + note, id: c.id };

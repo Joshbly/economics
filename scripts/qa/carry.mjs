@@ -67,6 +67,22 @@ await page.waitForTimeout(300);
 const sell = await q.s('s.policy.orders[s.policy.orders.length - 1]');
 check('sell order placed at the harbour', sell && sell.side === 'sell' && sell.market.town === harbor && sell.priceMode === 'any', JSON.stringify(sell && { town: sell.market.town, side: sell.side, mode: sell.priceMode }));
 
+// the To menu offers "Where it runs short"; the preview names the towns it would serve
+await page.locator(`${T} .seg-btn:text-is("Carry")`).click();
+await page.waitForTimeout(250);
+const toOpts = await page.locator(`${T} .lv-carry form select`).nth(1).locator('option').allTextContents();
+check('To offers Where short', toOpts.includes('Where short'), toOpts.join('/'));
+await page.locator(`${T} .lv-carry form select`).nth(0).selectOption({ index: farm });
+await page.locator(`${T} .lv-carry form select`).nth(1).selectOption({ label: 'Where short' });
+await page.locator(`${T} .lv-carry .seg-btn:text-is("Until removed")`).click();
+await page.waitForTimeout(250);
+const spv = (await page.locator(`${T} .lv-carry .lv-preview`).textContent()) ?? '';
+check('where-short preview names the towns it serves', /to wherever it runs short/.test(spv) && /Serves .*Kelpmouth/.test(spv), spv.slice(0, 240));
+await q.shot('carry-short');
+await page.locator(`${T} .lv-carry form select`).nth(1).selectOption({ index: harbor });
+await page.locator(`${T} .seg-btn:text-is("Goods")`).click();
+await page.waitForTimeout(200);
+
 // run: bread is bought, carried and sold
 await q.s(`R.setSpeed(3)`);
 await page.waitForTimeout(6000);
