@@ -528,6 +528,34 @@ export const FREIGHT_EMA = 0.1;
 /** Extra charged to the Treasury when it has its own goods carried (on top of the full-wagon trip cost). */
 export const TREASURY_FREIGHT_PREMIUM = 0.1;
 
+// ---- Treasury freight lines (policy/lines.ts) ----------------------------------
+/** Most wagons one line may keep. */
+export const LINE_MAX_WAGONS = 60;
+/** Highest fixed fare a line may charge (¤ per unit). */
+export const LINE_MAX_FARE = 1000;
+/** Drivers hired = wagons wanted on the road (EMA) × this (never more than the wagons, never fewer than those on the road). */
+export const LINE_DRIVER_SLACK = 1.15;
+/** EMA speed of the wagons a line is asked for (busy + loads asked for today). */
+export const LINE_USE_EMA = 0.15;
+/** EMA speed of a line's daily running cost and units carried (the 'at cost' fare is their ratio). */
+export const LINE_COST_EMA = 1 / 30;
+/** Below this many units a day (EMA) the 'at cost' fare is a full wagon's trip cost per unit instead. */
+export const LINE_COST_MIN_UNITS = 20;
+/** The 'at cost' fare stays within these multiples of a full wagon's trip cost per unit. */
+export const LINE_COST_FLOOR_MULT = 0.5;
+export const LINE_COST_CAP_MULT = 3;
+/** Spare tools a line keeps beyond its fleet (in wagons), so wear does not idle a wagon. */
+export const LINE_WEAR_BUFFER = 0.5;
+/** Most wagons' worth of tools a line buys a day. */
+export const LINE_TOOLS_DAY = 2;
+/** A line bids for its tools and oil at the going price + this share. */
+export const LINE_BUY_BAND = 0.15;
+/** A line keeps fuel for this many days of expected use, and at least LINE_FUEL_MIN_LEGS loaded legs per wagon. */
+export const LINE_FUEL_DAYS = 4;
+export const LINE_FUEL_MIN_LEGS = 1;
+/** Drivers are offered the going carters' wage in the depot town plus this share. */
+export const LINE_WAGE_PREMIUM = 0.05;
+
 // ---- Bank (agents/bank.ts) ----------------------------------------------------
 export const BANK_BASE_SPREAD = 0.025;
 export const BANK_RISK_PREMIUM = 0.06; // × leverage²

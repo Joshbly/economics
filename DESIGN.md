@@ -293,6 +293,19 @@ longer pipeline at the destination (TRADE_PENDING_DAYS_DURABLE). Freight per uni
 capacity. The published **shipping rate** index is the freight cost per unit
 per 10 tiles. Oil scarcity or oil levies raise freight; paved roads cut it.
 
+*Treasury freight lines* (§5 Build) are a second carrier on a road: for a trip
+between a line's two towns a house compares its own freight with the line's
+fare (per unit; the line's wagons are shared, so a part load costs no more a
+unit than a full one) and puts on the line what fits in its room today when that
+pays better (a house with no wagon, driver or fuel free weighs the line against
+nothing), carrying the rest in its own wagons if that still pays. The cheaper
+freight enters its break-even bids and destination floors, so the ordinary
+arbitrage narrows the price gap between the two towns; the house pays the fare
+to the Purse (flow `fare`) and its cargo rides a Treasury wagon (`Shipment.line`).
+Loads it would have put on a full line are the line's unmet demand (it hires
+drivers for them). With less of its own carting to do, a house wants fewer
+wagons and drivers.
+
 ### 3.5 The Bank
 One commercial bank (owned by a wealthy person). Balance sheet:
 `assets = reserves (at the Treasury) + loans + IOUs (book)`,
@@ -459,6 +472,36 @@ that pay ¤5 per year each, forever). Seven primitives:
    between two towns, a house block (Treasury landlord), a workshop of any
    sector (Treasury-owned; its profits flow to the Purse), a pier at the port
    (more foreign ship capacity), or expand a Treasury workshop.
+   * **Freight line** (`openLine` / `updateLine` / `closeLine`; `s.policy.lines`,
+     `policy/lines.ts`): a Treasury carrying service between towns `a` and `b`, both
+     ways, one line per pair. Every input is real: *wagons* are tools the line holds
+     (TOOLS_PER_WAGON each; taken from the Treasury's stores in `a` when it opens or
+     grows, then bought in `a`'s market by an exempt Treasury bid at the going price +
+     LINE_BUY_BAND, at most LINE_TOOLS_DAY wagons a day, keeping LINE_WEAR_BUFFER
+     spare); *drivers* are the Treasury crew of `a` (policyBeginDay adds the line's
+     drivers — wagons asked for (EMA) × LINE_DRIVER_SLACK, within [1, wagons], never
+     fewer than on the road — to the crew's target after the labour orders, and offers
+     at least the going carters' wage of `a` + LINE_WAGE_PREMIUM; drivers do not count
+     as labour on Treasury projects); *fuel* is oil bought in `a` (exempt bid) into the
+     line's store — LINE_FUEL_DAYS of expected legs — and burnt per loaded leg
+     (OIL_PER_TILE × tiles); *wear* is WAGON_WEAR_DAY per wagon-day on the road +
+     idle wear. Room today = (free wagons, drivers not on the road, fuel for a leg:
+     the least) × WAGON_CAPACITY less what is loaded or reserved. The day's loads
+     leave together after clearing: legs a→b and b→a in whole wagons (several
+     shippers share a wagon); a wagon meeting a load the other way comes back
+     loaded (both away one leg, they swap ends), the others come back empty (two
+     legs). *Fare* (chosen by the player, re-set each morning): `fixed` ¤ per unit,
+     `cost` = the cost of its recent trips (drivers' days on the road, fuel, road wear;
+     EMAs over LINE_COST_EMA) per unit carried, blended toward a full wagon's round
+     trip per unit below LINE_COST_MIN_UNITS a day and kept within
+     LINE_COST_FLOOR_MULT … LINE_COST_CAP_MULT of it, or `free`. The gap between the
+     fares and the running cost is paid by the Purse and shown as such (the line's
+     card: fares in, drivers, fuel & wear, result). The Treasury's own cargo
+     between the two towns (supply routes, Move goods) rides the line first, without
+     a fare (landed cost + the line's cost per unit), the rest with the trading house
+     as before. Paused: no loads, no purchases, only the drivers on the road kept.
+     Closing hands the line's tools and oil to the Treasury's stores in `a` (cargo on
+     the road still arrives).
 7. **Transfer** — a one-off lump-sum payment to (or seizure from) a group
    (group "firms" may be narrowed to one trade). *In kind:* hand out units of a good
    the Treasury holds in a town (payments only) to every member of a group there —
@@ -484,7 +527,8 @@ composing these primitives.
 
 ```
 beginDay            calendar, season, random events, reset daily accumulators
-policyBeginDay      expire orders/levies/limits
+policyBeginDay      expire orders/levies/limits; freight lines' morning (wagons home, wear, fare,
+                    drivers wanted) and the Treasury crews (labour orders + line drivers)
 bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisation, window
 tradersBeginDay     shipments arrive (a supply route's cargo joins its waiting stock), wagons return
 firmsPlan           employment targets, wage adjustments, vacancies
@@ -496,11 +540,13 @@ firmsPayWages       wages (+ wage levies); Treasury workers paid from the Purse
 householdsBeginDay  income EMA, expectations, budgets
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
-  traderOrders, foreignOrders, bankOrders, playerOrders (incl. supply routes' asks
-  at their destinations)
+  traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
+  playerOrders (incl. supply routes' asks at their destinations and the freight
+  lines' bids for tools and oil)
 clearAll            auctions + settlement (money via ledger, goods moved)
-tradersDispatch     filled purchases → shipments
-playerAfterClear    Treasury order bookkeeping; supply routes: credit sales, load the purchases
+tradersDispatch     filled purchases → shipments (loads on a freight line pay its fare)
+playerAfterClear    Treasury order bookkeeping; supply routes: credit sales, load the purchases;
+                    freight lines: purchases into their stores, today's loads leave, accounts
 householdsConsume   eating, heating, ale, furniture wear, health, contentment
 housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
 firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy
@@ -570,6 +616,9 @@ Layout (dark, native-feeling on macOS, system font, tabular numerals):
   9. Import levy → Saltmere price of an imported good ↑.
   10. A wage levy paid by the worker vs by the employer → similar long-run
       take-home pay and employment (economic incidence ≠ statutory incidence).
+  14. A Treasury freight line farm town ↔ capital with free fares → grain price
+      gap between them ↓, the line carries goods every day, and the Purse pays its
+      running costs.
 * Baseline with no player action must stay sane for 20+ years: no NaN, CPI
   within ×0.6–×1.8 of start, unemployment < 15 %, population > 80 % of start.
 * Health across seeds (`npx tsx scripts/health.ts --seeds 1,2,3,4,5 --days 1080

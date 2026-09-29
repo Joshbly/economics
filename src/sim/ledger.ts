@@ -32,6 +32,7 @@ export type Flow =
   | 'transfer'
   | 'build'
   | 'freight'
+  | 'fare' // fares paid to the Treasury for carriage on its freight lines
   | 'estate'
   | 'migrate'
   | 'bailin'
@@ -86,7 +87,7 @@ function credit(s: SimState, r: Ref, a: number): void {
 const FLOW_KEY: Record<Flow, string> = {
   wage: 'flow_wage', buy: 'flow_buy', levy: 'flow_levy', give: 'flow_give', interest: 'flow_interest',
   coupon: 'flow_coupon', dividend: 'flow_dividend', rent: 'flow_rent', transfer: 'flow_transfer',
-  build: 'flow_build', freight: 'flow_freight', estate: 'flow_estate', migrate: 'flow_migrate',
+  build: 'flow_build', freight: 'flow_freight', fare: 'flow_fare', estate: 'flow_estate', migrate: 'flow_migrate',
   bailin: 'flow_bailin', recap: 'flow_recap', fee: 'flow_fee', asset: 'flow_asset', misc: 'flow_misc',
 };
 

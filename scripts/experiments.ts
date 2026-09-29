@@ -210,6 +210,12 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   miningCoalSpend: { label: 'the mining town’s coal mines’ market spending ¤/day (their tools)', fn: (s, c) => sumFirms(s, 'coalmine', c.mining, (f) => f.spent) },
   toolsElsewhere: { label: 'tools price outside the mining town (mean)', fn: (s, c) => meanOver(s.towns.filter((t) => t.id !== c.mining).map((t) => mkt(s, t.id, G.tools)?.ema ?? 0)) },
   giveSpend: { label: 'Treasury payments on levies ¤/day', fn: (s) => L(s, 'levyGive') },
+  lineUnits: { label: 'freight line: units carried/day', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.carriedToday, 0) },
+  lineCost: { label: 'freight line: running cost ¤/day (drivers, fuel, wear)', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.costToday, 0) },
+  lineGap: { label: 'freight line: running cost less fares ¤/day (paid by the Purse)', fn: (s) => (s.policy.lines ?? []).reduce((a, l) => a + l.costToday - l.faresToday, 0) },
+  carters: { label: 'carters employed by trading houses', fn: (s) => sumFirms(s, 'trader', -1, (f) => f.workers.length) },
+  capitalGrain: { label: 'grain price in the capital', fn: (s, c) => mkt(s, c.capital, G.grain)?.ema ?? 0 },
+  farmGrain: { label: 'grain price in the farm town', fn: (s, c) => mkt(s, c.farm, G.grain)?.ema ?? 0 },
 };
 
 /** Σ over the living, active firms of a trade (in a town, or −1 everywhere) of fn(firm). */
@@ -550,6 +556,32 @@ const EXPERIMENTS: Experiment[] = [
       { label: 'their own tools purchases down (month)', metric: 'miningCoalSpend', kind: 'down', tol: 0.05, window: () => [2, 32] },
       { label: 'coal output unchanged (±2 %: not short of tools)', metric: 'miningCoalOut', kind: 'similar', tol: 0.02 },
     ],
+  },
+  {
+    id: '14',
+    name: 'Treasury freight line farm town ↔ capital, free fares',
+    // The Treasury keeps wagons in the capital, drives them with its own workers and buys their
+    // oil, and carries the trading houses' goods between the two towns for nothing. Their freight
+    // on that road falls to zero (up to the line's room), so they buy grain in the farm town and
+    // sell it in the capital down to a smaller gap: the gap narrows through their arbitrage.
+    // The Purse pays the drivers, the fuel and the wagons' wear.
+    days: (o) => Math.max(o.days, 360),
+    arms: [
+      {
+        name: 'free freight line',
+        setup: (g, c) => {
+          // Room for about twice the grain the capital buys a day (whole wagons, round trips of a day or so).
+          const wagons = Math.max(3, Math.min(12, Math.round((2 * c.vol[c.capital][G.grain]) / 120) + 2));
+          act(g, { type: 'openLine', a: c.capital, b: c.farm, wagons, fare: 'free' }, 'freight line');
+        },
+      },
+    ],
+    checks: [
+      { label: 'grain price gap narrows', metric: 'grainGap', kind: 'down', tol: 0.05 },
+      { label: 'the line carries goods', metric: 'lineUnits', kind: 'persistent', level: 1 },
+      { label: 'the Purse pays its running costs', metric: 'lineGap', kind: 'positive' },
+    ],
+    show: ['capitalGrain', 'farmGrain', 'lineCost', 'carters', 'unemp', 'freight'],
   },
 ];
 

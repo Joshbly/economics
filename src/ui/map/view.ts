@@ -615,7 +615,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
         }
         case 'route': {
           const o = s.policy?.orders.find((x) => x && x.id === t.id);
-          const to = o?.route?.to ?? -1;
+          const to = o?.route?.to ?? s.policy?.lines?.find((x) => x && x.id === t.id)?.b ?? -1;
           sel = to >= 0 && s.towns[to] ? { kind: 'town', id: to } : ui.selection;
           break;
         }

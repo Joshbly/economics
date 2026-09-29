@@ -11,6 +11,11 @@
 // the destination, and a pill label near the middle
 // ("bread · 20/day → Saltmere", with the good's colour).
 //
+// Treasury freight lines (s.policy.lines) are drawn the same way, as a solid
+// line in each direction (a lane each side of the road, chevrons both ways) and
+// one pill ("freight line ⇄ Millbrook · 2/4 out"); their ids share the orders'
+// id space (s.ids.policy), so one hit id names either.
+//
 // Pure helpers first (unit-tested), then the drawing layer. Reads the
 // simulation only; never mutates it.
 // ============================================================================
@@ -34,6 +39,8 @@ import {
   ROUTE_TRIM_MIN,
   ROUTE_TRIM_R,
   ROUTE_WIDTH,
+  LINE_COLOR,
+  LINE_DOT,
   SANS,
 } from './constants';
 import type { View } from './life';
@@ -57,6 +64,12 @@ export interface RouteInfo {
   waiting: number;
   /** 0 for the first route from `from` to `to`, 1 for a second one… (drawn one lane further out). */
   lane: number;
+  /** A Treasury freight line (order = the line's id; one entry per direction). */
+  line?: boolean;
+  /** Freight lines: wagons in the fleet, wagons on the road, and whether this entry carries the pill. */
+  wagons?: number;
+  out?: number;
+  pill?: boolean;
 }
 
 function num(x: number | undefined): number {
@@ -74,7 +87,7 @@ export function roundQty(x: number): number {
  * are still buying, or whose last loads are still on the road. Units on the road
  * are the larger of the order's own count and the Treasury wagons tagged with it.
  */
-export function activeRoutes(s: SimState): RouteInfo[] {
+export function activeRoutes(s: SimState, lanes: Map<string, number> = new Map()): RouteInfo[] {
   const orders = s.policy?.orders;
   if (!orders || !orders.length) return [];
   const nt = s.towns.length;
@@ -84,7 +97,6 @@ export function activeRoutes(s: SimState): RouteInfo[] {
     if (!carried) carried = new Map();
     carried.set(sh.order, (carried.get(sh.order) ?? 0) + Math.max(0, num(sh.qty)));
   }
-  const lanes = new Map<string, number>();
   const out: RouteInfo[] = [];
   for (const o of orders) {
     const r = o?.route;
@@ -103,12 +115,42 @@ export function activeRoutes(s: SimState): RouteInfo[] {
   return out;
 }
 
+/**
+ * The freight lines to draw: every line that is running or still has wagons on the road, one
+ * entry per direction (a → b carries the pill), on the next free lane of each road.
+ */
+export function activeLines(s: SimState, lanes: Map<string, number> = new Map()): RouteInfo[] {
+  const ls = s.policy?.lines;
+  if (!ls || !ls.length) return [];
+  const nt = s.towns.length;
+  const out: RouteInfo[] = [];
+  for (const L of ls) {
+    if (!L || !(L.a >= 0 && L.a < nt && L.b >= 0 && L.b < nt) || L.a === L.b) continue;
+    let busy = 0;
+    for (const d of L.busy ?? []) if (d > s.day) busy++;
+    let moving = 0;
+    for (const sh of s.shipments) if (sh && sh.line === L.id) moving += Math.max(0, num(sh.qty));
+    if (!L.enabled && !(busy > 0) && !(moving > 1e-6)) continue;
+    for (const [from, to] of [
+      [L.a, L.b],
+      [L.b, L.a],
+    ]) {
+      const key = from + '>' + to;
+      const lane = lanes.get(key) ?? 0;
+      lanes.set(key, lane + 1);
+      out.push({ order: L.id, from, to, good: -1, perDay: Math.max(0, num(L.carriedToday)), buying: !!L.enabled, inTransit: moving, waiting: 0, lane, line: true, wagons: Math.max(0, num(L.wagons)), out: busy, pill: from === L.a });
+    }
+  }
+  return out;
+}
+
 function goodWord(g: number): string {
   return (GOODS[g]?.name ?? 'goods').toLowerCase();
 }
 
 /** Pill text: "bread · 20/day → Saltmere" (or "… · 12 on the road → …" once it has stopped buying). */
 export function routeLabel(r: RouteInfo, toName: string): string {
+  if (r.line) return `freight line ⇄ ${toName} · ${fmtNum(num(r.out))}/${fmtNum(num(r.wagons))} out`;
   const what = r.buying ? `${fmtNum(roundQty(r.perDay))}/day` : `${fmtNum(roundQty(r.inTransit))} on the road`;
   return `${goodWord(r.good)} · ${what} → ${toName}`;
 }
@@ -304,7 +346,10 @@ export function createRouteLayer(): RouteLayer {
       roadVer = rv;
       geos.clear();
     }
-    routes = activeRoutes(s);
+    const lanes = new Map<string, number>();
+    routes = activeRoutes(s, lanes);
+    const lines = activeLines(s, lanes);
+    if (lines.length) routes = routes.concat(lines);
     if (!routes.length) pills = [];
   }
 
@@ -334,9 +379,10 @@ export function createRouteLayer(): RouteLayer {
       ctx.strokeStyle = ROUTE_SHADE;
       ctx.lineWidth = (ROUTE_WIDTH + (on ? 3 : 1.8)) * d;
       ctx.stroke();
-      ctx.setLineDash([ROUTE_DASH[0] * d, ROUTE_DASH[1] * d]);
+      // supply routes are dashed; freight lines are solid (a standing service)
+      ctx.setLineDash(r.line ? [] : [ROUTE_DASH[0] * d, ROUTE_DASH[1] * d]);
       ctx.lineDashOffset = 0;
-      ctx.strokeStyle = ROUTE_COLOR;
+      ctx.strokeStyle = r.line ? LINE_COLOR : ROUTE_COLOR;
       ctx.lineWidth = (on ? ROUTE_WIDTH + 0.8 : ROUTE_WIDTH) * d;
       ctx.globalAlpha = r.buying ? 1 : 0.6;
       ctx.stroke();
@@ -412,6 +458,7 @@ export function createRouteLayer(): RouteLayer {
     for (const r of routes) {
       const g = geoOf(s, r);
       if (!g || !(g.d1 > g.d0)) continue;
+      if (r.line && !r.pill) continue; // one pill per freight line
       const text = routeLabel(r, s.towns[r.to]?.name ?? 'another town');
       const tw = ctx.measureText(text).width / d; // CSS px
       const wid = tw + 25;
@@ -466,7 +513,7 @@ export function createRouteLayer(): RouteLayer {
       ctx.beginPath();
       ctx.arc(X + 10 * d, Y + H / 2, 4.6 * d, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = GOODS[r.good]?.color ?? '#999';
+      ctx.fillStyle = r.line ? LINE_DOT : (GOODS[r.good]?.color ?? '#999');
       ctx.beginPath();
       ctx.arc(X + 10 * d, Y + H / 2, 3.6 * d, 0, Math.PI * 2);
       ctx.fill();

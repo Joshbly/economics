@@ -4,8 +4,14 @@
 // trade, a pier at the port, or enlarge a Treasury workshop. Sites can be
 // picked on the map (placement mode) or left to the builders. Treasury
 // projects are listed below with their progress.
+// Also: open a Treasury freight line (Treasury wagons, drivers and fuel kept in
+// the first town, carrying the trading houses' goods between the two towns for
+// a fare the player sets); the lines are listed below with their accounts.
 // ============================================================================
-import { PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED } from '../../../sim/config';
+import { LINE_MAX_FARE, LINE_MAX_WAGONS, PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED, TOOLS_PER_WAGON, WAGON_CAPACITY } from '../../../sim/config';
+import { freightPerUnit } from '../../../sim/agents/traders';
+import { estimateLine, lineBetween } from '../../../sim/policy/lines';
+import type { LineFare } from '../../../sim/types';
 import { estimateCost, projectNeed } from '../../../sim/agents/construction';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
 import { roadPlan } from '../../../sim/world/paths';
@@ -13,12 +19,14 @@ import { STATE, type Materials, type ProjectKind, type Sector, type SimState } f
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, plural } from '../../format';
 import { centerMap, on, setPlacing, ui, type PrefillRequest } from '../../uiState';
-import { button, icon, segmented, selectInput, townOptions, type Option } from '../../widgets';
+import { button, icon, numberInput, segmented, selectInput, townOptions, type Option } from '../../widgets';
 import { banner, dynRow, fin, fmtM, formEl, formFoot, msgLine, row, run, safe, subhead, submitButton, townName, type Lever } from './common';
 import { projectList, treasuryProjects } from './projects';
+import { freightLines, lineList } from './lines';
 
-type BKind = 'road' | 'house' | 'firm' | 'pier' | 'expand';
+type BKind = 'road' | 'house' | 'firm' | 'pier' | 'expand' | 'line';
 const BUILDABLE = (Object.keys(SECTORS) as Sector[]).filter((k) => k !== 'stateworks');
+const TOOLS = GOODS.findIndex((g) => g.key === 'tools');
 
 function sectorOpts(): Option<Sector>[] {
   return BUILDABLE.map((k) => ({ value: k, label: SECTORS[k].name, group: SECTORS[k].producer ? 'Makes goods' : 'Services' }));
@@ -50,6 +58,9 @@ export function buildLever(): Lever {
   let town = 0;
   let sector: Sector = 'bakery';
   let firmId = -1;
+  let wagons = 4;
+  let fare: LineFare = 'cost';
+  let farePrice = 0.2;
   let last: SimState | null = null;
   let planKey = '';
   let plan: number[] = [];
@@ -66,6 +77,7 @@ export function buildLever(): Lever {
       { value: 'firm', label: 'Workshop', title: 'A Treasury-owned workplace of any trade' },
       { value: 'pier', label: 'Pier', title: 'More room for foreign ships at the port' },
       { value: 'expand', label: 'Enlarge', title: 'Add a level to a Treasury workshop' },
+      { value: 'line', label: 'Freight line', title: 'Treasury wagons carrying the trading houses’ goods between two towns' },
     ],
     value: kind,
     full: true,
@@ -79,6 +91,21 @@ export function buildLever(): Lever {
   const firmSel = selectInput<number>({ options: [{ value: -1, label: 'No Treasury workshops yet' }], value: -1, onChange: (v) => ((firmId = v), changed()) });
 
   const routeRow = row('Between', fromSel.el, h('span', { class: 'lv-w' }, 'and'), toSel.el);
+  // freight line
+  const wagonsIn = numberInput({ value: wagons, min: 1, max: LINE_MAX_WAGONS, integer: true, unit: 'wagons', width: '120px', onChange: (v) => ((wagons = v), changed()) });
+  const fareSeg = segmented<LineFare>({
+    options: [
+      { value: 'cost', label: 'At cost', title: 'Traders pay what the line’s recent trips cost per unit carried' },
+      { value: 'fixed', label: 'Fixed', title: 'Traders pay a set amount per unit carried' },
+      { value: 'free', label: 'Free', title: 'Traders pay nothing: the Purse pays all its running costs' },
+    ],
+    value: fare,
+    size: 'sm',
+    onChange: (v) => ((fare = v), changed()),
+  });
+  const fareIn = numberInput({ value: farePrice, min: 0, max: LINE_MAX_FARE, prefix: '¤', unit: 'a unit', width: '120px', onChange: (v) => ((farePrice = v), changed()) });
+  const wagonsRow = row('Wagons', wagonsIn.el);
+  const fareRow = row('Traders pay', fareSeg.el, fareIn.el);
   const townRow = dynRow('Town', townSel.el);
   const sectorRow = row('Trade', sectorSel.el);
   const firmRow = row('Workshop', firmSel.el);
@@ -97,9 +124,12 @@ export function buildLever(): Lever {
 
   const projects = projectList({ empty: 'No Treasury projects yet. Anything commissioned here appears with its progress.' });
   const projCount = h('span', { class: 'lv-sub-v' });
+  const lines = lineList({ empty: 'No freight lines. Choose Freight line above to run Treasury wagons between two towns.' });
+  const lineCount = h('span', { class: 'lv-sub-v' });
+  const linesHead = subhead('Treasury freight lines', lineCount);
 
-  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, townRow.el, sectorRow, firmRow, what, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
-  const body = h('div', { class: 'lv-body-in' }, form, h('div', { class: 'lv-sep' }), subhead('Treasury projects', projCount), projects.el);
+  const form = formEl(() => submit(), h('div', { class: 'lv-row lv-row-full' }, kindSeg.el), routeRow, wagonsRow, fareRow, townRow.el, sectorRow, firmRow, what, placingNote, formFoot(preview, msg, showRoute, pickSite, go));
+  const body = h('div', { class: 'lv-body-in' }, form, h('div', { class: 'lv-sep' }), linesHead, lines.el, subhead('Treasury projects', projCount), projects.el);
 
   on('placing', () => last && paint());
 
@@ -108,7 +138,7 @@ export function buildLever(): Lever {
   }
 
   function projKind(): ProjectKind {
-    return kind === 'expand' ? 'expand' : kind;
+    return kind === 'expand' ? 'expand' : kind === 'line' ? 'road' : kind;
   }
 
   function cost(s: SimState): { money: number; need: Materials; tiles: number } {
@@ -154,16 +184,30 @@ export function buildLever(): Lever {
     );
     firmId = firmSel.value;
 
-    show(routeRow, kind === 'road');
+    show(routeRow, kind === 'road' || kind === 'line');
+    show(wagonsRow, kind === 'line');
+    show(fareRow, kind === 'line');
+    show(fareIn.el, fare === 'fixed');
+    fareSeg.set(fare);
     show(townRow.el, kind === 'house' || kind === 'firm' || kind === 'pier');
     setText(townRow.lab, kind === 'pier' ? 'Harbour' : 'Town');
     show(sectorRow, kind === 'firm');
     show(firmRow, kind === 'expand');
     const sited = kind === 'house' || kind === 'firm' || kind === 'pier';
     show(pickSite, sited);
-    show(showRoute, kind === 'road');
-    setText(go, sited ? 'Let builders choose' : 'Commission');
-    go.title = sited ? 'The builders pick a free site near the town (Enter)' : 'Queue it with the builders (Enter)';
+    show(showRoute, kind === 'road' || kind === 'line');
+    setText(go, sited ? 'Let builders choose' : kind === 'line' ? 'Open the line' : 'Commission');
+    go.title = sited ? 'The builders pick a free site near the town (Enter)' : kind === 'line' ? 'Open the freight line (Enter)' : 'Queue it with the builders (Enter)';
+    const nLines = freightLines(s).length;
+    setText(lineCount, nLines ? String(nLines) : '');
+    show(linesHead, nLines > 0 || kind === 'line');
+    show(lines.el, nLines > 0 || kind === 'line');
+    lines.update(s);
+    if (kind === 'line') {
+      paintLine(s);
+      paintProjects(s);
+      return;
+    }
 
     const c = cost(s);
     const purse = fin(s.treasury.purse);
@@ -240,11 +284,72 @@ export function buildLever(): Lever {
       if (t) setText(t, `Click the map to choose a site for ${what2}${p.town !== undefined ? ' near ' + townName(s, p.town) : ''}. Esc cancels.`);
     }
 
+    paintProjects(s);
+  }
+
+  function paintProjects(s: SimState): void {
     setText(projCount, (() => {
       const n = treasuryProjects(s).filter((x) => x.status !== 'done').length;
       return n ? `${n} under way` : '';
     })());
     projects.set(s);
+  }
+
+  /** The freight-line composer: what it is, what it costs to run, what the traders pay today. */
+  function paintLine(s: SimState): void {
+    const B = (x: string, cls?: string) => h('b', { class: cls ?? null }, x);
+    const A = townName(s, from);
+    const Bn = townName(s, to);
+    const est = from !== to ? safe(() => estimateLine(s, from, to, wagons), null) : null;
+    const dup = from !== to ? safe(() => lineBetween(s, from, to), undefined) : undefined;
+    const n = Math.max(1, Math.round(fin(wagons, 1)));
+    let ok = true;
+    let desc = '';
+    setText(whatT, `Freight line ${A} ⇄ ${Bn}`);
+    if (from === to) {
+      desc = 'Choose two different towns.';
+      ok = false;
+    } else if (!est || !est.ok) {
+      desc = `No wagon road links ${A} and ${Bn}.`;
+      ok = false;
+    } else if (dup) {
+      desc = `A Treasury freight line already runs between ${A} and ${Bn}: change its fare or its wagons below.`;
+      ok = false;
+    } else if (!wagonsIn.valid || (fare === 'fixed' && !fareIn.valid)) {
+      desc = 'Check the numbers.';
+      ok = false;
+    } else {
+      desc =
+        `The Treasury keeps ${plural(n, 'wagon')} in ${A} (${TOOLS_PER_WAGON} tool sets each, bought there), drives them with Treasury workers hired there and buys their oil there. ` +
+        `The trading houses of both towns load their goods onto it when it is cheaper than their own wagons, and pay ${fare === 'free' ? 'nothing' : fare === 'fixed' ? `${fmtM(farePrice)} a unit` : 'what its recent trips cost per unit carried'}. The Treasury’s own goods between the two towns ride it too.`;
+    }
+    setText(whatD, desc);
+    setText(costV, ok && est ? `≈ ${fmtM(n * est.wagonCost)}` : '');
+    costV.title = ok ? 'The wagons: tools bought in the depot town (the Treasury’s own tools there are used first)' : '';
+    const held = fin(s.treasury.goods[from]?.[TOOLS]);
+    setText(matsV, ok && est ? `${plural(n * TOOLS_PER_WAGON, 'tool set')} for the wagons${held > 0.5 ? ` (${fmtNum(held)} held in ${A})` : ''} · ${fmtNum(est.days, 1)} days each way · drivers ${fmtM(est.wage)} a day` : '');
+    show(matsV, ok && !!est);
+    if (!ok || !est) preview.replaceChildren();
+    else {
+      const own = safe(() => freightPerUnit(s, from, to), -1);
+      const back = safe(() => freightPerUnit(s, to, from), -1);
+      preview.replaceChildren(
+        'Trading houses’ own wagons today: ',
+        B(own >= 0 ? fmtM(own) : '—'),
+        ` a unit ${A} → ${Bn}, `,
+        B(back >= 0 ? fmtM(back) : '—'),
+        ' back (a full wagon; part loads cost them more). The line: ',
+        B(fmtM(est.perUnit)),
+        ' a unit in full wagons; about ',
+        B(fmtM(est.perDay)),
+        ' a day with every wagon on the road (drivers, oil, wear), ',
+        B(fmtM(est.idleDay)),
+        ` standing. A wagon carries ${WAGON_CAPACITY}.`,
+      );
+    }
+    go.disabled = !ok;
+    pickSite.disabled = true;
+    show(placingNote, !!ui.placing);
   }
 
   function showOnMap(): void {
@@ -289,6 +394,11 @@ export function buildLever(): Lever {
         if (firmId < 0) return msg.err('The Treasury owns no workshop to enlarge.');
         r = run({ type: 'build', kind: 'expand', firm: firmId }, msg, '✓ Commissioned — see Treasury projects below.');
         break;
+      case 'line':
+        if (!wagonsIn.valid) return msg.err(`The number of wagons must be a whole number from 1 to ${LINE_MAX_WAGONS}.`);
+        if (fare === 'fixed' && !fareIn.valid) return msg.err('Set the fare per unit.');
+        r = run({ type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined }, msg, '✓ Line opened — see Treasury freight lines below.');
+        break;
     }
     if (r?.ok) planKey = '';
   }
@@ -296,13 +406,15 @@ export function buildLever(): Lever {
   return {
     id: 'build',
     title: 'Build',
-    tagline: 'Roads, houses, workshops, piers',
+    tagline: 'Roads, houses, workshops, piers, freight lines',
     body,
     summary(s) {
       const live = s.projects.filter((p) => p && p.owner === STATE && p.status !== 'done' && p.status !== 'cancelled');
       const stalled = live.filter((p) => p.status === 'stalled').length;
-      if (!live.length) return { text: 'No projects' };
-      return { text: plural(live.length, 'project') + (stalled ? ` · ${stalled} stalled` : ''), tone: stalled ? 'warn' : null };
+      const nl = freightLines(s).length;
+      const lineText = nl ? plural(nl, 'freight line') : '';
+      if (!live.length) return { text: lineText || 'No projects' };
+      return { text: plural(live.length, 'project') + (stalled ? ` · ${stalled} stalled` : '') + (lineText ? ` · ${lineText}` : ''), tone: stalled ? 'warn' : null };
     },
     update(s) {
       if (last !== s && s.towns.length > 1 && from === to) to = (from + 1) % s.towns.length;

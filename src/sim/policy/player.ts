@@ -1,7 +1,8 @@
 // ============================================================================
 // The player's primitives: validation + execution of PlayerActions, Treasury
 // orders in markets (incl. supply routes: buy → carry → offer, policy/routes.ts),
-// Treasury workforce, transfers (money, or goods in kind). See DESIGN §5.
+// Treasury workforce, transfers (money, or goods in kind), freight lines (open /
+// change / close; their daily running lives in policy/lines.ts). See DESIGN §5.
 // OWNER: market-policy agent.
 //
 // Nothing here is a "policy": the player composes seven neutral primitives
@@ -69,6 +70,26 @@ import { news } from '../stats/events';
 import { cancelProject, estimateCost, startProject } from '../agents/construction';
 import { freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
 import { roadPlan } from '../world/paths';
+import { LINE_MAX_FARE, LINE_MAX_WAGONS, TOOLS_PER_WAGON } from '../config';
+import { G } from '../goods';
+import type { FreightLine, LineFare } from '../types';
+import {
+  estimateLine,
+  fareFor,
+  lineBetween,
+  lineById,
+  lineDriversWanted,
+  lineOrders,
+  lineResult,
+  linesAfterClear,
+  linesBeginDay,
+  newLine,
+  returnSpareTools,
+  takeStoredTools,
+  usableRoute,
+  wagonsOut,
+  windUpLine,
+} from './lines';
 
 // ---------------------------------------------------------------------------
 // Vocabulary & validation tables
@@ -578,7 +599,7 @@ function policyNews(s: SimState, text: string, town = -1): void {
 }
 
 function ruleCount(s: SimState): number {
-  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length;
+  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.lines?.length ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +809,7 @@ function checkMarket(s: SimState, m: OrderMarket | undefined): string | null {
  *  setWindow            → treasury.reserveRate/lendRate (lendRate ≥ reserveRate enforced)
  *  build                → construction.startProject (owner STATE; road via world/paths route)
  *  cancelProject        → construction.cancelProject
+ *  openLine/updateLine/closeLine → s.policy.lines (policy/lines.ts; ids from s.ids.policy)
  *  transfer             → executeTransfer
  *  setAutoMint/setEvents
  */
@@ -993,6 +1015,12 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
     }
     case 'transfer':
       return transfer(s, a);
+    case 'openLine':
+      return openLine(s, a);
+    case 'updateLine':
+      return updateLine(s, a);
+    case 'closeLine':
+      return closeLine(s, a);
     case 'setAutoMint': {
       t.autoMint = !!a.value;
       if (t.autoMint) t.givesSuspended = false;
@@ -1359,6 +1387,143 @@ function projectResult(s: SimState, r: ReturnType<typeof startProject>, label: s
 }
 
 // ---------------------------------------------------------------------------
+// Freight lines (policy/lines.ts)
+// ---------------------------------------------------------------------------
+const LINE_FARES: LineFare[] = ['fixed', 'cost', 'free'];
+const TOOLS_GOOD = G.tools;
+const OIL_GOOD = G.oil;
+
+/** How a line charges, in words: "¤0.40 a unit carried", "what the line costs to run per unit carried (about ¤0.62 today)", "nothing". */
+function fareText(L: Pick<FreightLine, 'fare' | 'farePrice' | 'fareToday'>): string {
+  if (L.fare === 'free') return 'nothing';
+  if (L.fare === 'fixed') return `${moneyText(L.farePrice)} a unit carried`;
+  return `what the line costs to run per unit carried (about ${moneyText(L.fareToday)} today)`;
+}
+
+/** Plain sentence describing a freight line. */
+export function describeLine(s: SimState, L: FreightLine): string {
+  const A = townName(s, L.a);
+  const B = townName(s, L.b);
+  const n = L.wagonsWanted;
+  const paused = L.enabled ? '' : ' It is paused: it takes no loads until it is resumed.';
+  return (
+    `The Treasury runs a freight line between ${A} and ${B}: ${qtyText(n)} wagon${n === 1 ? '' : 's'} kept in ${A}, driven by Treasury workers hired there and burning oil bought there. ` +
+    `Trading houses of both towns may load their goods onto it and pay ${fareText(L)}; the Treasury's own goods between the two towns ride it too.${paused}`
+  );
+}
+
+/** Short label: "Freight line Kingsbridge ⇄ Millbrook". */
+function lineLabel(s: SimState, a: TownId, b: TownId): string {
+  return `Freight line ${townName(s, a)} ⇄ ${townName(s, b)}`;
+}
+
+function checkFare(fare: unknown, price: unknown): { ok: true; fare: LineFare; price: number } | { ok: false; message: string } {
+  if (!LINE_FARES.includes(fare as LineFare)) return { ok: false, message: 'Choose what the line charges: a fixed amount per unit, what it costs to run, or nothing.' };
+  if (fare !== 'fixed') return { ok: true, fare: fare as LineFare, price: 0 };
+  if (!isNum(price) || price < 0 || price > LINE_MAX_FARE) return { ok: false, message: `The fare per unit must be a number between ${moneyText(0)} and ${moneyText(LINE_MAX_FARE)}.` };
+  return { ok: true, fare: 'fixed', price };
+}
+
+function checkWagons(n: unknown): string | null {
+  if (!isInt(n) || n < 1 || n > LINE_MAX_WAGONS) return `The number of wagons must be a whole number from 1 to ${LINE_MAX_WAGONS}.`;
+  return null;
+}
+
+/** openLine: a Treasury freight line between two towns (wagons, drivers and fuel kept in `a`). */
+function openLine(s: SimState, a: Extract<PlayerAction, { type: 'openLine' }>): ActionResult {
+  if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
+  if (!validTown(s, a.a) || !validTown(s, a.b)) return fail('Unknown town.');
+  if (a.a === a.b) return fail('Choose two different towns.');
+  if (!usableRoute(s, a.a, a.b)) return fail(`No wagon road links ${townName(s, a.a)} and ${townName(s, a.b)}.`);
+  const we = checkWagons(a.wagons);
+  if (we) return fail(we);
+  const fc = checkFare(a.fare, a.farePrice);
+  if (!fc.ok) return fail(fc.message);
+  if (lineBetween(s, a.a, a.b)) return fail(`A Treasury freight line already runs between ${townName(s, a.a)} and ${townName(s, a.b)}; change its wagons or its fare instead.`);
+  if (!s.policy.lines) s.policy.lines = [];
+  const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : lineLabel(s, a.a, a.b);
+  const L = newLine(s.ids.policy++, a.a, a.b, a.wagons, fc.fare, fc.price, s.day, label);
+  s.policy.lines.push(L);
+  const took = takeStoredTools(s, L);
+  L.fareToday = fareFor(s, L);
+  const est = estimateLine(s, a.a, a.b, a.wagons);
+  const A = townName(s, a.a);
+  const notes: string[] = [];
+  const short = Math.max(0, (a.wagons + 0.5) * TOOLS_PER_WAGON - L.tools);
+  if (took > 1e-6) notes.push(`It takes ${amountOf(TOOLS_GOOD, took)} from the Treasury's stores in ${A} for its wagons${short > 0.05 ? ` and buys the rest there (about ${moneyText(est.wagonCost)} a wagon)` : ''}.`);
+  else notes.push(`Its wagons are bought in ${A} as tools (${TOOLS_PER_WAGON} a wagon, about ${moneyText(est.wagonCost)} a wagon at today's price).`);
+  if (!findStateworks(s, a.a)) notes.push(`There is no Treasury workforce in ${A}, so it has no drivers.`);
+  if (!s.treasury.autoMint && !(s.treasury.purse > 0)) notes.push('The Purse is empty, so it cannot buy wagons or pay drivers until money comes in.');
+  const text = describeLine(s, L);
+  policyNews(s, text, a.a);
+  return { ok: true, message: `${text} ${notes.join(' ')}`.trim(), id: L.id };
+}
+
+function updateLine(s: SimState, a: Extract<PlayerAction, { type: 'updateLine' }>): ActionResult {
+  const L = isInt(a.id) ? lineById(s, a.id) : undefined;
+  if (!L) return fail('No such freight line.');
+  const p = a.patch ?? {};
+  if (p.wagons !== undefined) {
+    const we = checkWagons(p.wagons);
+    if (we) return fail(we);
+  }
+  let fare: { fare: LineFare; price: number } | null = null;
+  if (p.fare !== undefined || p.farePrice !== undefined) {
+    const mode = p.fare ?? L.fare;
+    const fc = checkFare(mode, p.farePrice ?? (mode === 'fixed' ? L.farePrice : undefined));
+    if (!fc.ok) return fail(fc.message);
+    fare = fc;
+  }
+  const before = describeLine(s, L);
+  const notes: string[] = [];
+  if (p.wagons !== undefined && p.wagons !== L.wagonsWanted) {
+    L.wagonsWanted = p.wagons;
+    const took = takeStoredTools(s, L);
+    const back = returnSpareTools(s, L);
+    if (took > 1e-6) notes.push(`It takes ${amountOf(TOOLS_GOOD, took)} from the Treasury's stores in ${townName(s, L.a)}.`);
+    if (back > 1e-6) notes.push(`${amountOf(TOOLS_GOOD, back)} from its spare wagons go to the Treasury's stores in ${townName(s, L.a)}.`);
+  }
+  if (fare) {
+    L.fare = fare.fare;
+    L.farePrice = fare.price;
+    L.fareToday = fareFor(s, L);
+  }
+  if (p.enabled !== undefined) L.enabled = !!p.enabled;
+  if (p.enabled !== undefined && Object.keys(p).length === 1) {
+    policyNews(
+      s,
+      L.enabled
+        ? `The Treasury's freight line between ${townName(s, L.a)} and ${townName(s, L.b)} takes loads again.`
+        : `The Treasury has paused its freight line between ${townName(s, L.a)} and ${townName(s, L.b)}: it takes no new loads, and wagons on the road finish their trips.`,
+      L.a,
+    );
+    return { ok: true, message: L.enabled ? 'Line resumed.' : 'Line paused.', id: L.id };
+  }
+  const after = describeLine(s, L);
+  if (after !== before) policyNews(s, after, L.a);
+  return { ok: true, message: `${after}${notes.length ? ' ' + notes.join(' ') : ''}`, id: L.id };
+}
+
+function closeLine(s: SimState, a: Extract<PlayerAction, { type: 'closeLine' }>): ActionResult {
+  const ls = s.policy.lines ?? [];
+  const i = isInt(a.id) ? ls.findIndex((x) => x.id === a.id) : -1;
+  if (i < 0) return fail('No such freight line.');
+  const L = ls[i];
+  const out = wagonsOut(s, L);
+  const [tools, oil] = windUpLine(s, L);
+  ls.splice(i, 1);
+  const { cost } = lineResult(L);
+  const A = townName(s, L.a);
+  const parts = [`${amountOf(TOOLS_GOOD, tools)} (its wagons)`];
+  if (oil > 1e-3) parts.push(amountOf(OIL_GOOD, oil));
+  const text =
+    `The Treasury has closed its freight line between ${A} and ${townName(s, L.b)}. In all it carried ${qtyText(L.carried)} units for ${moneyText(L.fares)} in fares; its drivers, fuel and wear cost ${moneyText(cost)}. ` +
+    `${parts.join(' and ')} go to the Treasury's stores in ${A}.${out > 0 ? ' Goods already on the road still arrive.' : ''}`;
+  policyNews(s, text, L.a);
+  return { ok: true, message: text, id: L.id };
+}
+
+// ---------------------------------------------------------------------------
 // Transfers
 // ---------------------------------------------------------------------------
 const TRANSFER_GROUPS: TransferGroup[] = [...GROUPS, 'bank'];
@@ -1630,9 +1795,14 @@ export function policyBeginDay(s: SimState): void {
   if (t.givesSuspended && !was) policyNews(s, 'The Purse is empty: every payment the Treasury has promised is on hold until money comes in.');
   else if (!t.givesSuspended && was) policyNews(s, "The Purse holds money again; the Treasury's promised payments resume.");
 
+  // Freight lines: wagons home, wear, fare, drivers wanted (policy/lines.ts).
+  linesBeginDay(s);
+
   // Treasury workforce per town. With auto-mint off the crews are capped at what the Purse
   // can pay today (none while payments are on hold): otherwise the Treasury keeps hiring
-  // people it cannot pay, who then count as employed while earning nothing.
+  // people it cannot pay, who then count as employed while earning nothing. The drivers of
+  // the freight lines based in the town join the crew (after the labour orders), and the
+  // crew is offered at least the lines' wage.
   let budget = t.autoMint ? Infinity : t.givesSuspended ? 0 : Math.max(0, t.purse);
   for (const f of s.firms) {
     if (!f || !f.alive || f.sector !== 'stateworks') continue;
@@ -1644,6 +1814,13 @@ export function policyBeginDay(s: SimState): void {
       // Never more workers than the order's remaining worker-days.
       target += o.total >= 0 ? Math.min(o.qty, Math.max(0, Math.ceil(o.total - o.filled - 1e-9))) : o.qty;
       if (o.price > wage) wage = o.price;
+    }
+    if (P.lines?.length) {
+      const d = lineDriversWanted(s, f.town);
+      if (d.n > 0) {
+        target += d.n;
+        if (d.wage > wage) wage = d.wage;
+      }
     }
     target = Math.max(0, Math.round(target));
     if (target > 0 && wage > 0) f.wage = wage;
@@ -1723,8 +1900,11 @@ export function playerOrders(s: SimState, books: Books): void {
   if (!sub) bag.playerSubmitted = sub = [];
   sub.length = 0;
   const orders = s.policy.orders;
-  if (orders.length === 0) return;
   const t = s.treasury;
+  if (orders.length === 0) {
+    if (s.policy.lines?.length) lineOrders(s, books, t.autoMint ? 1e15 : Math.max(0, t.purse));
+    return;
+  }
   let budget = t.autoMint ? 1e15 : Math.max(0, t.purse);
   const committed: Record<number, number> = {};
   let iouBuyCommitted = 0;
@@ -1807,6 +1987,8 @@ export function playerOrders(s: SimState, books: Books): void {
     const ord = buy ? addBid(book, STATE, po.price, q, { exempt: true, tag: po.id }) : addAsk(book, STATE, po.price, q, { exempt: true, tag: po.id });
     sub.push({ po, ord, route: false });
   }
+  // Freight lines: the tools and oil they lack, in their depot towns (policy/lines.ts).
+  if (s.policy.lines?.length) lineOrders(s, books, budget);
 }
 
 /**
@@ -1864,5 +2046,7 @@ export function playerAfterClear(s: SimState, books: Books): void {
     if (!o.enabled) continue;
     if (o.once || orderExhausted(o)) o.enabled = false;
   }
+  // Freight lines: their purchases join their stores; today's loads leave (policy/lines.ts).
+  if (s.policy.lines?.length) linesAfterClear(s);
 }
 

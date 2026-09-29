@@ -510,7 +510,7 @@ export function createLifeLayer(): LifeLayer {
       if (prog <= 0.002 || prog >= 0.998) continue;
       const n = Math.max(1, Math.min(CONVOY_MAX, Math.round(sh.wagons) || 1));
       const cargo = GOODS[sh.good]?.color ?? '#999';
-      const treasury = sh.owner === STATE;
+      const treasury = sh.owner === STATE || sh.line >= 0; // the Treasury's goods, or a Treasury freight line's wagon
       for (let j = 0; j < n; j++) {
         const d = prog * poly.len - j * 0.75;
         if (d < 0.6 || d > poly.len - 0.6) continue; // inside the town square
