@@ -179,6 +179,9 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   cpi: { label: 'CPI', fn: (s) => L(s, 'cpi') },
   money: { label: 'money (Σ deposits)', fn: (s) => L(s, 'money') },
   breadGross: { label: 'bread price paid (national)', fn: (s) => L(s, 'gross_' + G.bread) },
+  // The levy's revenue is withdrawn from circulation (it piles up in the Purse), which lowers
+  // every price a little; incidence is about bread's price RELATIVE to everything else.
+  breadRel: { label: 'bread price paid ÷ CPI', fn: (s) => L(s, 'gross_' + G.bread) / Math.max(1e-9, L(s, 'cpi') / 100) },
   breadQty: { label: 'bread bought by households/day', fn: (s) => L(s, 'cons_' + G.bread) },
   fishQty: { label: 'fish bought by households/day', fn: (s) => L(s, 'cons_' + G.fish) },
   levyTake: { label: 'levy revenue ¤/day', fn: (s) => L(s, 'levyTake') },
@@ -194,6 +197,7 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   importPrice: { label: 'port price paid for the imported good', fn: (s, c) => mkt(s, c.harbor, c.importGood)?.gross ?? 0 },
   importQty: { label: 'imports of that good/day', fn: (s, c) => L(s, 'imp_' + c.importGood) },
   takeHome: { label: 'take-home wage (employment-weighted)', fn: (s) => takeHomeWage(s) },
+  takeHomeReal: { label: 'take-home wage ÷ CPI (what it buys)', fn: (s) => takeHomeWage(s) / Math.max(1e-9, L(s, 'cpi') / 100) },
   employed: { label: 'people employed', fn: (s) => L(s, 'employed') },
 };
 
@@ -306,7 +310,7 @@ const EXPERIMENTS: Experiment[] = [
     name: '30 % levy on bread sales',
     arms: [{ name: 'bread levy', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'sale', unit: 'pct', rate: 0.3, payer: 'seller', good: G.bread }) }, 'bread levy') }],
     checks: [
-      { label: 'consumer bread price up', metric: 'breadGross', kind: 'up', tol: 0.02 },
+      { label: 'consumer bread price up (relative to CPI)', metric: 'breadRel', kind: 'up', tol: 0.02 },
       { label: 'bread bought down', metric: 'breadQty', kind: 'down', tol: 0.01 },
       { label: 'fish bought up (substitution)', metric: 'fishQty', kind: 'up', tol: 0.01 },
       { label: 'Purse revenue > 0', metric: 'levyTake', kind: 'positive' },
@@ -401,16 +405,31 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '10',
     name: 'Wage levy on workers vs on employers (incidence)',
-    days: (o) => Math.max(o.days, 720),
+    // Long-run equivalence: wages are slow to fall, so give them several years.
+    days: (o) => Math.max(o.days, 1440),
     arms: [
-      { name: 'worker pays 20 %', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'worker' }) }, 'worker-side wage levy') },
-      { name: 'employer pays 20 %', setup: (g) => act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'employer' }) }, 'employer-side wage levy') },
+      // Both arms hand the revenue back as the same per-head payment, so the only
+      // difference between them is who hands the levy over (not how much money leaves circulation).
+      {
+        name: 'worker pays 20 %',
+        setup: (g, c) => {
+          act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'worker' }) }, 'worker-side wage levy');
+          act(g, { type: 'addLevy', levy: levy({ base: 'head', unit: 'flat', dir: -1, rate: Math.round(0.2 * c.wage * 0.9 * 100) / 100, payer: 'receiver' }) }, 'per-head payment');
+        },
+      },
+      {
+        name: 'employer pays 20 %',
+        setup: (g, c) => {
+          act(g, { type: 'addLevy', levy: levy({ base: 'wage', unit: 'pct', rate: 0.2, payer: 'employer' }) }, 'employer-side wage levy');
+          act(g, { type: 'addLevy', levy: levy({ base: 'head', unit: 'flat', dir: -1, rate: Math.round(0.2 * c.wage * 0.9 * 100) / 100, payer: 'receiver' }) }, 'per-head payment');
+        },
+      },
     ],
     checks: [
-      { label: 'similar take-home pay', metric: 'takeHome', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.05 },
-      { label: 'similar employment', metric: 'employed', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.03 },
+      { label: 'similar real take-home pay', metric: 'takeHomeReal', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.05 },
+      { label: 'similar employment', metric: 'employed', kind: 'similar', arm: 'worker pays 20 %', vs: 'employer pays 20 %', tol: 0.05 },
     ],
-    show: ['takeHome', 'employed'],
+    show: ['takeHome', 'cpi', 'employed'],
   },
 ];
 
