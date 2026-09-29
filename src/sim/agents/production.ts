@@ -96,6 +96,24 @@ export function toolCostPerUnit(sector: Sector, pTools: number, outputPerWorker:
  * Solved by fixed-point iteration (tools price depends on itself).
  */
 export function basePrices(wage = BASE_WAGE, markup = BASE_MARKUP, rateAnnual = INIT_LEND_RATE): number[] {
+  // Every cost is linear in the wage and in the prices, so the solution is linear in the wage:
+  // solve once per (markup, rate) for a unit wage and scale (firms ask for it every day, per town).
+  const key = markup + '|' + rateAnnual;
+  let unit = UNIT_PRICES.get(key);
+  if (!unit) {
+    unit = solveBasePrices(1, markup, rateAnnual);
+    if (UNIT_PRICES.size > 32) UNIT_PRICES.clear();
+    UNIT_PRICES.set(key, unit);
+  }
+  const p = new Array(N_GOODS);
+  for (let g = 0; g < N_GOODS; g++) p[g] = unit[g] * wage;
+  return p;
+}
+
+/** Memo of the unit-wage solution of basePrices (a pure function of markup and rate). */
+const UNIT_PRICES = new Map<string, number[]>();
+
+function solveBasePrices(wage: number, markup: number, rateAnnual: number): number[] {
   const p = new Array(N_GOODS).fill(1);
   for (let it = 0; it < 80; it++) {
     for (const k of PRODUCER_SECTORS) {

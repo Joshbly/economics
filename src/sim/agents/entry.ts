@@ -63,7 +63,7 @@ import {
   BASE_RENT_SHARE,
 } from '../config';
 import { dayOfMonth } from '../calendar';
-import { G, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
+import { G, GOODS, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId } from '../ledger';
 import { expectedGross, expectedNet, marketOf } from '../market/markets';
 import { chance, rand } from '../rng';
@@ -75,7 +75,7 @@ import { findSite } from '../world/layout';
 import { quoteRate, requestLoan } from './bank';
 import { builderFor, estimateCost, startProject, cancelProject, type ProjectSpec } from './construction';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
-import { materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
+import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
 
 // ---------------------------------------------------------------------------
 // Money of would-be investors
@@ -189,6 +189,25 @@ export function typicalAnnualProfit(s: SimState, town: TownId, sector: Sector): 
   return (q * (pNet - mc - tc) - n * w) * DAYS_PER_YEAR;
 }
 
+/**
+ * Annual profit of an entrant that sells `q` a day at today's prices and wages (average site
+ * and season, fully equipped), employing whole people. A trade's profit on a small market is
+ * the incumbents' reward for being there: a newcomer sized for its share of that market may
+ * not even cover one hand's wage (a town that buys two sets of tools a day has no room for a
+ * second toolworks, however well the first one does).
+ */
+function entrantAnnualProfit(s: SimState, town: TownId, sector: Sector, q: number): number {
+  const d = SECTORS[sector];
+  if (!d || !d.producer || !(q > 0)) return 0;
+  const prices: number[] = [];
+  for (let g = 0; g < 11; g++) prices.push(fin(expectedGross(s, town, g), 1));
+  const pNet = fin(expectedNet(s, town, d.out), 0);
+  const n = Math.max(1, Math.ceil(laborForOutput(sector, q, 1, 1) / 0.95 - 0.05));
+  const mc = materialCostPerUnit(sector, prices);
+  const tc = toolCostPerUnit(sector, prices[G.tools], q / n, fin(s.bank.baseRate, 0.045));
+  return (q * (pNet - mc - tc) - n * defaultWage(s, town)) * DAYS_PER_YEAR;
+}
+
 function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {
   const d = SECTORS[sector];
   const capital = projectTotal(s, 'firm', town, sector);
@@ -196,12 +215,22 @@ function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal |
   let n = 0;
   let sum = 0;
   let any = false;
+  let sold = 0;
+  let makers = 0;
+  let natSold = 0;
+  let natMakers = 0;
   let capFirm: Firm | null = null;
   for (const f of s.firms) {
-    if (!f || !f.alive || f.status !== 'active' || f.sector !== sector || f.town !== town) continue;
+    if (!f || !f.alive || f.status !== 'active' || f.sector !== sector) continue;
     const b = f.building >= 0 ? s.buildings[f.building] : undefined;
     if (!b || b.status !== 'active') continue;
+    const fs = Math.max(0, f.salesLong > 0 && Number.isFinite(f.salesLong) ? f.salesLong : fin(f.sales));
+    natMakers++;
+    natSold += fs;
+    if (f.town !== town) continue;
     any = true;
+    makers++;
+    sold += fs;
     if (s.day - f.founded >= ENTRY_MIN_AGE) {
       n++;
       sum += fin(f.profit);
@@ -210,15 +239,42 @@ function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal |
     if (atCap && f.profit > 0 && b.project < 0 && (b.level || 1) < MAX_BUILDING_LEVEL && (!capFirm || f.profit > capFirm.profit)) capFirm = f;
   }
   const m = marketOf(s, town, d.out);
+  // An entrant shares the trade's market with the incumbents and with the entrants already
+  // being built: it expects the trade's profit divided among all of them, not the incumbents'
+  // average (every would-be entrant reading the same fat margin would otherwise overbuild a
+  // small market — two new toolworks where one sufficed — and the bank lends to both).
+  let pipeline = 0;
+  let natPipeline = 0;
+  for (const p of s.projects) {
+    if (p.sector !== sector || (p.kind !== 'firm' && p.kind !== 'reopen') || p.status === 'done' || p.status === 'cancelled') continue;
+    natPipeline++;
+    if (p.town === town) pipeline++;
+  }
+  // A good the carters move between towns has one market for the realm: a newcomer anywhere
+  // takes its sales from every maker, so it is judged on its share of the realm's trade too
+  // (four towns each reading their own toolworks' margin would build four more).
+  const tradable = GOODS[d.out]?.tradable === true;
+  let natShare = Infinity;
+  if (tradable && natMakers > 0) {
+    let natUnmet = 0;
+    for (let t = 0; t < s.towns.length; t++) natUnmet += Math.max(0, fin(marketOf(s, t, d.out).shortage));
+    natShare = (natSold + natUnmet) / (natMakers + 1 + natPipeline);
+  }
   let annual: number;
-  if (n > 0) annual = (sum / n) * DAYS_PER_YEAR;
-  else if (any) return null; // only young firms: wait for evidence
+  if (n > 0) {
+    annual = (sum / (n + 1 + pipeline)) * DAYS_PER_YEAR;
+    // … and it must pay its way at its own share of the trade's sales (see entrantAnnualProfit).
+    // (The trade's sales include what buyers went without: unmet demand is what a newcomer could serve.)
+    const unmet = Math.max(0, fin(m.shortage));
+    annual = Math.min(annual, entrantAnnualProfit(s, town, sector, Math.min(natShare, (sold + unmet) / (makers + 1 + pipeline))));
+  } else if (any) return null; // only young firms: wait for evidence
   else {
     // A trade new to (or gone from) the town: there must be buyers here already — trade,
     // unmet demand, or at least bids standing in the order book with nobody to sell.
     const bids = (m.curve?.bids.length ?? 0) > 0 || m.bestBid > 0;
     if (!(fin(m.volEma) > 1e-6 || fin(m.shortage) > 1e-6 || bids)) return null;
-    annual = typicalAnnualProfit(s, town, sector) * ENTRY_NEW_SECTOR_DISCOUNT;
+    annual = (typicalAnnualProfit(s, town, sector) * ENTRY_NEW_SECTOR_DISCOUNT) / (1 + pipeline);
+    if (natShare < Infinity) annual = Math.min(annual, entrantAnnualProfit(s, town, sector, natShare));
   }
   let roc = annual / capital;
   if (fin(m.volEma) > 1e-6) roc += ENTRY_SHORTAGE_BONUS * Math.min(1, fin(m.shortage) / m.volEma);

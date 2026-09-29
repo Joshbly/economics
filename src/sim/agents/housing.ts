@@ -411,10 +411,19 @@ export function housingStep(s: SimState): void {
         if (!liveHouse(b) || b.slots <= 0) continue;
         const full = b.residents.length >= b.slots;
         let m = 1;
-        if (full && homelessDemand[t] > 0) m += RENT_UP;
+        // A full house has pricing power only while the town has hardly any room left: with
+        // empty slots elsewhere in town, the homeless who could pay would simply move there.
+        // (Raising rents on full houses whenever someone is homeless ratchets rents far above
+        // what wages pay while whole houses stand empty — and leaves people on the street.)
+        const tight = vacRate < 2 * VACANCY_TIGHT;
+        if (full && homelessDemand[t] > 0 && tight) m += RENT_UP;
         else if (full && vacRate < VACANCY_TIGHT) m += RENT_UP / 2;
-        else if (!full && b.vacantDays >= RENT_CUT_VACANT_DAYS) m -= RENT_DOWN;
-        m *= 1 + infl / 12;
+        // An empty room earns nothing: the longer it has stood empty, the deeper the cut
+        // (RENT_DOWN a month after RENT_CUT_VACANT_DAYS, up to three times that after three such spells).
+        else if (!full && b.vacantDays >= RENT_CUT_VACANT_DAYS) m -= RENT_DOWN * Math.min(3, b.vacantDays / RENT_CUT_VACANT_DAYS);
+        // Only a landlord whose rooms are let passes expected inflation on (and a falling price
+        // level lowers every rent).
+        if (full || infl < 0) m *= 1 + infl / 12;
         b.rent = clampRent(s, b.rent * m, bounds[t], t);
       }
     }

@@ -19,7 +19,7 @@
 // All scratch buffers are module-level and reused: clearing allocates almost
 // nothing. Orders on the same level are treated as the same price.
 // ============================================================================
-import { PRICE_MAX as CFG_PRICE_MAX, PRICE_MIN as CFG_PRICE_MIN, WEDGE_BPCT_MIN, WEDGE_SPCT_MAX } from '../config';
+import { INDICATIVE_STEP, PRICE_MAX as CFG_PRICE_MAX, PRICE_MIN as CFG_PRICE_MIN, WEDGE_BPCT_MIN, WEDGE_SPCT_MAX } from '../config';
 import type { Book, Order, Wedge } from '../types';
 
 // Local copies (imported bindings can be getters under some loaders; these are read in hot loops).
@@ -345,7 +345,15 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
 
   // ---- no cross: indicative price ----
   if (ndB === 0 || ndA === 0 || bestBid < bestAsk) {
-    const ind = ndB > 0 && ndA > 0 ? (bestBid + bestAsk) / 2 : validRef(refPrice, bestBid > 0 ? bestBid : bestAsk);
+    // One-sided books signal scarcity or glut: buyers with nobody selling quote the price up
+    // toward their best bid, sellers with nobody buying down toward their best ask (at most
+    // INDICATIVE_STEP a day each way, before the reference's own smoothing). A frozen reference
+    // would hide an unserved town from every carter and maker that could serve it.
+    const ref0 = validRef(refPrice, bestBid > 0 ? bestBid : bestAsk);
+    let ind = ref0;
+    if (ndB > 0 && ndA > 0) ind = (bestBid + bestAsk) / 2;
+    else if (ndB > 0 && bestBid > ref0) ind = Math.min(bestBid, ref0 * (1 + INDICATIVE_STEP));
+    else if (ndA > 0 && bestAsk > 0 && bestAsk < ref0) ind = Math.max(bestAsk, ref0 * (1 - INDICATIVE_STEP));
     return finish(book, clampLimits(ind), 'none', false, bestBid, bestAsk);
   }
 

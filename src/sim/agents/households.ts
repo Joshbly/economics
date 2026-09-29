@@ -35,6 +35,7 @@ import { hasLevyBase, netWage, wageCtx } from './labor';
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
 // live import bindings (which cost a getter call per read under tsx/vitest).
 const { personRef } = LEDGER;
+const { INFL_EXP_MIN, INFL_EXP_MAX } = CFG;
 const { ALE_JOY_SCALE, ALE_MAX_PER_DAY, BASE_WAGE, BID_RUNGS, COAL_COMFORT_DAYS, COAL_SHOP_DAYS, COLD_BELOW, COMFORT_HALF, CONTENT_EMA, CONTENT_W_COMFORT, CONTENT_W_FOOD, CONTENT_W_HEALTH, CONTENT_W_HOME, CONTENT_W_INCOME, CONTENT_W_JOY, CONTENT_W_WORK, ELASTICITY, FOOD_FLEX, FOOD_MAX, FOOD_NEED, FURNITURE_SHOP_DAYS, FURNITURE_WEAR_DAY, GOLD_HEDGE_TRIGGER, HEALTH_EMA, HEALTH_FOOD_POW, HEALTH_W_HEAT, HEAT_AHEAD_DAYS, HEAT_AMP, HEAT_MEAN, HEAT_RESERVE_DAYS, HH_RUNGS, HOMELESS_HEALTH, HUNGRY_BELOW, INCOME_EMA, INFL_EXP_EMA, INFL_PAIN_SPAN, INFL_PAIN_START, INFL_PAIN_W, IOU_COUPON, IOU_MARGIN, JOY_EMA, MIN_BID_SPEND, OLD_AGE_MAX_LOSS, OLD_AGE_SPAN, OLD_AGE_START, PANTRY_DAYS_BREAD, PANTRY_DAYS_COAL, PANTRY_DAYS_FISH, PORTFOLIO_DAILY_FRACTION, PORTFOLIO_MAX_GOLD_SHARE, PORTFOLIO_MAX_IOU_SHARE, PORTFOLIO_MIN_ORDER, PORTFOLIO_SURPLUS_MULT, SHARE_ALE, SHARE_COAL, SHARE_FOOD, SHARE_FURNITURE } = CFG;
 const { CONSUMER_GOODS, G, N_GOODS } = GOODS_M;
 const { clamp, ema, fin } = UTIL;
@@ -170,7 +171,7 @@ export function effectiveDepositRate(s: SimState, p: Person, interestLevies: boo
  * Before markets (after wages are paid):
  *  - income EMA from yesterday's person.earned (INCOME_EMA) — every module that pays a
  *    person books it there (levies.stockLevies books takes negative); lastWage tracking;
- *  - expected inflation EMA toward stats.latest.infl30 (INFL_EXP_EMA);
+ *  - expected inflation EMA toward stats.latest.inflYoY (INFL_EXP_EMA);
  *  - today's goods budget via demandModel.bufferTarget / goodsBudget, stored in person.budget
  *    (rent = their slot's rent if housed);
  *  - reset person.spent / person.earned scratch AFTER using earned.
@@ -203,7 +204,12 @@ export function householdsBeginDay(s: SimState): void {
   }
 
   const lat = s.stats.latest;
-  const infl = clamp(fin(lat.infl30 ?? lat.inflation30 ?? 0), -0.5, 1.5);
+  // Households read inflation off the change in prices over the last year, and do not
+  // extrapolate it into a runaway expectation (INFL_EXP_MIN..MAX). A month's change, annualised,
+  // is mostly the season (coal is cheap in summer, grain after the harvest): read as a real
+  // interest rate it would raise every buffer target by weeks of income each summer
+  // (bufferTarget) and turn the season's cheap months into a hoarding slump.
+  const infl = clamp(fin(lat.inflYoY ?? 0), INFL_EXP_MIN, INFL_EXP_MAX);
   const interestLevies = hasLevyBase(s, 'interest');
   const moneyLevies = hasLevyBase(s, 'money');
   const wc = wageCtx(s);
@@ -302,25 +308,34 @@ export function planInto(
   const maxSpend = out.maxSpend;
   for (let g = 0; g < N_GOODS; g++) qty[g] = spend[g] = maxSpend[g] = 0;
   const sub = FOOD_NEED * fiIndex + heat * p[G.coal];
-  const S = Math.max(0, budget - sub);
+  // Heating is budgeted at its annual mean cost (demandModel.planDemand): the supernumerary
+  // budget does not shrink every winter and swell every summer — the cash buffer carries the fuel bill.
+  const S = Math.max(0, budget - (FOOD_NEED * fiIndex + HEAT_MEAN * p[G.coal]));
 
   const foodPlan = Math.min(FOOD_MAX, FOOD_NEED + (SHARE_FOOD * S) / fiIndex);
   const breadEat = (foodPlan * fiIndex * shB) / p[G.bread];
   const fishEat = (foodPlan * fiIndex * shF) / p[G.fish];
   const alePlan = Math.min(ALE_MAX_PER_DAY, (SHARE_ALE * S) / p[G.ale]);
   const coalExtra = (SHARE_COAL * S) / p[G.coal];
+  // Shares a sated household cannot use (food and ale have a ceiling) go to furniture, the
+  // good without one (demandModel.satedSpillover), so the supernumerary budget is spent in full.
+  const spill = SHARE_FOOD * S - (foodPlan - FOOD_NEED) * fiIndex + SHARE_ALE * S - alePlan * p[G.ale];
 
   qty[G.bread] = Math.max(0, breadEat * (1 + PANTRY_DAYS_BREAD) - pantry[G.bread]);
   qty[G.fish] = Math.max(0, fishEat * (1 + PANTRY_DAYS_FISH) - pantry[G.fish]);
   const coalTarget = heat + PANTRY_DAYS_COAL * Math.max(heat, heatAhead) + coalExtra;
   qty[G.coal] = Math.max(0, coalTarget - pantry[G.coal]);
   qty[G.ale] = Math.max(0, alePlan - pantry[G.ale]);
-  qty[G.furniture] = (SHARE_FURNITURE * S) / p[G.furniture];
+  qty[G.furniture] = (SHARE_FURNITURE * S + Math.max(0, spill)) / p[G.furniture];
   for (const g of CONSUMER_GOODS) spend[g] = qty[g] * p[g];
 
-  // Essentials first: if the essential spend exceeds the budget, luxuries go to zero.
-  const essential = spend[G.bread] + spend[G.fish] + spend[G.coal];
-  const room = Math.max(0, budget - essential);
+  // Essentials first: if today's essentials exceed the budget, luxuries go to zero. Only what is
+  // eaten and burnt today counts (demandModel.planDemand): topping up the larder and the coal
+  // store is a use of the cash buffer, not a reason to go without ale that day.
+  const essentialUse = breadEat * p[G.bread] + fishEat * p[G.fish] + (heat + coalExtra) * p[G.coal];
+  const essential = Math.min(spend[G.bread] + spend[G.fish] + spend[G.coal], essentialUse);
+  // The winter's fuel above its mean comes out of the buffer, not the luxuries (demandModel.planDemand).
+  const room = Math.max(0, budget + Math.max(0, heat - HEAT_MEAN) * p[G.coal] - essential);
   const lux = spend[G.ale] + spend[G.furniture];
   if (lux > room) {
     const k = lux > 0 ? room / lux : 0;

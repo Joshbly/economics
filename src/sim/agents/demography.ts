@@ -35,7 +35,7 @@ import { hasLevyBase, leaveJob } from './labor';
 // live import bindings (which cost a getter call per read under tsx/vitest).
 const { lognormal, rand, randInt, randRange } = RNG;
 const { firmRef, pay, personRef, writeOff } = LEDGER;
-const { ADULT_AGE, BASE_WAGE, BIRTH_GIFT_MAX_DAYS, BIRTH_GIFT_SHARE, BIRTH_MIN_HEALTH, BIRTH_RATE, DAYS_PER_MONTH, DAYS_PER_YEAR, DEATH_AGE_BASE, DEATH_AGE_PIVOT, DEATH_AGE_SCALE, DEATH_RATE, EMIGRATE_PROB_DAY, EMIGRATE_UNEMP_DAYS, HUNGER_DEATH_DAY, HUNGRY_BELOW, IMMIGRANT_CASH_DAYS, IMMIGRANT_COIN_SHARE, IMMIGRATION_DAY, IMMIGRATION_MAX_SHARE, MIGRATE_MIN_GAIN, MIGRATE_PROB_DAY, MIGRATE_UNEMP_DAYS, OWNER_EMIGRATE_MULT, POOR_HEALTH_MORT, STARVING_HEALTH, UNREST_CONTENT } = CFG;
+const { ADULT_AGE, BASE_WAGE, BIRTH_GIFT_MAX_DAYS, BIRTH_GIFT_SHARE, BIRTH_MIN_HEALTH, BIRTH_RATE, DAYS_PER_MONTH, DAYS_PER_YEAR, DEATH_AGE_BASE, DEATH_AGE_PIVOT, DEATH_AGE_SCALE, DEATH_RATE, EMIGRATE_PROB_DAY, EMIGRATE_UNEMP_DAYS, HUNGER_DEATH_DAY, HUNGRY_BELOW, IMMIGRANT_CASH_DAYS, IMMIGRANT_COIN_SHARE, IMMIGRATION_DAY, IMMIGRATION_MAX_SHARE, IMMIGRATION_QUEUE_SHARE, IMMIGRATION_WAGE_FLOOR, MIGRATE_MIN_GAIN, MIGRATE_PROB_DAY, MIGRATE_UNEMP_DAYS, OWNER_EMIGRATE_MULT, POOR_HEALTH_MORT, STARVING_HEALTH, UNREST_CONTENT } = CFG;
 const { N_GOODS } = GOODS_M;
 const { clamp, fin } = UTIL;
 const { dayOfMonth } = CAL;
@@ -125,7 +125,8 @@ function pull(t: Tallies, town: number): number {
  * + HUNGER_DEATH_DAY when health < STARVING_HEALTH), emigration
  * (EMIGRATE_PROB_DAY for long unemployed / miserable), internal migration
  * (MIGRATE_PROB_DAY for unemployed > 30 days toward towns with vacancies & housing).
- * Monthly: immigration when vacancies > unemployed and vacant slots exist
+ * Monthly: immigration while a town is hiring and its job seekers number fewer than its
+ * vacancies + IMMIGRATION_QUEUE_SHARE of its people (Harris–Todaro), and vacant slots exist
  * (≤ IMMIGRATION_MAX_SHARE × town pop), arriving with small savings (minted? NO —
  * immigrants bring coin from abroad: pay(FOREIGN → person) capped by foreign.coin).
  * Accumulates stats.acc births/deaths/immigrants/emigrants.
@@ -219,10 +220,14 @@ function birth(s: SimState, parent: Person): void {
 function immigration(s: SimState): void {
   const tl = tallies(s);
   for (let t = 0; t < s.towns.length; t++) {
-    const gap = tl.vacancies[t] - tl.unemployed[t];
+    const gap = tl.vacancies[t] - tl.unemployed[t] + IMMIGRATION_QUEUE_SHARE * Math.max(tl.pop[t], 10);
     const slots = tl.vacantSlots[t];
-    if (gap <= 0 || slots <= 0) continue;
-    const attract = clamp((tl.content[t] - 0.3) / 0.3, 0, 1);
+    if (!(tl.vacancies[t] >= 1) || gap <= 0 || slots <= 0) continue;
+    let attract = clamp((tl.content[t] - 0.3) / 0.3, 0, 1);
+    const cpi = s.towns[t].cpi > 1 ? s.towns[t].cpi : 100;
+    const base = fin(s.stats.baseWage) > 0.5 ? s.stats.baseWage : BASE_WAGE;
+    const rel = tl.wage[t] / (cpi / 100) / base;
+    attract *= clamp((rel - IMMIGRATION_WAGE_FLOOR) / Math.max(0.01, 1 - IMMIGRATION_WAGE_FLOOR), 0, 1);
     const cap = IMMIGRATION_MAX_SHARE * Math.max(tl.pop[t], 10);
     const x = Math.min(gap, slots, cap) * attract;
     const n = Math.floor(x + rand(s));

@@ -64,9 +64,13 @@ export const INIT_MAX_LEVEL = 5;
 /** Trading houses' working capital at founding, in days of their merchandise purchases (goods bought, on the road, on sale). */
 export const INIT_TRADER_WC_DAYS = 6;
 /** Trading houses at founding: wagons and drivers per wagon in use. */
-export const INIT_WAGON_SLACK = 1.35;
+export const INIT_WAGON_SLACK = 1.6;
 export const INIT_DRIVER_SLACK = 1.2;
-/** Founding loans have at least this share of STARTUP_LOAN_TERM left … */
+/** Founding loans are long mortgages on the firms' buildings (days): in the founding steady state firms carry their
+ *  debt, and a short schedule would retire deposits faster than any new lending replaces them (a monetary squeeze).
+ *  (Over two decades they are still repaid faster than new lending replaces them: the money stock drifts down.) */
+export const INIT_LOAN_TERM = 7200;
+/** Founding loans have at least this share of INIT_LOAN_TERM left … */
 export const INIT_LOAN_LEFT_MIN = 0.5;
 /** … and are sized so interest + amortisation take at most this share of expected profit. */
 export const INIT_LOAN_MAX_SERVICE = 0.6;
@@ -78,6 +82,8 @@ export const INIT_WORLD_DEAR: [number, number] = [1.2, 1.32];
 export const INIT_WORLD_NEUTRAL: [number, number] = [0.9, 1.1];
 export const INIT_WORLD_N_CHEAP = 3;
 export const INIT_WORLD_N_DEAR = 3;
+/** Founding landed prices sit this share above the traders' break-even (their rule needs a strictly positive margin to ship). */
+export const INIT_TRADE_EDGE = 0.01;
 /** Foreign desk coin at founding, in days of port trade. */
 export const INIT_FOREIGN_COIN_DAYS = 30;
 /** Rent spread within a town at founding (centre dearer), ± this share. */
@@ -96,9 +102,10 @@ export const SCEN_CREDIT_LOAN_TO_CAPITAL = 0.45;
 
 // ---- Prices, wages (calibration anchors used by world/init & production) ----
 export const BASE_WAGE = 10; // ¤ per worker-day at founding
-/** Founding prices = markup × (materials + tool wear + w/(α·prod)). 1.0 = firms exactly at optimal size;
- *  profits then come from decreasing returns (1−α of value added). */
-export const BASE_MARKUP = 1.0;
+/** Firms price at this multiple of marginal cost (founding prices = markup × (materials + tool wear + marginal labour cost)).
+ *  1.0 = perfect competition: profits then come only from decreasing returns (1−α of value added, ≈ 4 % of the price for
+ *  material-heavy workshops) and any dip, interest bill or idle day puts a whole trade in the red. */
+export const BASE_MARKUP = 1.1;
 /** Rent per house slot per day at founding, as a share of BASE_WAGE. */
 export const BASE_RENT_SHARE = 0.16;
 
@@ -128,11 +135,23 @@ export const ALE_MAX_PER_DAY = 1.5;
 export const FURNITURE_WEAR_DAY = 0.003;
 /** Buffer-stock saving rule. */
 export const BUF_BASE_DAYS = 30;
-export const BUF_RATE_DAYS = 300; // × clamp(real deposit rate)
-export const BUF_UNEMP_DAYS = 120; // × local unemployment rate
+export const BUF_RATE_DAYS = 200; // × clamp(real deposit rate)
+/** The real deposit rate (deposit rate − expected inflation) counts only within these bounds. With expected
+ *  deflation bounded (INFL_EXP_MIN) the upper bound only binds for a deposit rate set high by the window rates. */
+export const BUF_REAL_RATE_MIN = -0.03;
+export const BUF_REAL_RATE_MAX = 0.12;
+export const BUF_UNEMP_DAYS = 30; // × local unemployment rate
 export const SPEND_DOWN_DAYS = 60;
-export const INCOME_EMA = 0.05; // per day
-export const INFL_EXP_EMA = 0.02; // per day
+export const INCOME_EMA = 0.03; // per day
+export const INFL_EXP_EMA = 0.01; // per day
+/**
+ * Bounds of the inflation households expect (annual). Expected deflation is bounded tightly: a
+ * year of falling prices after a good harvest or a drought's reversal does not make households
+ * expect money to keep gaining value (which, through the real deposit rate, would raise every
+ * buffer target and deepen the slump); expected inflation can run high (flight from coin).
+ */
+export const INFL_EXP_MIN = -0.03;
+export const INFL_EXP_MAX = 0.3;
 /** Portfolio (IOUs, gold) */
 export const PORTFOLIO_SURPLUS_MULT = 2.0; // only savings above m* × this are invested
 export const IOU_MARGIN = 0.005; // IOU yield must beat deposit rate by this
@@ -219,12 +238,21 @@ export const VACANCY_SAMPLE_CAP = 12;
 // ---- Firms (agents/firms.ts, production.ts) ---------------------------------
 export const HIRE_RATE = 0.1; // max share of capacity hired per day (at least 1)
 export const FIRE_RATE = 0.05; // max share of workforce fired per day (at least 1)
-export const TARGET_SMOOTH = 0.2; // target workforce EMA
-export const WAGE_UP_DAY = 0.004;
+export const TARGET_SMOOTH = 0.05; // target workforce EMA
+export const WAGE_UP_DAY = 0.002;
+/**
+ * A firm that cannot fill its vacancies raises pay faster the more a hand is worth to it: by
+ * WAGE_UP_DAY × (1 + clamp(value / wage − WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX)), where value
+ * is the marginal worker's output at the expected price net of materials and tool wear. An oil
+ * well whose oil sells at ten times its cost must not wait months to outbid the workshops for
+ * hands (the whole realm's carting and fishing stop without oil).
+ */
+export const WAGE_URGENCY_FROM = 1.5;
+export const WAGE_URGENCY_MAX = 4;
 export const WAGE_DOWN_DAY = 0.0015;
 export const WAGE_VACANCY_DAYS = 3;
 export const WAGE_INDEXATION = 0.5; // share of expected inflation passed into wages
-export const INV_TARGET_DAYS = 7; // non-perishable output inventory target (days of sales)
+export const INV_TARGET_DAYS = 10; // non-perishable output inventory target (days of sales)
 export const INV_TARGET_DAYS_PERISHABLE = 1.5;
 export const INV_MAX_DAYS = 40; // stop producing beyond this
 export const INPUT_BUFFER_DAYS = 5;
@@ -236,10 +264,19 @@ export const TOOLS_GAP_CLOSE = 0.25; // share of tools gap bid for per day
 export const TOOLS_IDLE_WEAR_DAY = 0.0005;
 export const CASH_TARGET_DAYS = 15;
 export const CASH_LOW_DAYS = 5;
-export const DIVIDEND_SHARE = 0.5;
+/** Share of the cash above the operating reserve (CASH_TARGET_DAYS of costs) paid to the owner each day. */
+export const DIVIDEND_SHARE = 0.1;
 export const PRICE_EXP_EMA = 0.2;
 export const SALES_EMA = 0.05;
+/** EMA speed of the de-seasonalised sales that output and workforce are planned on (Firm.salesLong). */
+export const SALES_LONG_EMA = 1 / 60;
 export const PROFIT_EMA = 1 / 30;
+/**
+ * EMA speed of the slow profit (Firm.profitLong) a firm in a seasonal trade (farms, coal
+ * mines) judges its losses on: a winter of selling the carried harvest below the cost of the
+ * lean season's output is part of a profitable year, not a reason to shed hands.
+ */
+export const PROFIT_LONG_EMA = 1 / 180;
 export const DISTRESS_BANKRUPT_DAYS = 20;
 export const ASK_RUNGS = [0.85, 0.95, 1.0, 1.08, 1.2]; // multipliers of pExp
 export const ASK_WEIGHTS = [0.15, 0.2, 0.25, 0.2, 0.2];
@@ -247,10 +284,10 @@ export const ASK_COST_FLOOR = 0.6; // never ask below this × unit variable cost
 export const LIQUIDATION_DAYS = 5;
 // -- added by firms engineer --
 /** A lower workforce target is adopted only once the plan falls this share below it (hysteresis vs hire-fire churn). */
-export const TARGET_HYSTERESIS = 0.08;
+export const TARGET_HYSTERESIS = 0.04;
 /** The workforce target moves at most this share (+ TARGET_MAX_STEP_ABS workers) per day: with α near 1 the optimal
  *  workforce reacts very strongly to margins, so firms feel their way toward it rather than jumping. */
-export const TARGET_MAX_STEP = 0.05;
+export const TARGET_MAX_STEP = 0.01;
 export const TARGET_MAX_STEP_ABS = 0.2;
 /** Planned daily sales at ≤ pExp stay within these multiples of expected sales, however far stock is from target. */
 export const ASK_QS_MIN = 0.5;
@@ -266,10 +303,39 @@ export const LIQUIDITY_RESERVE_DAYS = 1.5;
 /** Owners top up a cash-starved firm (firms.ts ownerSupport) unless its profit EMA has been negative this many days. */
 export const OWNER_SUPPORT_MAX_LOSS_DAYS = 60;
 /** Output inventory gaps are closed over this many days (perishables: faster). */
-export const INV_ADJUST_DAYS = 20;
-export const INV_ADJUST_DAYS_PERISHABLE = 2;
+export const INV_ADJUST_DAYS = 30;
+export const INV_ADJUST_DAYS_PERISHABLE = 3;
+/**
+ * A seasonal trade (farms, coal mines) closes the gap to its seasonal stock path over this
+ * many days: a drought or a mild winter moves the stock a long way off the path, and closing
+ * that within a month would hire for a harvest that comes anyway and lay off after it.
+ */
+export const INV_ADJUST_DAYS_SEASONAL = 90;
+/** Planned output never deviates from expected sales by more than this share for the sake of the stock target. */
+export const INV_CORR_MAX = 0.15;
+/** A firm whose profit EMA has been negative this many days sheds workers (at most this share of them per plan, step-capped). */
+export const LOSS_SHRINK_DAYS = 10;
+export const LOSS_SHRINK_SHARE = 0.1;
+/** Short-run supply response of planned output to (price / marginal cost): elasticity and bound (± share). */
+export const SUPPLY_ELASTICITY = 1.0;
+export const SUPPLY_RESP_MAX = 0.1;
+export const SUPPLY_RESP_DOWN = 0.05;
+/**
+ * Scarcity: once the price exceeds the marginal cost of serving normal sales by more than this
+ * factor, the upward bound on the supply response widens by ln(price / (cost × factor)) — a
+ * price several times cost (a town whose brewers all stopped when grain spiked) says buyers
+ * want far more than is being made, and the makers expand as fast as they can hire instead of
+ * 10 % a season at a time. Small margins keep the narrow, stable response.
+ */
+export const SUPPLY_SCARCITY_FROM = 1.5;
 /** Share of all coal burnt for heating (the rest fires ovens and forges): coal demand's seasonal swing. */
 export const COAL_HEAT_SHARE = 0.5;
+/**
+ * A producer of a seasonal-demand good (coal) learns the season from its own last twelve
+ * months of sales (Firm.salesMonths) once the record is complete and plausible: every month
+ * sold something and the busiest month sold at most this many times the slackest.
+ */
+export const SEASON_OBS_MAX_RATIO = 6;
 /** Firms plan to produce a little more than they expect to sell, so that unmet demand can reveal itself. */
 export const DEMAND_SLACK = 0.05;
 /** Share of the town market's unmet demand (shortage) a firm adds to its sales expectation, pro rata to its market share. */
@@ -277,10 +343,25 @@ export const SHORTAGE_WEIGHT = 0.5;
 /** Firms younger than this (days) with little sales history plan with a capacity heuristic: NEW_FIRM_SCALE × typical size. */
 export const NEW_FIRM_DAYS = 45;
 export const NEW_FIRM_SCALE = 0.6;
+/**
+ * For its first NEW_FIRM_RAMP_DAYS an entrant plans at least its share of the town's sales of
+ * its good (the town's sales divided among its makers — the premise it entered on) and prices
+ * at its own cost to win it. Planning only on its own sales, a one-hand workshop that sells
+ * what one hand makes would never learn whether it could sell more, and would bleed its
+ * start-up loan dry at a tenth of the size it was built for.
+ */
+export const NEW_FIRM_RAMP_DAYS = 180;
 /** Output multiplier on farms while a drought is on (town.droughtDays > 0). */
 export const DROUGHT_FACTOR = 0.5;
-/** Posted wages are cut (WAGE_DOWN_DAY) only while local unemployment is above this and the firm loses money. */
+/**
+ * Posted wages drift down only while local unemployment is above WAGE_CUT_UNEMP and the firm has
+ * no vacancy: a firm losing money (or in distress) cuts at WAGE_DOWN_DAY, any other at a rate that
+ * rises from 0 to WAGE_DOWN_DAY as unemployment climbs WAGE_CUT_SPAN above the threshold — with
+ * people queueing for jobs whose reservation wages are falling, even a profitable firm needs
+ * to pay less to hire and keep its hands (the downward side of the Phillips curve).
+ */
 export const WAGE_CUT_UNEMP = 0.06;
+export const WAGE_CUT_SPAN = 0.1;
 /** Absolute floor on any posted wage (¤/day), a numerical guard. */
 export const WAGE_MIN_ABS = 0.5;
 /** Cash held back from market purchases, in days of the firm's wage bill (tomorrow's payroll comes first). */
@@ -289,8 +370,10 @@ export const WAGE_RESERVE_DAYS = 1;
 export const ASK_TOP_RUNG = 1.5;
 /** Asks shift by (stock / target)^(−this), clamped to [ASK_SHIFT_MIN, ASK_SHIFT_MAX]. */
 export const ASK_INV_ELASTICITY = 0.12;
-export const ASK_SHIFT_MIN = 0.8;
-export const ASK_SHIFT_MAX = 1.12;
+export const ASK_SHIFT_MIN = 0.75;
+export const ASK_SHIFT_MAX = 1.3;
+/** The asks' cost anchor stays within this share of the firm's price expectation. */
+export const ASK_ANCHOR_BAND = 0.25;
 /** Perishable overstock (above INV_TARGET_DAYS_PERISHABLE of sales) is cleared at pExp × (1 − K·excess days·spoil/5 %), ≥ MIN. */
 export const PERISH_CLEAR_K = 0.1;
 export const PERISH_CLEAR_MIN = 0.5;
@@ -397,11 +480,16 @@ export const STOCK_AGE_DISCOUNT_DAYS = 10;
 // -- added by finance-trade engineer --
 /** Stop shipping a good to a town once traders' stock there + in transit exceeds the daily allowance × (travel days + this). */
 export const TRADE_PENDING_DAYS = 2;
+export const TRADE_PENDING_DAYS_DURABLE = 6;
 /** Smallest daily allowance (units) a destination with no recorded volume still offers (lets a route start). */
 export const TRADE_MIN_ABSORB = 2;
 /** Traders read the destination's demand curve: they aim to supply this share of the demand left unmet
  *  (by other sellers) at the price that just covers their landed cost. */
-export const TRADE_CURVE_SHARE = 0.8;
+export const TRADE_CURVE_SHARE = 1.0;
+/** Traders judge a good's home price at no more than this multiple of its cost of making there (firms.fairPrice). */
+export const TRADE_FAIR_MULT = 1.5;
+/** Without an order-book snapshot, traders assume the home market can supply this multiple of its traded volume. */
+export const TRADE_SUPPLY_VOL_MULT = 1.5;
 /** Stock waiting longer than a day (average age ≈ days of inventory) is offered this much cheaper per extra day, up to the max. */
 export const TRADE_AGE_CUT_DAY = 0.03;
 export const TRADE_AGE_MAX_CUT = 0.25;
@@ -426,10 +514,10 @@ export const TRADER_OIL_TRIPS = 3;
 export const TRADER_OIL_BID_MULT = 1.1;
 export const TRADER_OIL_BID_EXTRA = 3;
 /** EMA speed of the wagons a trader wanted on the road (drives drivers and wagon investment). */
-export const TRADER_USE_EMA = 0.05;
+export const TRADER_USE_EMA = 0.15;
 /** Drivers hired = wagons wanted × this; wagons wanted in the fleet = wagons wanted × TRADER_WAGON_SLACK. */
-export const TRADER_DRIVER_SLACK = 1.2;
-export const TRADER_WAGON_SLACK = 1.25;
+export const TRADER_DRIVER_SLACK = 1.1;
+export const TRADER_WAGON_SLACK = 1.5;
 /** Spare tools (fraction of one wagon) kept so wear does not immediately cost a wagon. */
 export const TRADER_WEAR_BUFFER = 0.5;
 /** Most wagons bought per day, and the premium over the expected tools price a trader pays for them. */
@@ -453,7 +541,7 @@ export const BANK_IOU_MARGIN = 0.004;
 export const BANK_DIVIDEND_SHARE = 0.5;
 export const BANK_FAIL_GRACE_DAYS = 30;
 export const LOAN_DEFAULT_OVERDUE_DAYS = 60;
-export const WORKING_LOAN_TERM = 180;
+export const WORKING_LOAN_TERM = 360;
 export const INVEST_LOAN_TERM = 720;
 export const STARTUP_LOAN_TERM = 1440;
 export const HOUSE_LOAN_TERM = 3600;
@@ -486,6 +574,8 @@ export const BANK_PERSON_PREMIUM = 0.005;
 export const BANK_INCOME_DEBT_SHARE = 0.35;
 /** Annual cash yield the bank assumes on newly financed capital (firm investment / start-ups). */
 export const BANK_PROJECT_YIELD = 0.15;
+/** Annual cash yield the bank assumes on working capital it lends (stock and payroll turned over into sales). */
+export const BANK_WORKING_YIELD = 0.1;
 /** Firms younger than this are judged on their assets' assumed yield, not on a profit history. */
 export const BANK_YOUNG_FIRM_DAYS = 90;
 /** Smallest loan written (¤); working-capital requests may be cut down to this share of the request. */
@@ -497,6 +587,12 @@ export const BANK_PAY_TOLERANCE = 0.98;
 export const BANK_DEFAULT_KEEP_DAYS = 5;
 /** Dividends only while the capital ratio exceeds this. */
 export const BANK_DIVIDEND_CAPITAL = 0.12;
+/**
+ * … measured on at least this share of deposits as a loan book: a bank whose old loans are
+ * being repaid keeps the capital to lend again (paying out everything above 12 % of a
+ * shrinking book would leave it unable to finance a single house when borrowers return).
+ */
+export const BANK_DIVIDEND_BOOK_SHARE = 0.4;
 /** Bail-in restores the capital ratio to the legal/own minimum + BANK_STANCE_CAPITAL + this margin (so the bank can lend again). */
 export const BANK_BAILIN_TARGET = 0.02;
 /** Loans that finance new capital (invest, start-up, house, project) must leave this much capital headroom
@@ -525,6 +621,8 @@ export const IOU_PAR = 100;
 /** Market reference price EMA: speed when the market traded today / when only an indicative price exists. */
 export const MARKET_EMA_TRADED = 0.15;
 export const MARKET_EMA_INDICATIVE = 0.03;
+/** A one-sided book (bids but no asks, or asks but no bids) quotes an indicative price at most this share above/below the reference. */
+export const INDICATIVE_STEP = 0.25;
 /** Smoothing of the daily traded volume (MarketState.volEma). */
 export const MARKET_VOL_EMA = 0.1;
 /** Max points per side kept in the order-book curve snapshot for the UI. */
@@ -570,7 +668,13 @@ export const WORLD_PRICE_MIN_MULT = 0.25;
 export const WORLD_PRICE_MAX_MULT = 4;
 /** Dealer quote centre: V' = dealerValue · (coin/target)^DESK_COIN_ELASTICITY (log-ratio clamped to ±2). */
 export const DESK_COIN_ELASTICITY = 0.15;
-/** Desk target coin = this many days of its port trade (EMA of (imports + exports)/2, speed DESK_TRADE_EMA), ≥ DESK_WORKING_COIN. */
+/**
+ * Desk target coin = this many days of its two-way port trade (EMA of min(imports, exports), speed
+ * DESK_TRADE_EMA), ≥ DESK_WORKING_COIN. The desk keeps working coin for the trade that turns over
+ * both ways: coin earned on a one-sided import surplus is a surplus it wants to shed, so it weakens
+ * the coin instead of raising the desk's appetite for it (a target that grew with imports would let
+ * the realm's money drain abroad without the exchange rate ever turning).
+ */
 export const DESK_COIN_DAYS = 30;
 export const DESK_TRADE_EMA = 0.02;
 /** Interest parity: the desk's target coin × exp(DESK_RATE_SENS · (deposit rate − WORLD_RATE)). WORLD_RATE = founding deposit rate. */
@@ -597,6 +701,21 @@ export const HUNGER_DEATH_DAY = 0.003;
 export const EMIGRATE_PROB_DAY = 0.003;
 export const EMIGRATE_UNEMP_DAYS = 60;
 export const IMMIGRATION_MAX_SHARE = 0.03; // per month, of town population
+/**
+ * Newcomers come for work while a town is hiring (it has vacancies) and its queue of job seekers
+ * is shorter than this share of its people: they accept the chance of a spell without work, as
+ * migrants to a boom town do (Harris–Todaro), so a growing town keeps a normal pool of job
+ * seekers instead of every vacancy being filled from abroad the moment it opens.
+ */
+export const IMMIGRATION_QUEUE_SHARE = 0.04;
+/**
+ * … and only while the town's real wage (average wage / town CPI) is at least this share of
+ * the realm's base real wage (the wage newcomers could earn elsewhere): arrivals taper off
+ * between this share and the base. With a fixed stock of workshops and land, each hand adds less
+ * than the last (α < 1): without the brake a hiring realm would draw people until wages fell
+ * to subsistence and the homeless outnumbered the housed.
+ */
+export const IMMIGRATION_WAGE_FLOOR = 0.85;
 export const MIGRATE_PROB_DAY = 0.02; // long-unemployed consider moving towns
 // -- added by households engineer --
 /** Mortality multiplier by age: DEATH_AGE_BASE + (1 − BASE)·exp((age − PIVOT)/SCALE). ≈1 on average for ages 18–80. */

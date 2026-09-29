@@ -44,6 +44,7 @@ import type { ActionResult, Firm, GoodId, Order, SimState, TownId, TraderState, 
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 import { debtOf, quoteRate, requestLoan } from './bank';
+import { fairPrice } from './firms';
 
 const {
   WAGON_CAPACITY,
@@ -55,8 +56,11 @@ const {
   TRADE_DEST_ABSORB,
   STOCK_AGE_DISCOUNT_DAYS,
   TRADE_PENDING_DAYS,
+  TRADE_PENDING_DAYS_DURABLE,
   TRADE_MIN_ABSORB,
   TRADE_CURVE_SHARE,
+  TRADE_FAIR_MULT,
+  TRADE_SUPPLY_VOL_MULT,
   TRADE_AGE_CUT_DAY,
   TRADE_AGE_MAX_CUT,
   TRADE_HOLD_DAYS,
@@ -204,12 +208,18 @@ function mergeBasis(tr: TraderState, town: TownId, g: GoodId, oldQty: number, q:
 // Daily scratch (runtime; rebuilt every day, never serialised)
 // ---------------------------------------------------------------------------
 
-interface PlannedTrip {
-  firm: number;
+/** One good of a planned trip. */
+interface TripItem {
   good: GoodId;
-  dest: TownId;
   homeUse: number; // units of existing home stock committed to this trip
   orders: Order[]; // merchandise bids (ladder)
+}
+
+/** A planned trip to one destination: every good bound there shares the wagons (mixed loads). */
+interface PlannedTrip {
+  firm: number;
+  dest: TownId;
+  items: TripItem[];
 }
 
 interface TraderScratch {
@@ -391,23 +401,100 @@ function planFleet(s: SimState, f: Firm, tr: TraderState, c: TraderScratch): voi
 // Market phase
 // ---------------------------------------------------------------------------
 
-interface Opp {
+/** A good that could go to a destination. */
+interface Item {
   good: GoodId;
-  dest: TownId;
-  qty: number; // units to load (new purchases + merchandise waiting at home)
+  qty: number; // units available to load (new purchases + merchandise waiting at home)
   qNew: number; // of which new purchases (the destination's allowance)
-  wagons: number;
-  limit: number;
-  pBuy: number;
-  score: number; // profit per wagon-day
+  pBuy: number; // expected gross price at home
+  pSell: number; // expected net price at the destination
+  keep: number; // share surviving the trip (perishables)
+  minM: number; // minimum margin per unit
+  levyU: number; // shipment levies per unit
+  load: number; // set by settleRoute: units planned on this trip
+  limit: number; // set by settleRoute: break-even bid at the route's freight
+}
+
+/** A destination with the goods that pay to send there; they share the wagons (mixed loads). */
+interface Opp {
+  dest: TownId;
   r: Route;
-  trip: number;
-  keep: number;
-  pSell: number;
-  minM: number;
+  trip: number; // cost of one wagon's round trip
+  items: Item[];
+  load: number; // units loaded
+  wagons: number; // wagons the load needs
+  profit: number; // Σ (limit − pBuy) × load
+  score: number; // profit per wagon-day
 }
 
 const _ctx: LevyCtx = {};
+
+function wagonsFor(q: number): number {
+  return Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9));
+}
+
+/** Unit margin of an item before freight. */
+function itemMargin(it: Item): number {
+  return it.pSell * it.keep - it.levyU - it.minM - it.pBuy;
+}
+
+/**
+ * Settle a route's load within `cap` units: goods with the best margin before freight load
+ * first; freight (whole wagons: a part-full wagon costs as much as a full one) is shared
+ * over the whole load, and goods whose margin does not cover their share are dropped until
+ * the rest pays. A load of durables only may wait TRADE_HOLD_DAYS at home for company, so its
+ * freight is judged at that fuller load (DESIGN §3.4: freight = trip cost / load).
+ * Returns a fresh plan (items copied), load 0 when nothing pays.
+ */
+function settleRoute(o: Opp, cap: number): Opp {
+  let items = o.items.filter((it) => it.qty > 0.5 && itemMargin(it) > 0).map((it) => ({ ...it }));
+  items.sort((a, b) => itemMargin(b) - itemMargin(a));
+  const out: Opp = { ...o, items: [], load: 0, wagons: 0, profit: 0, score: 0 };
+  for (let iter = 0; iter < 12 && items.length; iter++) {
+    let left = cap;
+    let load = 0;
+    let durable = true;
+    let newDur = 0;
+    for (const it of items) {
+      it.load = Math.max(0, Math.min(it.qty, left));
+      left -= it.load;
+      load += it.load;
+      if (GOODS[it.good].spoil > 0) durable = false;
+      else newDur += Math.min(it.load, it.qNew);
+    }
+    if (!(load > 0.5)) break;
+    const eff = durable ? Math.max(load, Math.min(WAGON_CAPACITY, load + newDur * TRADE_HOLD_DAYS)) : load;
+    const wag = wagonsFor(eff);
+    const fu = (o.trip * wag) / Math.max(1e-9, eff);
+    const pays = items.filter((it) => it.load > 0.5 && itemMargin(it) - fu > it.pBuy * 0.005);
+    if (pays.length === items.length) {
+      let profit = 0;
+      for (const it of items) {
+        it.limit = it.pSell * it.keep - it.levyU - it.minM - fu;
+        profit += (it.limit - it.pBuy) * it.load;
+      }
+      out.items = items;
+      out.load = load;
+      out.wagons = wagonsFor(load);
+      out.profit = profit;
+      out.score = profit / (wag * 2 * Math.max(0.05, o.r.days));
+      return out;
+    }
+    items = pays;
+  }
+  return out;
+}
+
+/** The better of the route's full load and a load trimmed to whole wagons (a last part-full wagon may not pay). */
+function planRoute(o: Opp, cap: number): Opp {
+  const a = settleRoute(o, cap);
+  const whole = Math.floor(Math.min(cap, a.load > 0 ? a.load : cap) / WAGON_CAPACITY) * WAGON_CAPACITY;
+  if (whole >= WAGON_CAPACITY && (a.load <= 0 || whole < a.load - 0.5)) {
+    const b = settleRoute(o, whole);
+    if (b.profit > a.profit) return b;
+  }
+  return a;
+}
 
 /** Cumulative quantity of a curve snapshot side at prices ≥ p (bids, descending) or ≤ p (asks, ascending). */
 function curveCum(flat: readonly number[], p: number, bids: boolean): number {
@@ -440,10 +527,28 @@ function room(s: SimState, pend: number[], stockAt: number[], dest: TownId, g: G
     daily = Math.max(daily, TRADE_CURVE_SHARE * Math.max(0, demand - others));
   }
   daily = Math.max(TRADE_MIN_ABSORB, fin(daily));
-  return Math.max(0, Math.min(daily, daily * (days + TRADE_PENDING_DAYS) - (pend[k] || 0)));
+  // Durables keep a shop's worth of stock at the destination (TRADE_PENDING_DAYS_DURABLE): they
+  // do not rot, households buy them in lumps, and they travel in part-full wagons only every
+  // few days — a two-day pipeline would leave the town without any most of the week.
+  const hold = GOODS[g].spoil > 0 ? TRADE_PENDING_DAYS : TRADE_PENDING_DAYS_DURABLE;
+  return Math.max(0, Math.min(daily, daily * (days + hold) - (pend[k] || 0)));
 }
 
 const _w: Wedge = { bPct: 0, bUnit: 0, sPct: 0, sUnit: 0 };
+
+/**
+ * Units the home market offered yesterday at a gross price up to `limitGross` (the asks of its
+ * order-book snapshot), at least TRADE_MIN_ABSORB; without a snapshot, TRADE_SUPPLY_VOL_MULT ×
+ * its traded volume.
+ */
+function homeSupply(s: SimState, home: TownId, g: GoodId, limitGross: number): number {
+  const m = marketOf(s, home, g);
+  const c = m.curve;
+  if (!c || !(limitGross > 0)) return Math.max(TRADE_MIN_ABSORB, TRADE_SUPPLY_VOL_MULT * Math.max(0, fin(m.volEma)));
+  const w = c.wedge;
+  const base = (limitGross - (w.bUnit || 0)) / Math.max(0.05, 1 + (w.bPct || 0));
+  return Math.max(TRADE_MIN_ABSORB, curveCum(c.asks, base, false));
+}
 
 /**
  * Net price a seller can expect at `dest` for about `q` more units: the market reference
@@ -473,18 +578,12 @@ function destPrice(s: SimState, dest: TownId, g: GoodId, q: number): number {
   return Math.max(ref, pb * (1 - w.sPct) - w.sUnit);
 }
 
-/** Per-unit break-even bid for `q` units on a route (after freight at that load, levies, min margin). */
-function limitFor(s: SimState, o: Opp, home: TownId, q: number, shipLevies: boolean): number {
-  const wagons = Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9));
-  const freightU = (o.trip * wagons) / Math.max(1e-9, q);
-  let levyU = 0;
-  if (shipLevies) {
-    _ctx.town = home;
-    _ctx.toTown = o.dest;
-    _ctx.good = o.good;
-    levyU = levyAmount(s, 'shipment', 'owner', _ctx, o.pBuy * q, q) / Math.max(1e-9, q);
-  }
-  return o.pSell * o.keep - freightU - levyU - o.minM;
+/** Shipment levies per unit on `q` units of a good bought at `pBuy` sent home → dest. */
+function shipLevyUnit(s: SimState, home: TownId, dest: TownId, g: GoodId, pBuy: number, q: number): number {
+  _ctx.town = home;
+  _ctx.toTown = dest;
+  _ctx.good = g;
+  return levyAmount(s, 'shipment', 'owner', _ctx, pBuy * Math.max(1, q), Math.max(1, q)) / Math.max(1, q);
 }
 
 function quotaKey(g: GoodId, from: TownId, to: TownId): string {
@@ -518,9 +617,16 @@ function stockAsks(s: SimState, books: Books, ref: number, town: TownId, g: Good
     TRADE_AGE_MAX_DISCOUNT * clamp(ageEff / STOCK_AGE_DISCOUNT_DAYS, 0, 1) +
     (0.95 - TRADE_AGE_MAX_DISCOUNT) * clamp((ageEff - 2 * STOCK_AGE_DISCOUNT_DAYS) / STOCK_AGE_DISCOUNT_DAYS, 0, 1);
   const floor = Math.max(0, fin(basis)) * (1 - disc);
+  // Carters compete: stock is offered at no more than its landed cost plus the minimum margin,
+  // so a destination whose price runs above the landed cost is undercut down to it (competitive
+  // arbitrage). Pricing at the destination's going rate instead would let the gap persist as a
+  // rent for the carter, with the stock that does not sell there slowly ageing down.
+  const b = Math.max(0, fin(basis));
+  const comp = b > 0 ? b * (1 + TRADE_MIN_MARGIN_PCT) + TRADE_MIN_MARGIN_ABS : pNet;
+  const pRef = Math.min(pNet, comp);
   for (let i = 0; i < TRADE_ASK_RUNGS.length; i++) {
     const q = qty * TRADE_ASK_WEIGHTS[i];
-    if (q > 1e-6) addAsk(book, ref, Math.max(floor, pNet * TRADE_ASK_RUNGS[i] * (1 - cut)), q);
+    if (q > 1e-6) addAsk(book, ref, Math.max(floor, pRef * TRADE_ASK_RUNGS[i] * (1 - cut)), q);
   }
 }
 
@@ -672,7 +778,7 @@ export function traderOrders(s: SimState, books: Books): void {
       }
     }
 
-    // ---- opportunities ----
+    // ---- opportunities: per destination, every good that pays shares the wagons ----
     const homeStock: number[] = new Array(N_GOODS).fill(0); // merchandise waiting at home
     for (let g = 0; g < N_GOODS; g++) homeStock[g] = Math.max(0, f.inv[g] - (g === G.oil ? fuelWant : 0));
     const opps: Opp[] = [];
@@ -688,17 +794,25 @@ export function traderOrders(s: SimState, books: Books): void {
       freightSum += perTile;
       freightN++;
       const keep0 = r.days + 1;
+      const items: Item[] = [];
       for (let g = 0; g < N_GOODS; g++) {
         const pSell = destPrice(s, d, g, WAGON_CAPACITY);
-        const pBuy = expectedGross(s, home, g);
+        // What the good should cost at home: the market's reference, but never more than
+        // TRADE_FAIR_MULT × what it costs to make there (firms.fairPrice). A home market whose
+        // makers have stopped quotes a stale, drifting price; judged on it no carter would bid,
+        // and without bids the makers would never learn that it pays to start again.
+        const pBuy = Math.min(expectedGross(s, home, g), TRADE_FAIR_MULT * fairPrice(s, home, g));
         if (!(pSell > 0) || !(pBuy > 0)) continue;
         const keep = keepFactor(g, keep0);
         const minM = Math.max(TRADE_MIN_MARGIN_ABS, TRADE_MIN_MARGIN_PCT * pSell);
-        // Cheap pre-check at full-load freight.
+        // Cheap pre-check at full-load freight (the lowest freight a unit can bear).
         if (pSell * keep - trip / WAGON_CAPACITY - minM <= pBuy) continue;
         // New purchases the destination can take, plus merchandise already waiting at home.
         const floorNet = (pBuy + trip / WAGON_CAPACITY + minM) / Math.max(1e-6, keep);
-        let qNew = room(s, pend, stockAt, d, g, r.days, floorNet);
+        // …but no more than the home market offers at the price the trip can bear: yesterday's
+        // asks there (a carter cannot buy what nobody sells, and cash committed to bids that
+        // cannot fill would starve the trips that can).
+        let qNew = Math.min(room(s, pend, stockAt, d, g, r.days, floorNet), homeSupply(s, home, g, pSell * keep - trip / WAGON_CAPACITY - minM));
         let qLoad = qNew + homeStock[g];
         const ql = quotaLeft(s, c, g, home, d);
         if (ql < qLoad) {
@@ -707,27 +821,12 @@ export function traderOrders(s: SimState, books: Books): void {
           qNew = Math.min(qNew, ql);
         }
         if (!(qLoad > 0.5)) continue;
-        const o: Opp = { good: g, dest: d, qty: qLoad, qNew, wagons: 0, limit: 0, pBuy, score: 0, r, trip, keep, pSell, minM };
-        // Durables may wait at home a few days for a fuller wagon, so freight is judged at that load.
-        const eff = GOODS[g].spoil === 0 ? Math.max(qLoad, Math.min(WAGON_CAPACITY, qNew * (1 + TRADE_HOLD_DAYS))) : qLoad;
-        let lim = limitFor(s, o, home, eff, shipLevies);
-        // A part-full last wagon may not pay: fall back to whole wagons if that is better.
-        if (qLoad > WAGON_CAPACITY && lim <= pBuy) {
-          const qFull = Math.floor(qLoad / WAGON_CAPACITY) * WAGON_CAPACITY;
-          const l2 = limitFor(s, o, home, qFull, shipLevies);
-          if (l2 > lim) {
-            qLoad = qFull;
-            o.qNew = Math.min(qNew, qFull);
-            lim = l2;
-          }
-        }
-        if (!(lim > pBuy * 1.005)) continue;
-        o.qty = qLoad;
-        o.limit = lim;
-        o.wagons = Math.max(1, Math.ceil(qLoad / WAGON_CAPACITY - 1e-9));
-        o.score = ((lim - pBuy) * Math.max(qLoad, eff)) / (Math.max(1, Math.ceil(eff / WAGON_CAPACITY - 1e-9)) * 2 * r.days);
-        opps.push(o);
+        const levyU = shipLevies ? shipLevyUnit(s, home, d, g, pBuy, qLoad) : 0;
+        items.push({ good: g, qty: qLoad, qNew, pBuy, pSell, keep, minM, levyU, load: 0, limit: 0 });
       }
+      if (!items.length) continue;
+      const o = planRoute({ dest: d, r, trip, items, load: 0, wagons: 0, profit: 0, score: 0 }, 1e12);
+      if (o.load > 0.5) opps.push(o);
     }
     opps.sort((a, b) => b.score - a.score);
 
@@ -744,7 +843,7 @@ export function traderOrders(s: SimState, books: Books): void {
       if (opps.length) {
         const o = opps[0];
         const tf = tripFuel(o.r);
-        const perWagon = ((o.limit - o.pBuy) * o.qty) / Math.max(1, o.wagons);
+        const perWagon = o.profit / Math.max(1, o.wagons);
         const pStar = tf > 0 ? pOil + perWagon / tf : pOil;
         lim = Math.min(pOil * (TRADER_OIL_BID_MULT + TRADER_OIL_BID_EXTRA * lack), pStar);
       } else if (lack > 0.5) lim = pOil * 0.98;
@@ -771,35 +870,45 @@ export function traderOrders(s: SimState, books: Books): void {
     const wantCap = tr.busy.length + Math.min(Math.max(0, tr.wagons - tr.busy.length) + Math.max(2, Math.ceil(0.25 * tr.wagons)), avgFuel > 0 ? Math.floor(Math.max(fuelLeft, fuelWant) / avgFuel) : 1e9);
     let wanted = 0;
     const homeLeft = homeStock; // consumed as trips are planned
-    for (const o of opps) {
-      wanted += o.wagons;
+    for (const o0 of opps) {
+      wanted += o0.wagons;
       if (wagonsLeft <= 0) continue;
-      const tf = tripFuel(o.r);
+      const tf = tripFuel(o0.r);
       const byFuel = tf > 0 ? Math.floor(fuelLeft / tf + 1e-9) : wagonsLeft;
-      const w = Math.min(o.wagons, wagonsLeft, byFuel);
+      const w = Math.min(o0.wagons, wagonsLeft, byFuel);
       if (w <= 0) continue;
-      let q = Math.min(o.qty, w * WAGON_CAPACITY);
-      const lim = q < o.qty ? limitFor(s, o, home, q, shipLevies) : o.limit;
-      if (!(lim > o.pBuy * 1.005)) continue;
-      const homeUse = Math.min(homeLeft[o.good], q);
-      homeLeft[o.good] -= homeUse;
-      let bidQ = Math.min(q - homeUse, o.qNew);
-      if (bidQ * lim > cash) bidQ = Math.max(0, cash / lim);
-      q = homeUse + bidQ;
-      if (!(q > 0.5)) continue;
-      const trip: PlannedTrip = { firm: f.id, good: o.good, dest: o.dest, homeUse, orders: [] };
-      if (bidQ > 0.01) {
-        const book = bookFor(books, home, o.good);
-        for (const [pos, share] of BID_LADDER) {
-          const price = o.pBuy + pos * (lim - o.pBuy);
-          trip.orders.push(addBid(book, ref, price, bidQ * share, { tag: o.dest }));
+      // Fewer wagons than the load wants: re-plan the load for the wagons there are.
+      const o = w < o0.wagons ? planRoute(o0, w * WAGON_CAPACITY) : o0;
+      if (!(o.load > 0.5)) continue;
+      const trip: PlannedTrip = { firm: f.id, dest: o.dest, items: [] };
+      let loaded = 0;
+      for (const it of o.items) {
+        const lim = it.limit;
+        if (!(lim > it.pBuy * 1.005)) continue;
+        const homeUse = Math.min(homeLeft[it.good], it.load);
+        homeLeft[it.good] -= homeUse;
+        let bidQ = Math.min(it.load - homeUse, it.qNew);
+        if (bidQ * lim > cash) bidQ = Math.max(0, cash / lim);
+        const q = homeUse + bidQ;
+        if (!(q > 0.5)) continue;
+        const item: TripItem = { good: it.good, homeUse, orders: [] };
+        if (bidQ > 0.01) {
+          const book = bookFor(books, home, it.good);
+          for (const [pos, share] of BID_LADDER) {
+            const price = it.pBuy + pos * (lim - it.pBuy);
+            item.orders.push(addBid(book, ref, price, bidQ * share, { tag: o.dest }));
+          }
+          cash -= bidQ * lim;
         }
-        cash -= bidQ * lim;
+        trip.items.push(item);
+        loaded += q;
+        pend[o.dest * N_GOODS + it.good] += q;
       }
+      if (!trip.items.length) continue;
       c.trips.push(trip);
-      wagonsLeft -= w;
-      fuelLeft -= w * tf;
-      pend[o.dest * N_GOODS + o.good] += q;
+      const used = Math.min(w, wagonsFor(loaded));
+      wagonsLeft -= used;
+      fuelLeft -= used * tf;
     }
     tr.wantEma = ema(fin(tr.wantEma), Math.min(wantCap, tr.busy.length + wanted), TRADER_USE_EMA);
 
@@ -845,12 +954,14 @@ function bookPurchases(s: SimState, fills: Fills): void {
 }
 
 /**
- * After clearing: for each filled trade bid, load wagons (ceil(qty / WAGON_CAPACITY)),
- * burn oil (OIL_PER_TILE × tiles × wagons), charge 'shipment' levies (payer 'owner'),
- * create Shipment(s) with depart = day + 0.5, arrive = depart + route.days,
- * mark wagons busy until day + 2·route.days. stats.acc: shipped_units, freight_cost.
- * A durable load below TRADE_MIN_LOAD of a wagon may wait at home up to TRADE_HOLD_DAYS
- * for more. Filled wagon (tools) bids become wagons (inv → firm.tools).
+ * After clearing: for each planned trip (one destination, possibly several goods), load what
+ * was bought plus the home stock committed to it into shared wagons (ceil(total / WAGON_CAPACITY)),
+ * burn oil (OIL_PER_TILE × tiles × wagons), charge 'shipment' levies (payer 'owner'), create one
+ * Shipment per good with depart = day + 0.5, arrive = depart + route.days (the trip's freight is
+ * shared over its units in the landed cost), and mark the wagons busy until day + 2·route.days.
+ * stats.acc: shipped_units, freight_cost. A load of durables only below TRADE_MIN_LOAD of a
+ * wagon may wait at home up to TRADE_HOLD_DAYS for more. Filled wagon (tools) bids become
+ * wagons (inv → firm.tools).
  */
 export function tradersDispatch(s: SimState, books: Books): void {
   void books;
@@ -867,56 +978,79 @@ export function tradersDispatch(s: SimState, books: Books): void {
     f.trade.wagons = Math.floor(f.tools / TOOLS_PER_WAGON + 1e-9);
   }
   // ---- merchandise purchases → home basis ----
-  for (const t of c.trips) for (const o of t.orders) noteFill(fills, t.firm, t.good, o);
+  for (const t of c.trips) for (const it of t.items) for (const o of it.orders) noteFill(fills, t.firm, it.good, o);
   bookPurchases(s, fills);
   const shipLevies = s.policy.levies.length > 0 && hasLevy(s, 'shipment');
+  const qs: number[] = [];
   // ---- load and send ----
   for (const t of c.trips) {
     const f = s.firms[t.firm];
     if (!isTrader(f) || f.status !== 'active') continue;
     const tr = f.trade;
     const home = f.town;
-    const g = t.good;
     const r = usableRoute(s, home, t.dest);
     if (!r) continue;
-    let filled = 0;
-    for (const o of t.orders) filled += o.filled;
     const tf = tripFuel(r);
-    const fuelOnHand = Math.max(0, f.inv[G.oil]);
-    let avail = Math.max(0, f.inv[g]);
-    if (g === G.oil) avail = Math.max(0, avail - Math.max(tf, fuelTarget(s, f, tr))); // the fuel store is not merchandise
-    let q = Math.min(avail, t.homeUse + filled, quotaLeft(s, c, g, home, t.dest));
-    if (!(q > 1e-3)) continue;
-    if (GOODS[g].spoil === 0 && q < TRADE_MIN_LOAD * WAGON_CAPACITY && fin(tr.age[home][g]) < TRADE_HOLD_DAYS) continue; // wait for a fuller wagon
+    // What each good contributes to the load.
+    qs.length = 0;
+    let total = 0;
+    let oilQ = 0;
+    let durable = true;
+    let oldest = 0;
+    for (const it of t.items) {
+      const g = it.good;
+      let filled = 0;
+      for (const o of it.orders) filled += o.filled;
+      let avail = Math.max(0, f.inv[g]);
+      if (g === G.oil) avail = Math.max(0, avail - Math.max(tf, fuelTarget(s, f, tr))); // the fuel store is not merchandise
+      const q = Math.max(0, Math.min(avail, it.homeUse + filled, quotaLeft(s, c, g, home, t.dest)));
+      qs.push(q);
+      if (!(q > 1e-3)) continue;
+      total += q;
+      if (g === G.oil) oilQ += q;
+      if (GOODS[g].spoil > 0) durable = false;
+      oldest = Math.max(oldest, fin(tr.age[home][g]));
+    }
+    if (!(total > 1e-3)) continue;
+    if (durable && total < TRADE_MIN_LOAD * WAGON_CAPACITY && oldest < TRADE_HOLD_DAYS) continue; // wait for a fuller wagon
     const free = Math.max(0, Math.min(tr.wagons - tr.busy.length, f.workers.length - tr.busy.length));
-    const fuelFree = g === G.oil ? Math.max(0, fuelOnHand - q) : fuelOnHand;
+    const fuelOnHand = Math.max(0, f.inv[G.oil]);
+    const fuelFree = Math.max(0, fuelOnHand - oilQ);
     const byFuel = tf > 0 ? Math.floor(fuelFree / tf + 1e-9) : free;
-    const w = Math.min(Math.max(1, Math.ceil(q / WAGON_CAPACITY - 1e-9)), free, byFuel);
+    const w = Math.min(wagonsFor(total), free, byFuel);
     if (w <= 0) continue;
-    q = Math.min(q, w * WAGON_CAPACITY);
+    // Not enough wagons: every good is loaded pro rata (the rest waits at home).
+    const k = Math.min(1, (w * WAGON_CAPACITY) / total);
+    const load = total * k;
     // fuel for the trip
     f.inv[G.oil] = Math.max(0, f.inv[G.oil] - w * tf);
     bump(s, 'oil_burned', w * tf);
-    // shipment levies (payer: the owner of the goods)
-    const basisHome = Math.max(0, fin(tr.basis[home][g]));
-    let lev = 0;
-    if (shipLevies) {
-      _ctx.town = home;
-      _ctx.toTown = t.dest;
-      _ctx.good = g;
-      lev = chargeLevy(s, 'shipment', FIRM_BASE + f.id, 'owner', _ctx, q * basisHome, q);
-      f.otherCosts += lev;
-    }
     const wage = carterWage(s, home, f);
     const trip = tripCost(s, home, r, wage) * w;
-    const basis = basisHome + trip / q + lev / q;
-    f.inv[g] = Math.max(0, f.inv[g] - q);
-    if (f.inv[g] <= 1e-9) tr.age[home][g] = 0;
-    newShipment(s, FIRM_BASE + f.id, home, t.dest, g, q, basis, s.day + 0.5, s.day + 0.5 + r.days, w);
+    const tripU = trip / Math.max(1e-9, load);
+    for (let i = 0; i < t.items.length; i++) {
+      const g = t.items[i].good;
+      const q = qs[i] * k;
+      if (!(q > 1e-3)) continue;
+      // shipment levies (payer: the owner of the goods)
+      const basisHome = Math.max(0, fin(tr.basis[home][g]));
+      let lev = 0;
+      if (shipLevies) {
+        _ctx.town = home;
+        _ctx.toTown = t.dest;
+        _ctx.good = g;
+        lev = chargeLevy(s, 'shipment', FIRM_BASE + f.id, 'owner', _ctx, q * basisHome, q);
+        f.otherCosts += lev;
+      }
+      const basis = basisHome + tripU + lev / q;
+      f.inv[g] = Math.max(0, f.inv[g] - q);
+      if (f.inv[g] <= 1e-9) tr.age[home][g] = 0;
+      newShipment(s, FIRM_BASE + f.id, home, t.dest, g, q, basis, s.day + 0.5, s.day + 0.5 + r.days, (w * q) / load);
+      tr.shippedToday += q;
+      c.shipped[quotaKey(g, home, t.dest)] = (c.shipped[quotaKey(g, home, t.dest)] || 0) + q;
+      bump(s, 'shipped_units', q);
+    }
     for (let i = 0; i < w; i++) tr.busy.push(s.day + 2 * r.days);
-    tr.shippedToday += q;
-    c.shipped[quotaKey(g, home, t.dest)] = (c.shipped[quotaKey(g, home, t.dest)] || 0) + q;
-    bump(s, 'shipped_units', q);
     bump(s, 'freight_cost', trip);
     bump(s, 'wagons_sent', w);
   }

@@ -86,11 +86,13 @@ const {
   BANK_PERSON_PREMIUM,
   BANK_INCOME_DEBT_SHARE,
   BANK_PROJECT_YIELD,
+  BANK_WORKING_YIELD,
   BANK_YOUNG_FIRM_DAYS,
   BANK_MIN_LOAN,
   BANK_PARTIAL_MIN,
   BANK_PAY_TOLERANCE,
   BANK_DEFAULT_KEEP_DAYS,
+  BANK_DIVIDEND_BOOK_SHARE,
   BANK_DIVIDEND_CAPITAL,
   BANK_BAILIN_TARGET,
   BANK_IOU_TERM_PREMIUM,
@@ -825,7 +827,10 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
   // cash flow available for debt service (¤/day)
   let cf = 0;
   if (f) {
-    cf = Math.max(0, fin(f.profit) + interest0); // profit is after interest; add it back
+    cf = fin(f.profit) + interest0; // profit is after interest; add it back
+    // Term credit leans on the capital it finances; a working-capital line must also cover
+    // the firm's running losses — lending to fund a loss only defers the default.
+    if (asset) cf = Math.max(0, cf);
     if (s.day - f.founded < BANK_YOUNG_FIRM_DAYS) cf = Math.max(cf, (assets0 * BANK_PROJECT_YIELD) / DAYS_PER_YEAR);
   } else if (p) {
     cf = BANK_INCOME_DEBT_SHARE * Math.max(0, fin(p.income));
@@ -844,14 +849,16 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number): D
     const raw = base + spread;
     if (cap >= 0 && raw > cap) return 'ratecap';
     const r = Math.max(BANK_MIN_LOAN_RATE, raw);
-    let cov: number;
-    if (asset) {
-      const interest = interest0 + (a * r) / DAYS_PER_YEAR;
-      cov = interest > 1e-12 ? (cf + (a * yieldNew) / DAYS_PER_YEAR) / interest : 99;
-    } else {
-      const service = service0 + (a * r) / DAYS_PER_YEAR + a / term;
-      cov = service > 1e-12 ? cf / service : 99;
-    }
+    // Coverage is judged on interest, with the yield the new money earns counted in: term credit
+    // finances capital (BANK_PROJECT_YIELD or the rent yield), working capital finances the
+    // stock and payroll a firm turns over — it pays for itself as the goods are sold. Judging a
+    // working-capital line on full amortisation within its term would refuse a sound firm the
+    // day its profit dips, which is exactly when a firm needs to bridge. Leverage and capital
+    // still bound every loan.
+    const interest = interest0 + (a * r) / DAYS_PER_YEAR;
+    const cov = interest > 1e-12 ? (cf + (a * (asset ? yieldNew : BANK_WORKING_YIELD)) / DAYS_PER_YEAR) / interest : 99;
+    void service0;
+    void term;
     if (cov < dscrNeed) return 'coverage';
     d.spread = spread;
     d.rate = r;
@@ -982,8 +989,9 @@ function payDividends(s: SimState): void {
   const profit = fin(b.profitMonth);
   b.profitMonth = 0;
   if (b.failed) return;
-  const L = loansOutstanding(s);
-  const cr = capitalRatio(s);
+  // Capital is judged against the loan book the bank should be able to carry, not only the one it has.
+  const L = Math.max(loansOutstanding(s), BANK_DIVIDEND_BOOK_SHARE * Math.max(0, deposits(s)));
+  const cr = fin(b.equity) / Math.max(1, L);
   if (!(cr > BANK_DIVIDEND_CAPITAL)) return;
   // Payout share rises from BANK_DIVIDEND_SHARE to 1 as capital goes from 1× to 2× the dividend floor;
   // a bank with far more capital than it needs also hands back part of the excess.

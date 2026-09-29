@@ -65,6 +65,7 @@ import {
   ASK_RUNGS,
   ASK_WEIGHTS,
   BANK_RISK_PREMIUM,
+  BASE_MARKUP,
   BASE_RENT_SHARE,
   BASE_WAGE,
   BID_RUNGS,
@@ -73,6 +74,7 @@ import {
   COAL_COMFORT_DAYS,
   COAL_HEAT_SHARE,
   COAL_SHOP_DAYS,
+  DAYS_PER_MONTH,
   DAYS_PER_YEAR,
   DESK_WORKING_COIN,
   ELASTICITY,
@@ -110,6 +112,7 @@ import {
   INIT_RESERVE_RATE,
   INIT_SKILL_SIGMA,
   INIT_TRADER_WC_DAYS,
+  INIT_TRADE_EDGE,
   INIT_TREASURY_GOLD,
   INIT_UNEMPLOYMENT,
   INIT_WAGON_SLACK,
@@ -126,7 +129,7 @@ import {
   OIL_PER_TILE,
   OWNER_SHARE,
   SHIP_CAP_SHARE,
-  STARTUP_LOAN_TERM,
+  INIT_LOAN_TERM,
   TOOLS_BUFFER_DAYS,
   TOOLS_IDLE_WEAR_DAY,
   TOOLS_PER_WAGON,
@@ -506,13 +509,22 @@ function hostTowns(s: SimState, sector: Sector, cands: Map<string, Site[]>): Tow
   return best >= 0 ? [best] : list;
 }
 
-/** Freight cost per unit (¤) from town a to b at prices P (drivers both ways, oil one way, wagon wear). */
-function freightUnit(P: Mat, days: Mat, len: Mat, a: number, b: number): number {
+/** Cost of one wagon's round trip (¤) from town a to b at prices P (drivers both ways, oil one way, wagon wear). */
+function tripCostInit(P: Mat, days: Mat, len: Mat, a: number, b: number): number {
   const rd = 2 * days[a][b];
   const driver = W * rd * INIT_DRIVER_SLACK;
   const oil = P[a][G.oil] * OIL_PER_TILE * len[a][b];
   const wear = P[a][G.tools] * (WAGON_WEAR_DAY * rd + TOOLS_PER_WAGON * (TOOLS_IDLE_WEAR_DAY + INIT_LEND_RATE / DAYS_PER_YEAR) * rd);
-  return (driver + oil + wear) / WAGON_CAPACITY;
+  return driver + oil + wear;
+}
+
+/**
+ * Freight cost per unit (¤) from town a to b: the trip cost shared over the average wagon
+ * load on that route. Traders load every good bound for a town into the same wagons, so the
+ * load is set by the route's total flow (routeLoad; a full wagon when unknown).
+ */
+function freightUnit(P: Mat, days: Mat, len: Mat, a: number, b: number, load = WAGON_CAPACITY): number {
+  return tripCostInit(P, days, len, a, b) / Math.max(1e-6, Math.min(WAGON_CAPACITY, load));
 }
 
 /** Price elasticity assumed for firms' input demand in founding curve snapshots. */
@@ -542,16 +554,28 @@ export function foundingCurve(P: number, buy: number, supply: number, elasticity
  * for big flows; a wagon leaves at once when at least TRADE_MIN_LOAD full, otherwise the
  * goods wait up to TRADE_HOLD_DAYS for company.
  */
-function wagonLoad(q: number): number {
+function wagonLoad(q: number, perishable = false): number {
   if (q >= WAGON_CAPACITY) return WAGON_CAPACITY;
-  if (q >= TRADE_MIN_LOAD * WAGON_CAPACITY) return q;
+  // A load with perishables leaves every day, part-full if need be (traders.tradersDispatch).
+  if (perishable || q >= TRADE_MIN_LOAD * WAGON_CAPACITY) return Math.max(1e-6, q);
   return Math.max(1e-6, Math.min(WAGON_CAPACITY, q * (1 + TRADE_HOLD_DAYS)));
 }
 
 /** Wagons loaded on the way out of a flow of `q` units/day over `d` days (each at most one wagonload). */
-function loadsOnRoad(q: number, d: number): number {
+function loadsOnRoad(q: number, d: number, perishable = false): number {
   const inTransit = q * d;
-  return Math.max(1, Math.round((q / wagonLoad(q)) * d), Math.ceil(inTransit / WAGON_CAPACITY - 1e-9));
+  return Math.max(1, Math.round((q / wagonLoad(q, perishable)) * d), Math.ceil(inTransit / WAGON_CAPACITY - 1e-9));
+}
+
+/** Units per day dispatched on each route a → b ([a][b]) and whether they include perishables. */
+function routeFlows(flows: readonly FlowRec[], NT: number): { q: Mat; perish: boolean[][] } {
+  const q: Mat = Array.from({ length: NT }, () => new Array(NT).fill(0));
+  const perish: boolean[][] = Array.from({ length: NT }, () => new Array(NT).fill(false));
+  for (const f of flows) {
+    q[f.from][f.to] += f.qty;
+    if (GOODS[f.good].spoil > 0) perish[f.from][f.to] = true;
+  }
+  return { q, perish };
 }
 
 /** Share of a shipment that survives the journey (perishables spoil on the wagon). */
@@ -569,7 +593,7 @@ function landedPrice(g: number, pa: number, F: number, d: number): number {
   const keep = Math.max(0.1, survival(g, d + 1));
   const byAbs = (pa + F + TRADE_MIN_MARGIN_ABS) / keep;
   const byPct = (pa + F) / Math.max(0.05, keep - TRADE_MIN_MARGIN_PCT);
-  return Math.max(byAbs, byPct);
+  return Math.max(byAbs, byPct) * (1 + INIT_TRADE_EDGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -655,6 +679,8 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
   let exports = new Array(N_GOODS).fill(0);
   let shipCap = new Array(N_GOODS).fill(0);
   let world: number[] = opts.world ? opts.world.slice() : new Array(N_GOODS).fill(0);
+  // Average wagon load per route (units), from the previous iteration's flows (full wagons at first).
+  let RL: Mat = s.towns.map(() => new Array(NT).fill(WAGON_CAPACITY));
   const ITER = 48;
   const FREEZE = 26;
   const FOREIGN_FROM = 12;
@@ -673,12 +699,16 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
           const d = SECTORS[sec];
           // Tool cost per unit as firms reckon it (typical output per worker on this site, at the bank's base rate).
           const opw = d.prodPerWorker * meanMult(h) * healthEff;
-          best = materialCostPerUnit(sec, P[t]) + toolCostPerUnit(sec, P[t][G.tools], opw, s.bank.baseRate) + h.M;
+          // Firms also count the stock that spoils while it waits to be sold (firms.planTarget:
+          // spoil × stock days × price), so the price covers it: P = (materials + tools + M) / (1 − that share).
+          const spoilShare = GOODS[g].spoil * (GOODS[g].spoil >= 0.01 ? INV_TARGET_DAYS_PERISHABLE : INV_TARGET_DAYS);
+          // Firms price at marginal cost × BASE_MARKUP (firms.planTarget).
+          best = ((materialCostPerUnit(sec, P[t]) + toolCostPerUnit(sec, P[t][G.tools], opw, s.bank.baseRate) + h.M) * BASE_MARKUP) / Math.max(0.5, 1 - spoilShare);
           from = t;
         }
         for (const hh of hs) {
           if (hh === t) continue;
-          const landed = landedPrice(g, P[hh][g], freightUnit(P, days, len, hh, t), days[hh][t]);
+          const landed = landedPrice(g, P[hh][g], freightUnit(P, days, len, hh, t, RL[hh][t]), days[hh][t]);
           if (landed < best) {
             best = landed;
             from = hh;
@@ -774,13 +804,26 @@ function calibrate(s: SimState, cands: Map<string, Site[]>, opts: CalOpts): Cal 
     traderOil = new Array(NT).fill(0);
     traderProfit = new Array(NT).fill(0);
     const busyEst = new Array(NT).fill(0);
+    // Every good bound for a town shares the wagons (mixed loads): fleet, fuel and freight per route.
+    const rf = routeFlows(flows, NT);
+    for (let a = 0; a < NT; a++) {
+      for (let b = 0; b < NT; b++) {
+        const q = rf.q[a][b];
+        if (!(q > 1e-9) || a === b) {
+          RL[a][b] = RL[a][b] + 0.5 * (WAGON_CAPACITY - RL[a][b]);
+          continue;
+        }
+        const load = wagonLoad(q, rf.perish[a][b]);
+        RL[a][b] = RL[a][b] + 0.5 * (load - RL[a][b]);
+        const trips = q / load; // wagons dispatched per day
+        wagonsInUse[a] += trips * 2 * days[a][b];
+        busyEst[a] += 2 * loadsOnRoad(q, days[a][b], rf.perish[a][b]);
+        traderOil[a] += trips * len[a][b] * OIL_PER_TILE;
+      }
+    }
     for (const f of flows) {
-      const trips = f.qty / wagonLoad(f.qty); // wagons dispatched per day
-      wagonsInUse[f.from] += trips * 2 * days[f.from][f.to];
-      busyEst[f.from] += 2 * loadsOnRoad(f.qty, days[f.from][f.to]);
-      traderOil[f.from] += trips * len[f.from][f.to] * OIL_PER_TILE;
       // Sales of what arrives, less purchases and the house's own costs (drivers, oil, wear).
-      const fu = freightUnit(P, days, len, f.from, f.to);
+      const fu = freightUnit(P, days, len, f.from, f.to, wagonLoad(rf.q[f.from][f.to], rf.perish[f.from][f.to]));
       traderProfit[f.from] += f.qty * (survival(f.good, days[f.from][f.to]) * P[f.to][f.good] - P[f.from][f.good] - fu);
     }
     // One driver per wagon on the road (both legs), with slack; never fewer than the founding fleet in use.
@@ -1432,6 +1475,9 @@ export function createWorld(opts: WorldOptions): SimState {
       f.pExp = round4(Pt[out]);
       // Sales EMA as realised today: coal sells above its annual mean while homes are heated.
       f.sales = round4(out === G.coal ? q * coalDemandSeason(0) : q);
+      f.salesLong = round4(q); // the firm is sized for its annual mean sales
+      // A year of sales by month as the founding plan expects them (the season learnt from them, firms.salesSeason).
+      f.salesMonths = Array.from({ length: 12 }, (_, m) => round4(out === G.coal ? q * coalDemandSeason(m * DAYS_PER_MONTH + DAYS_PER_MONTH / 2) : q));
       f.output = round4(q);
       f.unitCost = round4(fin(unitVariableCost(f.sector, W, Math.max(1e-6, q / Math.max(1, f.workers.length)), Pt), Pt[out]));
       // Stock at the firms' own target: INV_TARGET days (perishables less) plus the seasonal carry.
@@ -1445,6 +1491,7 @@ export function createWorld(opts: WorldOptions): SimState {
       const toolWear = (d.toolUse * leff + TOOLS_IDLE_WEAR_DAY * f.tools) * Pt[G.tools];
       const costs = W * f.workers.length + matCost + toolWear;
       f.profit = round4(Pt[out] * q - costs);
+      f.profitLong = f.profit;
       f.cash = round2(INIT_FIRM_CASH_DAYS * costs);
     }
   };
@@ -1459,32 +1506,45 @@ export function createWorld(opts: WorldOptions): SimState {
     const busy: number[] = [];
     let freightSum = 0;
     let unitsTiles = 0;
-    for (const fl of outFlows) {
-      const d = cal.days[t][fl.to];
-      const L = cal.len[t][fl.to];
-      const k = Math.max(1, Math.round(d));
-      const surv = survival(fl.good, d);
-      const pSrc = P[t][fl.good];
-      const fu = freightUnit(P, cal.days, cal.len, t, fl.to);
-      const basis = round4((pSrc + fu) / Math.max(0.05, surv));
-      freightSum += fu * fl.qty;
-      unitsTiles += fl.qty * L;
-      // Loads on the road: the flow's in-transit goods (q × days) in consolidated wagons,
-      // arrivals spread over the journey; as many empties are on their way home.
-      const nOut = loadsOnRoad(fl.qty, d);
-      for (let j = 0; j < nOut; j++) {
-        const qty = round3((fl.qty * d) / nOut);
-        if (!(qty > 0.01)) continue;
-        const wag = Math.max(1, Math.ceil(qty / WAGON_CAPACITY - 1e-9));
-        const arrive = round3(((j + 0.5) * d) / nOut);
-        newShipment(s, firmRef(f.id), t, fl.to, fl.good, qty, basis, round3(arrive - d), arrive, wag);
-        for (let w = 0; w < wag; w++) busy.push(round3(arrive + d)); // loaded, returns after delivery
-        for (let w = 0; w < wag; w++) busy.push(round3(arrive)); // an empty on its way home
+    const rf = routeFlows(outFlows, NT);
+    for (let to = 0; to < NT; to++) {
+      const Q = rf.q[t][to];
+      if (to === t || !(Q > 1e-9)) continue;
+      const flowsTo = outFlows.filter((fl) => fl.to === to);
+      const d = cal.days[t][to];
+      const L = cal.len[t][to];
+      // Every good bound for `to` shares the wagons (mixed loads, traders.tradersDispatch).
+      const fu = freightUnit(P, cal.days, cal.len, t, to, wagonLoad(Q, rf.perish[t][to]));
+      for (const fl of flowsTo) {
+        const surv = survival(fl.good, d);
+        tr.basis[to][fl.good] = round4((P[t][fl.good] + fu) / Math.max(0.05, surv));
+        freightSum += fu * fl.qty;
+        unitsTiles += fl.qty * L;
+        // Stock left over at the destination (a quarter of a day of arrivals).
+        tr.stock[to][fl.good] = round3(tr.stock[to][fl.good] + 0.25 * fl.qty * surv);
       }
-      void k;
-      // Stock waiting at the destination (about half a day of arrivals).
-      tr.stock[fl.to][fl.good] = round3(tr.stock[fl.to][fl.good] + 0.5 * fl.qty * surv);
-      tr.basis[fl.to][fl.good] = basis;
+      // The recent past of the traders' own rule (traders.tradersDispatch): a load leaves each
+      // day at noon (every few days for a thin route of durables, which waits to fill a wagon),
+      // arrives `d` days later and its wagons are busy until day + 2d. Departures whose goods
+      // are still on the way, or whose wagons are not yet home, are in progress on day 0.
+      const load = wagonLoad(Q, rf.perish[t][to]);
+      const perDay = Q / load; // wagons dispatched per day (may be fractional)
+      let acc = 0.5;
+      for (let k = -1; k >= -Math.ceil(2 * d + 2); k--) {
+        acc += perDay;
+        const wag = Math.floor(acc + 1e-9);
+        if (wag <= 0) continue;
+        acc -= wag;
+        const arrive = k + 0.5 + d;
+        if (arrive > 0) {
+          for (const fl of flowsTo) {
+            const qty = round3((fl.qty / Q) * wag * load);
+            if (!(qty > 0.01)) continue;
+            newShipment(s, firmRef(f.id), t, to, fl.good, qty, tr.basis[to][fl.good], round3(k + 0.5), round3(arrive), round3((wag * fl.qty) / Q));
+          }
+        }
+        if (k + 2 * d > 0) for (let w = 0; w < wag; w++) busy.push(round3(k + 2 * d));
+      }
     }
     const inUse = cal.wagonsInUse[t];
     tr.wagons = Math.max(busy.length + 2, Math.ceil(inUse * INIT_WAGON_SLACK) + 1);
@@ -1604,7 +1664,7 @@ export function createWorld(opts: WorldOptions): SimState {
   for (const f of borrowers) {
     const b = s.buildings[f.building];
     const capital = (b ? b.cost : 0) + f.tools * P[f.town][G.tools];
-    const left = Math.round(STARTUP_LOAN_TERM * randRange(R, INIT_LOAN_LEFT_MIN, 1));
+    const left = Math.round(INIT_LOAN_TERM * randRange(R, INIT_LOAN_LEFT_MIN, 1));
     const lev = INIT_LOAN_TO_CAPITAL * randRange(R, 0.6, 1);
     const spread = round4(BANK_RISK_PREMIUM * lev * lev);
     const rate = s.bank.baseRate + spread;
@@ -1615,7 +1675,7 @@ export function createWorld(opts: WorldOptions): SimState {
     if (service(principal) > cap) principal = cap / (1 / left + rate / DAYS_PER_YEAR);
     principal = Math.round(principal);
     if (principal < 200) continue;
-    const loan = newLoan(s, firmRef(f.id), principal, spread, rate, STARTUP_LOAN_TERM, 'invest');
+    const loan = newLoan(s, firmRef(f.id), principal, spread, rate, INIT_LOAN_TERM, 'invest');
     loan.left = left;
     loan.start = 0;
   }

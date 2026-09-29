@@ -219,6 +219,10 @@ export interface Firm {
   founded: number; // day
   liquidationDays: number;
   lossDays: number; // consecutive days the profit EMA has been negative (voluntary exit) // added by firms engineer
+  salesLong: number; // slow EMA (SALES_LONG_EMA) of de-seasonalised daily sales: the normal rate of sales output is planned on (0 = none yet)
+  salesMonths: number[]; // mean units sold a day in each calendar month over the last year, length 12 (-1 = no record): the learnt season
+  monthSold: number; // units sold so far this month
+  profitLong: number; // slow EMA (PROFIT_LONG_EMA) of daily profit: a seasonal trade judges losses over the year
   // specialisations
   trade: TraderState | null;
   build: BuilderState | null;

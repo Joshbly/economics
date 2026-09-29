@@ -5,28 +5,33 @@
 // OWNER: firms agent. See DESIGN §3.2.
 //
 // Economics in brief:
-//  * Labour demand. Each morning a producer compares the profit-maximising
-//    workforce (production.optimalLabor: marginal revenue product of labour = the
-//    effective wage, employer-side wage levies included) with the workforce that
-//    expected sales plus an inventory correction require, and plans the smaller of
-//    the two (never above building capacity). Prices above marginal cost make
-//    firms grow until they meet demand; prices below it make them shrink, so the
-//    market supply curve is the sum of rising marginal-cost curves. Targets move
+//  * Labour demand. Demand-driven (planTarget): a producer plans to make its normal
+//    sales (a slow de-seasonalised average, plus a share of unmet demand) × a small
+//    slack × a bounded supply response to price / (marginal cost × BASE_MARKUP),
+//    plus a bounded correction toward its stock target (never above building
+//    capacity). The static profit-maximising workforce reacts to the margin with
+//    elasticity 1/(1−α) ≈ 4–7 and would turn every price wobble into hiring and
+//    firing; here the price does the short-run work and only a firm that keeps
+//    losing money sheds hands (gradually), one losing money below materials cost
+//    stops, and one short of cash plans only the payroll it can pay. Targets move
 //    with hysteresis and smoothing, so noise does not cause hire-fire churn.
-//  * Seasons. Farms plan labour at the average season (they keep their hands
-//    through winter) and carry the harvest in store: their inventory target
-//    follows the cumulative seasonal surplus, so grain is stored in autumn and
-//    drawn down in spring, and grain prices stay smooth.
-//  * Wages. One posted wage per firm: up while vacancies go unfilled, slowly down
-//    only when the firm loses money and local labour is slack (downward nominal
-//    rigidity), partly indexed to expected inflation, clamped to legal bounds.
-//    A legal minimum above the market therefore raises the effective wage in the
+//  * Seasons. Seasonal trades keep their hands through the year and let stock
+//    carry the season: farms carry the harvest (their stock target follows the
+//    cumulative seasonal surplus), coal mines stock up for the winter along the
+//    season they learn from their own last twelve months of sales (salesMonths).
+//    Both plan on the year's mean sales and judge losses on a slow profit.
+//  * Wages. One posted wage per firm: up while vacancies go unfilled (faster the
+//    more a hand is worth), drifting down while local unemployment is high (fully
+//    for a losing firm), partly indexed to expected inflation, clamped to legal
+//    bounds. A legal minimum above the market raises the effective wage in the
 //    firm's plan and shows up as smaller targets (unemployment).
-//  * Selling. The ask ladder offers roughly the planned daily sales at or below
-//    the expected price, more at higher prices, and the rest held back (durables);
-//    the whole ladder shifts down when stock is above target and up when it is
-//    short. Perishable overstock is priced to clear. Asks never go below a cost
-//    floor unless the firm is distressed or the stock would rot.
+//  * Selling. The ask ladder is centred on the firm's cost anchor (marginal cost
+//    of its planned sales × BASE_MARKUP, within ASK_ANCHOR_BAND of the expected
+//    price) and offers roughly the planned daily sales at or below it, more at
+//    higher prices, and the rest held back (durables); the whole ladder shifts
+//    down when stock is above target and up when it is short. Perishable overstock
+//    is priced to clear. Asks never go below a cost floor unless the firm is
+//    distressed or the stock would rot.
 //  * Buying. Inputs to keep INPUT_BUFFER_DAYS of production (limit prices capped
 //    at short-run break-even); tools to equip the planned workforce, bidding up to
 //    TOOLS_MAX_BID_MULT × the expected price when badly short (tools are
@@ -36,13 +41,15 @@
 //    profit = revenue − cost of goods sold − idle production cost − other costs
 //    (interest and levies, booked by their modules) − expected spoilage.
 //  * Finance. Working-capital loans when cash runs low, early repayment when
-//    flush, monthly dividends of half the excess cash to the owner (a person or
-//    the Treasury's Purse), monthly 'profit' levies, distress (unpaid wages or
+//    flush, daily dividends of DIVIDEND_SHARE of the cash above the operating
+//    reserve to the owner (a person or the Treasury's Purse), monthly 'profit'
+//    levies, distress (unpaid wages or
 //    overdue loans) → bankruptcy → liquidation (fire sale) → closure (debts
 //    written off against bank equity, building vacant).
 // ============================================================================
 import {
   ASK_COST_FLOOR,
+  ASK_ANCHOR_BAND,
   ASK_COMPETE_STEP,
   ASK_INV_ELASTICITY,
   ASK_QS_MAX,
@@ -52,10 +59,12 @@ import {
   ASK_SHIFT_MIN,
   ASK_TOP_RUNG,
   ASK_WEIGHTS,
+  BASE_MARKUP,
   BASE_WAGE,
   CASH_LOW_DAYS,
   COAL_HEAT_SHARE,
   CASH_TARGET_DAYS,
+  DAYS_PER_MONTH,
   DAYS_PER_YEAR,
   DEMAND_SLACK,
   DISTRESS_ASK_SHIFT,
@@ -71,6 +80,14 @@ import {
   INPUT_ESSENTIAL_DAYS,
   INV_ADJUST_DAYS,
   INV_ADJUST_DAYS_PERISHABLE,
+  INV_ADJUST_DAYS_SEASONAL,
+  INV_CORR_MAX,
+  LOSS_SHRINK_DAYS,
+  LOSS_SHRINK_SHARE,
+  SUPPLY_ELASTICITY,
+  SUPPLY_RESP_DOWN,
+  SUPPLY_SCARCITY_FROM,
+  SUPPLY_RESP_MAX,
   INV_MAX_DAYS,
   INV_TARGET_DAYS,
   INV_TARGET_DAYS_PERISHABLE,
@@ -80,6 +97,7 @@ import {
   OWNER_SUPPORT_MAX_LOSS_DAYS,
   ENTRY_OWNER_RESERVE_DAYS,
   NEW_FIRM_DAYS,
+  NEW_FIRM_RAMP_DAYS,
   NEW_FIRM_SCALE,
   NEW_FIRM_WC_DAYS,
   PERISH_CLEAR_K,
@@ -88,7 +106,10 @@ import {
   PRICE_EXP_EMA,
   PRICE_PLAN_DAYS,
   PROFIT_EMA,
+  PROFIT_LONG_EMA,
   SALES_EMA,
+  SALES_LONG_EMA,
+  SEASON_OBS_MAX_RATIO,
   SHORTAGE_WEIGHT,
   STRIKE_FACTOR,
   TARGET_HYSTERESIS,
@@ -100,19 +121,22 @@ import {
   TOOLS_GAP_CLOSE,
   TOOLS_IDLE_WEAR_DAY,
   TOOLS_MAX_BID_MULT,
+  WAGE_CUT_SPAN,
   WAGE_CUT_UNEMP,
   WAGE_DOWN_DAY,
   WAGE_INDEXATION,
   WAGE_MIN_ABS,
   WAGE_RESERVE_DAYS,
   WAGE_UP_DAY,
+  WAGE_URGENCY_FROM,
+  WAGE_URGENCY_MAX,
   WAGE_VACANCY_DAYS,
   WAGON_CAPACITY,
   WORKING_DEBT_MAX_DAYS,
   WORKING_LOAN_RETRY_DAYS,
   WORKING_LOAN_TERM,
 } from '../config';
-import { dayOfYear, farmSeason, heatNeed, isMonthEnd, seasonFactor } from '../calendar';
+import { dayOfYear, farmSeason, heatNeed, isMonthEnd, monthOf, seasonFactor } from '../calendar';
 import { newFirm } from '../factory';
 import { G, GOODS, N_GOODS, SECTORS, type SectorDef } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId, repayPrincipal, writeOff } from '../ledger';
@@ -302,15 +326,94 @@ export function meanSales(good: number, sales: number, day: number): number {
   return Math.max(0, sales) / Math.max(0.05, demandSeason(good, day));
 }
 
+// The demand season above is the realm's heating need; what a coal mine actually sells is
+// smoother and earlier (households lay in coal ahead of the cold, carters stock inland
+// towns), so a mine planning on the assumed profile would read its summer sales as a boom
+// and its winter sales as a slump — and hire in summer and lay off in winter, the opposite of
+// what carrying stock is for. Once a firm has a year of its own sales by month
+// (Firm.salesMonths) it uses that profile instead: its de-seasonalised sales and its
+// seasonal stock are then consistent with a steady workforce.
+
+/** Mean of the firm's learnt monthly sales, or -1 while the record is incomplete or implausible. */
+export function learntMean(f: Firm): number {
+  const sm = f.salesMonths;
+  if (!Array.isArray(sm) || sm.length !== 12) return -1;
+  let sum = 0;
+  let lo = Infinity;
+  let hi = 0;
+  for (let i = 0; i < 12; i++) {
+    const v = sm[i];
+    if (!(v > 0) || !Number.isFinite(v)) return -1;
+    sum += v;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return hi <= SEASON_OBS_MAX_RATIO * lo ? sum / 12 : -1;
+}
+
+/** The firm's demand-season factor for `day` (mean 1): learnt (interpolated between month centres) or assumed. */
+export function salesSeason(f: Firm, good: number, day: number): number {
+  if (good !== G.coal) return 1;
+  const mean = learntMean(f);
+  if (!(mean > 0)) return demandSeason(good, day);
+  const x = (dayOfYear(day) - DAYS_PER_MONTH / 2) / DAYS_PER_MONTH;
+  const i0 = Math.floor(x);
+  const w = x - i0;
+  const a = f.salesMonths[(i0 + 12) % 12];
+  const b = f.salesMonths[(i0 + 13) % 12];
+  return ((1 - w) * a + w * b) / mean;
+}
+
+/** Sales with the firm's demand season taken out. */
+function meanSalesOf(f: Firm, good: number, sales: number, day: number): number {
+  return Math.max(0, sales) / Math.max(0.05, salesSeason(f, good, day));
+}
+
+/** Seasonal stock (days of mean sales) the firm carries on `day` for its demand season: learnt or assumed. */
+function carryDaysOf(f: Firm, good: number, day: number): number {
+  if (good !== G.coal) return 0;
+  const mean = learntMean(f);
+  if (!(mean > 0)) return demandCarryDays(good, day);
+  // Stock path of a steady output = mean against last year's monthly sales, from its low point.
+  const sm = f.salesMonths;
+  const doy = dayOfYear(day);
+  const m = Math.min(11, Math.floor(doy / DAYS_PER_MONTH));
+  let c = 0;
+  let lo = 0;
+  let at = 0;
+  for (let i = 0; i < 12; i++) {
+    if (i === m) at = c + (mean - sm[i]) * (doy - i * DAYS_PER_MONTH);
+    c += (mean - sm[i]) * DAYS_PER_MONTH;
+    if (c < lo) lo = c;
+  }
+  return Math.max(0, (at - lo) / mean);
+}
+
+/** A firm's output stock target (units) for de-seasonalised mean daily sales `mean`. */
+export function stockTargetOf(f: Firm, mean: number, day: number): number {
+  const d = SECTORS[f.sector];
+  if (!d || d.out < 0) return 0;
+  let days = isPerishable(d.out) ? INV_TARGET_DAYS_PERISHABLE : INV_TARGET_DAYS;
+  if (d.season === 'farm') days += seasonalCarryDays(day);
+  days += carryDaysOf(f, d.out, day);
+  return days * Math.max(0, mean);
+}
+
 /** Output inventory target of a producer (units) for expected daily sales. */
 export function inventoryTarget(sector: Sector, sales: number, day: number): number {
   const d = SECTORS[sector];
   if (!d || d.out < 0) return 0;
-  const mean = meanSales(d.out, sales, day);
+  return inventoryTargetMean(sector, meanSales(d.out, sales, day), day);
+}
+
+/** Output inventory target (units) for de-seasonalised mean daily sales `mean`. */
+export function inventoryTargetMean(sector: Sector, mean: number, day: number): number {
+  const d = SECTORS[sector];
+  if (!d || d.out < 0) return 0;
   let days = isPerishable(d.out) ? INV_TARGET_DAYS_PERISHABLE : INV_TARGET_DAYS;
   if (d.season === 'farm') days += seasonalCarryDays(day);
   days += demandCarryDays(d.out, day);
-  return days * mean;
+  return days * Math.max(0, mean);
 }
 
 function inventoryMaxDays(sector: Sector): number {
@@ -348,7 +451,7 @@ interface FirmScratch {
   toolWear: Float64Array; // ¤ of tools worn today
   unpaid: Float64Array; // ¤ of wages the firm could not pay today
   short: Float64Array; // ¤ of wanted purchases the firm could not fund today
-  shade: Float64Array; // today's competitive ask adjustment (multiplier on pExp; 0 = none)
+  shade: Float64Array; // today's cost anchor for the asks (¤, the marginal cost of planned sales or a probe price; 0 = none)
   cashWant: Float64Array; // ¤ of cash the firm lacks to run the workforce it plans for (liquidity-bound)
 }
 
@@ -446,7 +549,7 @@ export function fairPrice(s: SimState, town: TownId, good: number, prices?: read
   let c = bag.fairPrices as { day: number; byTown: number[][] } | undefined;
   if (!c || c.day !== s.day || c.byTown.length !== s.towns.length) {
     const r = carryRate(s);
-    c = { day: s.day, byTown: s.towns.map((t) => basePrices(defaultWage(s, t.id), 1, r)) };
+    c = { day: s.day, byTown: s.towns.map((t) => basePrices(defaultWage(s, t.id), BASE_MARKUP, r)) };
     bag.fairPrices = c;
   }
   const v = c.byTown[town]?.[good];
@@ -551,8 +654,23 @@ function meanExpectedInflation(s: SimState): number {
   return n > 0 ? sum / n : 0;
 }
 
+/** How far the marginal hand's value exceeds its wage, beyond the normal margin (0 … WAGE_URGENCY_MAX; producers only). */
+function hiringUrgency(s: SimState, f: Firm, w: number, pt: PriceTable): number {
+  const d = SECTORS[f.sector];
+  const nW = f.workers.length;
+  if (!d || !d.producer || !(w > 0)) return 0;
+  const g = d.out;
+  const t = f.town;
+  const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : pt.net[t]?.[g] ?? 0;
+  const apl = nW > 0 ? Math.max(0, fin(f.output)) / nW : d.prodPerWorker;
+  const mc = materialCostPerUnit(f.sector, pt.gross[t]);
+  const tc = toolCostPerUnit(f.sector, pt.gross[t][G.tools], Math.max(1e-6, apl));
+  const value = d.alpha * Math.max(0, pExp - mc - tc) * apl;
+  return clamp(value / w - WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX);
+}
+
 /** Posted-wage adjustment (all firm sectors except stateworks). */
-function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: number, hi: number): void {
+function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: number, hi: number, pt: PriceTable): void {
   const base = defaultWage(s, f.town);
   let w = f.wage > 0 && Number.isFinite(f.wage) ? f.wage : base;
   w *= index;
@@ -561,8 +679,12 @@ function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: numb
   // by its daily hiring pace while plenty of people would take the job has no reason to).
   // A firm that is short of cash does not bid up pay it may not be able to pay.
   const payroll = Math.max(1, f.workers.length) * Math.max(0, w);
-  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5 && f.applicants < open && f.cash > CASH_LOW_DAYS * payroll) w *= 1 + WAGE_UP_DAY;
-  else if (open <= 0.5 && (f.distress > 0 || (f.profit < 0 && unemp > WAGE_CUT_UNEMP))) w *= 1 - WAGE_DOWN_DAY;
+  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5 && f.applicants < open && f.cash > CASH_LOW_DAYS * payroll) w *= 1 + WAGE_UP_DAY * (1 + hiringUrgency(s, f, w, pt));
+  else if (open <= 0.5 && f.distress > 0) w *= 1 - WAGE_DOWN_DAY;
+  else if (open <= 0.5 && unemp > WAGE_CUT_UNEMP) {
+    const slack = clamp((unemp - WAGE_CUT_UNEMP) / WAGE_CUT_SPAN, 0, 1);
+    w *= 1 - WAGE_DOWN_DAY * (f.profit < 0 ? 1 : slack);
+  }
   w = Math.max(WAGE_MIN_ABS, fin(w, base));
   if (lo >= 0 && w < lo) w = lo;
   if (hi >= 0 && w > hi) w = hi;
@@ -590,7 +712,7 @@ function demandPriceFor(m: MarketState | undefined, qty: number, expNet: number)
 }
 
 /** Producer workforce target (see the header). */
-function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Array, levies: boolean, sc: FirmScratch): void {
+function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Array, makersByTG: Float64Array, levies: boolean, sc: FirmScratch): void {
   const d = SECTORS[f.sector];
   const k = f.sector;
   const t = f.town;
@@ -622,20 +744,11 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   const mcAt = (L: number): number =>
     mc + tc + ((wEff / eff) * Math.pow(Math.max(1e-6, L * eff), 1 - d.alpha)) / Math.max(1e-9, d.alpha * A * tfAt(L));
   /** Workers needed to make q a day with today's tools (bisection; tools and labour are complements). */
-  const laborFor = (q: number): number => {
-    if (!(q > 0)) return 0;
-    const full = laborForOutput(k, q, sPlan, site) / eff;
-    if (!(d.toolsPerWorker > 0) || tfAt(full) >= 1 - 1e-9) return full;
-    let lo = full;
-    let hi = Math.max(full * 2, 1);
-    for (let i = 0; i < 40 && potentialOutput(k, hi * eff, tools, sPlan, site) < q; i++) hi *= 2;
-    for (let i = 0; i < 30; i++) {
-      const mid = 0.5 * (lo + hi);
-      if (potentialOutput(k, mid * eff, tools, sPlan, site) < q) lo = mid;
-      else hi = mid;
-    }
-    return hi;
-  };
+  // Workers needed to make q a day once the planned workforce is equipped. A firm short of
+  // tools buys them (bidInputsAndTools); planning to make up for missing tools with extra
+  // hands (up to 1/TOOLLESS ≈ 3× the workers) would feed a tools shortage with more demand
+  // for tools and a hiring spree the tools can never catch up with.
+  const laborFor = (q: number): number => (q > 0 ? laborForOutput(k, q, sPlan, site) / eff : 0);
 
   // ---- demand: expected sales (+ a share of the market's unmet demand) and the stock gap ----
   let sales = Math.max(0, fin(f.sales));
@@ -645,37 +758,84 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
     sales += SHORTAGE_WEIGHT * m.shortage * share;
   }
   const perish = isPerishable(g);
-  const tgt = inventoryTarget(k, sales, s.day);
-  const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : INV_ADJUST_DAYS;
+  const seasonal = d.season === 'farm' || g === G.coal;
+  const adj = perish ? INV_ADJUST_DAYS_PERISHABLE : seasonal ? INV_ADJUST_DAYS_SEASONAL : INV_ADJUST_DAYS;
   // Production follows mean (de-seasonalised) sales; the stock target absorbs the season.
-  const mean = meanSales(g, sales, s.day);
-  const qWant = Math.max(0, mean * (1 + DEMAND_SLACK) + (tgt - Math.max(0, f.inv[g])) / adj);
-  let lDem = Math.min(laborFor(qWant), Math.max(cap, 1) * 4);
-  // Without a sales history the firm keeps (or builds up to) a capacity-based workforce.
+  // The stock gap is closed gradually and never moves planned output by more than
+  // INV_CORR_MAX of sales: a day's glut or run on the shop is met by the price and the
+  // stock, not by hiring and firing (a hair-trigger correction makes a bang-bang controller).
+  // The normal rate of sales: the slow average of de-seasonalised sales (salesLong), topped up
+  // with the market's unmet demand. Planning on the fast EMA would chase every seasonal wobble
+  // the assumed demand season (demandSeason) does not capture exactly — coal is stocked by
+  // households ahead of the cold — and every month's noise.
+  // A seasonal trade (the harvest, the heating season) plans on its sales over the whole last
+  // year once it has that record: a steady workforce, with the stock carrying the season. Its
+  // sales swing with the season's prices too (dear grain before the harvest is bought
+  // sparingly), and planning on two months of them would cut hands just before the harvest.
+  const fastMean = meanSalesOf(f, g, sales, s.day);
+  const extra = Math.max(0, sales - Math.max(0, fin(f.sales)));
+  const year = seasonal ? learntMean(f) : -1;
+  const slow = year > 0 ? year : f.salesLong;
+  let mean = slow > 0 && Number.isFinite(slow) ? slow + meanSalesOf(f, g, extra, s.day) : fastMean;
+  // An entrant plans at least its share of the town's trade for its first months (NEW_FIRM_RAMP_DAYS).
+  if (s.day - f.founded < NEW_FIRM_RAMP_DAYS) {
+    const makers = makersByTG[t * N_GOODS + g];
+    if (makers > 1) mean = Math.max(mean, meanSalesOf(f, g, salesByTG[t * N_GOODS + g] / makers, s.day));
+  }
+  const tgt = stockTargetOf(f, mean, s.day);
+  const corr = clamp((tgt - Math.max(0, f.inv[g])) / adj, -INV_CORR_MAX * mean, INV_CORR_MAX * mean);
   const young = s.day - f.founded < NEW_FIRM_DAYS;
   const noHistory = !(f.sales > 1e-6) || f.sales < 0.2 * fin(f.output);
-  if (young && noHistory) lDem = Math.max(lDem, nW, NEW_FIRM_SCALE * Math.min(cap, d.typicalSize));
 
   // ---- price: marginal cost at the normal rate of sales (P = MC) ----
   // Firms here set prices (they post ask ladders), so they meet demand at a price equal to
   // the marginal cost of serving it: asks move toward it (ASK_COMPETE_STEP a day), fat
   // margins with idle capacity are competed away and cost increases are passed on.
-  const lSales = Math.min(cap, Math.max(laborFor(mean), young && noHistory ? lDem : 0));
-  const pStar = mcAt(Math.max(lSales, 1)); // people come whole: never below the first worker's marginal cost
-  // Output is judged at the price the firm is moving to (within PRICE_PLAN_DAYS of steps),
-  // so a cost shock is met by the price rising, not by output being cut on a stale price;
-  // only a shock bigger than that forces the firm to shrink (step-capped, below).
+  const lSales0 = Math.min(cap, laborFor(mean));
+  // ---- supply response: price against marginal cost, with a finite elasticity ----
+  // A price above the marginal cost of serving today's sales means buyers value more output
+  // than it costs (the price is rationing demand): the firm plans more; a price below it, less.
+  // The response has elasticity SUPPLY_ELASTICITY and is bounded (±SUPPLY_RESP_MAX): the static
+  // optimum (elasticity 1/(1−α) ≈ 4–7 here) would turn every price wobble into hiring and firing.
+  // The normal price: marginal cost × BASE_MARKUP (price setters with a few rivals keep a
+  // margin over marginal cost; it pays for interest, idle days and the stock they carry, so a
+  // passing dip does not put every firm of a trade in the red at once).
+  const pMc = mcAt(Math.max(lSales0, 1)) * BASE_MARKUP;
+  // Downward the response is weaker (SUPPLY_RESP_DOWN): a price below cost usually comes with
+  // unsold stock, which the stock correction already answers.
+  const gap = Math.max(1e-6, pNet) / Math.max(1e-6, pMc);
+  const upper = 1 + SUPPLY_RESP_MAX + Math.max(0, Math.log(gap / SUPPLY_SCARCITY_FROM));
+  const resp = young && noHistory ? 1 : clamp(Math.pow(gap, SUPPLY_ELASTICITY), 1 - SUPPLY_RESP_DOWN, upper);
+  const qWant = Math.max(0, mean * (1 + DEMAND_SLACK) * resp + corr);
+  let lDem = Math.min(laborFor(qWant), Math.max(cap, 1) * 4);
+  // Without a sales history the firm keeps (or builds up to) a capacity-based workforce.
+  if (young && noHistory) lDem = Math.max(lDem, nW, NEW_FIRM_SCALE * Math.min(cap, d.typicalSize));
+  const lSales = Math.min(cap, Math.max(lSales0, young && noHistory ? lDem : 0));
+  const pStar = young && noHistory ? mcAt(Math.max(lSales, 1)) * BASE_MARKUP : pMc; // people come whole: never below the first worker's marginal cost
   const reach = PRICE_PLAN_DAYS * ASK_COMPETE_STEP;
   const pPlan = clamp(pStar, pNet * (1 - reach), pNet * (1 + reach));
   const lOpt = lOptAt(pPlan);
-  const profitBound = lOpt < lDem * 0.999;
-  let raw = Math.min(lOpt, lDem);
-  // Liquidity: a firm short of cash plans only the workforce that its expected takings plus
-  // its cash spread over LIQUIDITY_DAYS can pay (wages and materials) — layoffs before
-  // default, not after. Judged on cash flow, not on profit: a firm building up stock makes
-  // an accounting profit while its cash drains, and it can build stock only on credit.
-  // Wages are paid each morning before the day's takings come in, so the plan also keeps a
-  // LIQUIDITY_RESERVE_DAYS payroll in hand; such cuts are not smoothed (see below).
+  // ---- viability: serve demand; shrink step by step only while losing money ----
+  // With α near 1 average and marginal cost are almost flat in the workforce: the static
+  // profit-maximising workforce reacts to the margin with elasticity 1/(1−α) (≈ 6 for
+  // workshops, whose materials are most of the price: a 5 % squeeze between input and output
+  // prices would halve it) and even the break-even (price = average variable cost) test is
+  // all-or-nothing. So a price-setting firm serves the demand at its price and meets a cost
+  // above its price by raising the price (the shade toward pStar, which trims demand); only a
+  // firm whose profit has stayed negative (PROFIT_EMA, about a month) sheds workers, and then
+  // gradually (the step cap below) — the price mechanism does the short-run work.
+  const losing = !(young && noHistory) && f.profit < 0 && fin(f.lossDays) >= LOSS_SHRINK_DAYS && (!seasonal || f.profitLong < 0);
+  // A firm that has been losing money at a price that does not even cover materials and tool
+  // wear — today, nor at the price it is moving to — makes every unit a loss whatever the
+  // workforce: it stops at once. (A day's glut of a perishable, cleared below cost, is not that:
+  // the firm must also have been losing money for LOSS_SHRINK_DAYS.)
+  const hopeless = losing && pNet - mc - tc <= 0 && pPlan - mc - tc <= 0;
+  const profitBound = losing || hopeless;
+  let raw = hopeless ? 0 : losing ? Math.min(lDem, Math.max(0, nW - Math.max(1, LOSS_SHRINK_SHARE * nW))) : lDem;
+  // Liquidity: a firm that cannot meet tomorrow's payroll plans only the workforce its
+  // expected takings plus its cash spread over LIQUIDITY_DAYS can pay (wages and materials) —
+  // layoffs before default, not after. Short of CASH_LOW_DAYS of payroll it first asks its
+  // owner and the bank (firmsEndDay) and keeps its plan: bridging a dip is what credit is for.
   let liquidityBound = false;
   if (f.cash < CASH_LOW_DAYS * Math.max(nW, 1) * wEff) {
     const takings = Math.max(0, fin(f.sales)) * Math.max(0, pNet);
@@ -683,15 +843,17 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
     const avgQ = potentialOutput(k, lNow * eff, tools, sPlan, site) / lNow;
     const perWorker = wEff + Math.max(0, mc) * Math.max(0, fin(avgQ));
     const cash = Math.max(0, fin(f.cash));
-    const lFlow = (takings + Math.max(0, cash - LIQUIDITY_RESERVE_DAYS * lNow * wEff) / LIQUIDITY_DAYS) / Math.max(1e-6, perWorker);
-    const lCash = cash / Math.max(1e-6, LIQUIDITY_RESERVE_DAYS * wEff);
-    const lPay = fin(Math.min(lFlow, lCash));
-    if (lPay < raw) {
-      // What it would take to run the planned workforce (an owner may put it in, see firmsEndDay).
-      const lWant = Math.min(cap, Math.max(1, raw));
-      if (f.id < sc.n) sc.cashWant[f.id] = Math.max(0, CASH_LOW_DAYS * lWant * perWorker - cash);
-      raw = lPay;
-      liquidityBound = true;
+    // What it would take to run the planned workforce (an owner may put it in, see firmsEndDay).
+    const lWant = Math.min(cap, Math.max(1, raw));
+    if (f.id < sc.n) sc.cashWant[f.id] = Math.max(0, CASH_LOW_DAYS * lWant * perWorker - cash);
+    if (cash < LIQUIDITY_RESERVE_DAYS * lNow * wEff) {
+      // Wages are paid each morning before the day's takings come in: keep LIQUIDITY_RESERVE_DAYS of payroll in hand.
+      const lFlow = (takings + Math.max(0, cash - LIQUIDITY_RESERVE_DAYS * lNow * wEff) / LIQUIDITY_DAYS) / Math.max(1e-6, perWorker);
+      const lPay = fin(Math.min(lFlow, cash / Math.max(1e-6, LIQUIDITY_RESERVE_DAYS * wEff)));
+      if (lPay < raw) {
+        raw = lPay;
+        liquidityBound = true;
+      }
     }
   }
   raw = clamp(fin(raw), 0, cap);
@@ -710,25 +872,27 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
       probe = pp;
     }
   }
-  const shade = probe > 0 ? probe / Math.max(1e-6, pNet) : pStar / Math.max(1e-6, pNet);
-  if (f.id < sc.n) sc.shade[f.id] = clamp(fin(shade, 1), 1 - ASK_COMPETE_STEP, 1 + ASK_COMPETE_STEP);
+  if (f.id < sc.n) sc.shade[f.id] = Math.max(0, fin(probe > 0 ? probe : pStar, 0));
 
-  // ---- smoothing with hysteresis; profit-driven cuts are step-capped ----
+  // ---- smoothing with hysteresis; every move is step-capped (hiring and firing take time) ----
   const cur = clamp(fin(f.target), 0, cap);
   let next = cur;
   if (Math.abs(raw - cur) > TARGET_HYSTERESIS * cur + 0.1) {
     let step = TARGET_SMOOTH * (raw - cur);
-    if (profitBound && lOpt > 0) {
-      const stepCap = TARGET_MAX_STEP * Math.max(cur, 1) + TARGET_MAX_STEP_ABS;
-      step = clamp(step, -stepCap, stepCap);
-    }
+    const stepCap = TARGET_MAX_STEP * Math.max(cur, 1) + TARGET_MAX_STEP_ABS;
+    // A young firm building up, or a firm restarting from nothing, is not held back.
+    if (!(young && noHistory) && !(probe > 0) && !hopeless) step = clamp(step, -stepCap, stepCap);
     next = cur + step;
   }
   if (liquidityBound && raw < next) next = Math.max(0, Math.floor(raw));
+  // A probing firm hires its one worker at once (smoothing would keep the target below one for weeks).
+  if (probe > 0 && next < 1 && cap >= 1) next = 1;
   if (raw <= 0 && next < 0.3) next = 0;
+  // Every unit made at a price that does not cover its materials is a loss: stop at once.
+  if (hopeless && !(probe > 0)) next = 0;
   f.target = clamp(fin(next), 0, cap);
   const dbg = rt(s).bag.firmDebug as Record<number, unknown> | undefined;
-  if (dbg) dbg[f.id] = { pNet, mc, tc, margin, lOpt, lDem, raw, sales, tgt, stock: f.inv[g], shade: f.id < sc.n ? sc.shade[f.id] : 0, pStar };
+  if (dbg) dbg[f.id] = { pNet, mc, tc, margin, lOpt, lDem, raw, sales, tgt, stock: f.inv[g], shade: f.id < sc.n ? sc.shade[f.id] : 0, pStar, profitBound };
 }
 
 /**
@@ -737,7 +901,8 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
  * vs material & tool cost → production.optimalLabor; demand-based labour from
  * sales EMA and inventory gap; target = min(capacity, max(0/1, ...)), smoothed
  * (TARGET_SMOOTH). Wage adjustment: +WAGE_UP_DAY while vacancyDays > WAGE_VACANCY_DAYS,
- * −WAGE_DOWN_DAY when losing money and local unemployment is high, + partial
+ * a downward drift while local unemployment is high (full WAGE_DOWN_DAY when losing money,
+ * scaled by the slack otherwise; see WAGE_CUT_UNEMP), + partial
  * indexation (WAGE_INDEXATION × expected inflation / 360); clamp to limits.wageBounds.
  * Applies to ALL firm sectors except stateworks (builders/traders also adjust wages here).
  */
@@ -759,23 +924,27 @@ export function firmsPlan(s: SimState): void {
   }
   const levies = hasLevyBase(s, 'wage');
   const salesByTG = new Float64Array(nT * N_GOODS);
+  const makersByTG = new Float64Array(nT * N_GOODS);
   for (const f of s.firms) {
     if (!f || !operating(s, f)) continue;
     const d = SECTORS[f.sector];
-    if (d && d.producer && f.town >= 0 && f.town < nT) salesByTG[f.town * N_GOODS + d.out] += Math.max(0, fin(f.sales));
+    if (d && d.producer && f.town >= 0 && f.town < nT) {
+      salesByTG[f.town * N_GOODS + d.out] += Math.max(0, fin(f.sales));
+      makersByTG[f.town * N_GOODS + d.out] += 1;
+    }
   }
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') continue;
     const d = SECTORS[f.sector];
     if (!d) continue;
     const t = f.town >= 0 && f.town < nT ? f.town : 0;
-    adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1);
+    adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1, pt);
     if (!d.producer) continue;
     if (!operating(s, f)) {
       f.target = 0;
       continue;
     }
-    planTarget(s, f, pt, salesByTG, levies, sc);
+    planTarget(s, f, pt, salesByTG, makersByTG, levies, sc);
   }
 }
 
@@ -815,7 +984,10 @@ export function firmsProduce(s: SimState): void {
       const site = siteMultiplier(s, f);
       const qPot = potentialOutput(k, leff, tools, season, site);
       const cap = materialCap(k, f.inv);
-      const ref = Math.max(fin(f.sales), 0.2 * qPot);
+      // Storage room is sized on normal sales: a seasonal trade measures it on its year's mean
+      // (a farm whose sales dip after the harvest must still bring the harvest in).
+      let ref = Math.max(fin(f.sales), 0.2 * qPot);
+      if (d.season === 'farm' || g === G.coal) ref = Math.max(ref, learntMean(f), fin(f.salesLong));
       const room = Math.max(0, inventoryMaxDays(k) * ref - Math.max(0, f.inv[g]));
       q = Math.max(0, Math.min(qPot, cap, room));
       if (!(q > 1e-9)) q = 0;
@@ -968,13 +1140,19 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
   const sales = salesRef(s, f, stock);
   const young = s.day - f.founded < NEW_FIRM_DAYS;
   const salesT = young ? sales : Math.max(0, fin(f.sales));
-  const target = Math.max(1e-6, inventoryTarget(f.sector, salesT, s.day));
+  const target = Math.max(1e-6, stockTargetOf(f, meanSalesOf(f, g, salesT, s.day), s.day));
   let shift = clamp(Math.pow(stock / target, -ASK_INV_ELASTICITY), ASK_SHIFT_MIN, ASK_SHIFT_MAX);
-  const sh = f.id < sc.n ? sc.shade[f.id] : 0;
-  if (sh > 0) shift *= sh;
   const distressed = f.distress > 0;
   if (distressed) shift *= DISTRESS_ASK_SHIFT;
-  const base = pExp * shift;
+  // The ask ladder is centred on the firm's cost anchor (marginal cost of its planned sales,
+  // planTarget) times the stock shift: a proportional rule — a glut prices the good below
+  // cost, a shortage above it, by an amount set by the size of the gap. Centring it on the
+  // price expectation instead (which follows the realised price) would let a lasting gap
+  // ratchet the price down or up day after day, far past the cost of making the good. The
+  // anchor stays within ASK_ANCHOR_BAND of the expectation (a planning glitch cannot jump it).
+  const sh = f.id < sc.n ? sc.shade[f.id] : 0;
+  const anchor = sh > 0 ? clamp(sh, pExp * (1 - ASK_ANCHOR_BAND), pExp * (1 + ASK_ANCHOR_BAND)) : pExp;
+  const base = anchor * shift;
   // Cost floor: a share of unit variable cost at the current wage and output per worker
   // (halved for a distressed firm raising cash; there is no floor for rotting overstock).
   let floor = 0;
@@ -1273,11 +1451,28 @@ function ownerSupport(s: SimState, f: Firm, want: number): number {
   return paid;
 }
 
-/** Month end: repay working loans early when flush, then pay out half the excess cash. */
-function monthEndFinance(s: SimState, f: Firm, costDay: number, working: number): void {
-  const fref = firmRef(f.id);
+/** Cash a firm keeps for its operations: CASH_TARGET_DAYS of costs (+ its customers' advances, for builders). */
+function cashReserve(s: SimState, f: Firm, costDay: number): number {
   let reserve = CASH_TARGET_DAYS * costDay;
   if (f.build) reserve += builderAdvances(s, f);
+  return reserve;
+}
+
+/**
+ * Daily payout: DIVIDEND_SHARE of the cash above the firm's operating reserve goes to the
+ * owner every day (a profitable firm's excess is paid out within days). Profits are income
+ * to their owners, and a steady stream keeps owners' spending steady — retained cash would
+ * be a leak out of circulation, and a monthly lump would make owners' demand saw-toothed.
+ */
+function payOutExcess(s: SimState, f: Firm, costDay: number): void {
+  const excess = f.cash - cashReserve(s, f, costDay);
+  if (excess > 1 && (f.profit > 0 || excess > CASH_TARGET_DAYS * costDay)) payDividend(s, f, DIVIDEND_SHARE * excess);
+}
+
+/** Month end: repay working loans early when flush. */
+function monthEndFinance(s: SimState, f: Firm, costDay: number, working: number): void {
+  const fref = firmRef(f.id);
+  const reserve = cashReserve(s, f, costDay);
   // Early repayment of working-capital loans (destroys deposits: credit contracts when firms are flush).
   if (working > 0 && f.cash > reserve + (PREPAY_CASH_DAYS - CASH_TARGET_DAYS) * costDay) {
     let room = f.cash - reserve;
@@ -1295,8 +1490,6 @@ function monthEndFinance(s: SimState, f: Firm, costDay: number, working: number)
       }
     }
   }
-  const excess = f.cash - reserve;
-  if (excess > 0 && (f.monthProfit > 0 || excess > CASH_TARGET_DAYS * costDay)) payDividend(s, f, DIVIDEND_SHARE * excess);
 }
 
 /** Advances builders hold for their customers' projects (a liability, excluded from dividends). */
@@ -1366,8 +1559,22 @@ export function firmsEndDay(s: SimState): void {
       }
     }
     f.sales = Math.max(0, ema(fin(f.sales), Math.max(0, fin(f.soldToday)), SALES_EMA));
+    if (d.producer) {
+      const sold = Math.max(0, fin(f.soldToday));
+      const ds = meanSalesOf(f, d.out, sold, s.day);
+      f.salesLong = f.salesLong > 0 && Number.isFinite(f.salesLong) ? Math.max(0, ema(f.salesLong, ds, SALES_LONG_EMA)) : Math.max(0, fin(f.sales));
+      // The monthly sales record the firm learns its season from (a month it was open for less than half of is not recorded).
+      f.monthSold = fin(f.monthSold) + sold;
+      if (monthEnd) {
+        if (!Array.isArray(f.salesMonths) || f.salesMonths.length !== 12) f.salesMonths = new Array(12).fill(-1);
+        const open = Math.min(DAYS_PER_MONTH, s.day - f.founded + 1);
+        f.salesMonths[monthOf(s.day)] = open >= DAYS_PER_MONTH / 2 ? f.monthSold / open : -1;
+        f.monthSold = 0;
+      }
+    }
     f.output = Math.max(0, ema(fin(f.output), Math.max(0, fin(f.producedToday)), SALES_EMA));
     f.profit = fin(ema(fin(f.profit), profit, PROFIT_EMA));
+    f.profitLong = fin(ema(fin(f.profitLong), profit, PROFIT_LONG_EMA));
     f.monthProfit = fin(f.monthProfit) + profit;
     f.lossDays = f.profit < 0 ? fin(f.lossDays) + 1 : 0;
     if (d.producer) {
@@ -1397,6 +1604,7 @@ export function firmsEndDay(s: SimState): void {
       monthEndFinance(s, f, costDay, working);
       f.monthProfit = 0;
     }
+    payOutExcess(s, f, costDay);
     const unpaid = i < sc.n ? sc.unpaid[i] : 0;
     const short = i < sc.n ? sc.short[i] : 0;
     const low = f.cash < CASH_LOW_DAYS * costDay;

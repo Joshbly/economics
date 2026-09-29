@@ -118,6 +118,8 @@ describe('arbitrage', () => {
     s.markets[0 * N_GOODS + G.grain].ema = 1.0; // cheap at home
     s.markets[1 * N_GOODS + G.grain].ema = 6.0; // dear in the capital
     s.markets[1 * N_GOODS + G.grain].volEma = 200;
+    // grain is traded at home: carters plan only what the home market can supply
+    s.markets[0 * N_GOODS + G.grain].volEma = 200;
   }
 
   it('a profitable spread creates a destination-tagged bid, a shipment, fuel burn and busy wagons', () => {

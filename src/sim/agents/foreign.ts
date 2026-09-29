@@ -131,8 +131,8 @@ export function exportPrice(s: SimState, g: GoodId): number {
 }
 
 /**
- * The desk's target coin: DESK_COIN_DAYS of its recent port trade (foreign.tradeEma, the EMA of
- * (imports + exports) / 2 in coin), at least DESK_WORKING_COIN, scaled up when domestic deposits
+ * The desk's target coin: DESK_COIN_DAYS of its recent two-way port trade (foreign.tradeEma, the
+ * EMA of min(imports, exports) in coin), at least DESK_WORKING_COIN, scaled up when domestic deposits
  * pay more than the world rate (interest parity: foreigners want to hold more coin).
  * Before any trade has been measured, tradeEma is calibrated so the target equals the coin the
  * desk holds (a new world starts in balance).
@@ -427,7 +427,7 @@ export function foreignEndDay(s: SimState): void {
   noteQuotas(s, portTown(s));
   // ---- the desk's trade turnover (sets its working-coin target) ----
   deskTargetCoin(s); // (calibrates tradeEma on first use)
-  fo.tradeEma = Math.max(DESK_WORKING_COIN / DESK_COIN_DAYS, ema(fo.tradeEma, 0.5 * (Math.max(0, fo.importValue) + Math.max(0, fo.exportValue)), DESK_TRADE_EMA));
+  fo.tradeEma = Math.max(DESK_WORKING_COIN / DESK_COIN_DAYS, ema(fo.tradeEma, Math.min(Math.max(0, fo.importValue), Math.max(0, fo.exportValue)), DESK_TRADE_EMA));
   // ---- stats ----
   const acc = s.stats.acc;
   acc.imports = fo.importValue;

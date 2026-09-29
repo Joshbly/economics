@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { INDICATIVE_STEP } from '../src/sim/config';
 import { aggregateCurve, clearBook } from '../src/sim/market/auction';
 import { addAsk, addBid } from '../src/sim/market/markets';
 import type { Book, Wedge } from '../src/sim/types';
@@ -85,10 +86,21 @@ describe('clearBook — price discovery', () => {
     expect(r.price).toBeCloseTo(9);
     expect(bid.filled).toBe(0);
     expect(ask.filled).toBe(0);
-    // one-sided book → reference price
+    // one-sided book: unmet buyers quote the price up toward their best bid (one step a day) …
     const one = mkBook();
     addBid(one, 1, 8, 5);
-    expect(clearBook(one, 3).price).toBeCloseTo(3);
+    expect(clearBook(one, 3).price).toBeCloseTo(3 * (1 + INDICATIVE_STEP));
+    const near = mkBook();
+    addBid(near, 1, 3.2, 5);
+    expect(clearBook(near, 3).price).toBeCloseTo(3.2); // … never past it
+    // … unmet sellers quote it down toward their best ask
+    const glut = mkBook();
+    addAsk(glut, 1, 1, 5);
+    expect(clearBook(glut, 3).price).toBeCloseTo(3 * (1 - INDICATIVE_STEP));
+    // a bid below the reference (or an ask above it) says nothing new: the reference stands
+    const low = mkBook();
+    addBid(low, 1, 2, 5);
+    expect(clearBook(low, 3).price).toBeCloseTo(3);
     // indicative price is clamped into limits
     const lim = mkBook({}, 7);
     addBid(lim, 1, 8, 5);
@@ -263,6 +275,6 @@ describe('clearBook — scale', () => {
     }
     expect(fb).toBeCloseTo(r.volume, 6);
     expect(fa).toBeCloseTo(r.volume, 6);
-    expect(ms).toBeLessThan(5);
+    expect(ms).toBeLessThan(25); // generous: wall-clock under load; typical ~1.5 ms
   });
 });

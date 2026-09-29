@@ -128,19 +128,30 @@ income EMA, expected inflation, unemployment duration, owned firms/houses.
 
 **Daily budget** (buffer-stock consumption rule, `agents/demandModel.ts`):
 ```
-m*  = income · (BUF_BASE_DAYS + BUF_RATE_DAYS · clamp(r_dep − π_e, −0.05, 0.15)
+m*  = income · (BUF_BASE_DAYS + BUF_RATE_DAYS · clamp(r_dep − π_e, −0.03, 0.12)
                + BUF_UNEMP_DAYS · localUnemploymentRate)
 B   = max(subsistenceCost, income + (cash − m*)/SPEND_DOWN_DAYS),  B ≤ cash
 ```
 Higher real deposit rates → larger buffers → less spending (the interest-rate
-channel on consumption). Expected inflation π_e is an EMA of observed CPI
-inflation.
+channel on consumption). Expected inflation π_e is an EMA (INFL_EXP_EMA) of
+**year-on-year** CPI inflation, bounded to [INFL_EXP_MIN = −3 %, INFL_EXP_MAX =
++30 %]: a month's change, annualised, is mostly the season (cheap coal in summer,
+cheap grain after the harvest) and would swing every buffer by weeks of income;
+and a year of falling prices does not make households expect money to keep
+gaining value (the hoarding spiral of a deflation scare is bounded).
 
 **Allocation** — Linear Expenditure System with a CES food nest:
 * subsistence: food 1.0 unit/day (bread and fish are substitutes, σ = 3),
   heat `heatNeed(day)` coal (0.05 in summer … 0.55 in winter).
 * supernumerary budget S = B − subsistence cost is split by shares
-  (food extra, ale, furniture, coal extra).
+  (food extra, ale, furniture, coal extra). Heating enters S at its **annual
+  mean** cost: the buffer carries the seasonal fuel bill (summer's cheap heating
+  is saved, winter's fuel above the mean is paid from the buffer, not from ale
+  and furniture), so luxury demand does not swing with the seasons.
+* shares a sated household cannot use (food and ale have ceilings) spill over
+  to furniture, so the whole budget is spent (`satedSpillover`).
+* essentials first: only today's food and fuel count as essentials; topping up
+  the larder or the coal store is a use of the buffer.
 * pantry targets (bread 2 days, fish 1 day, coal ~10–20 days ahead of winter).
 
 **Bidding**: for each consumer good the household submits a *bid ladder*
@@ -167,11 +178,20 @@ for ≥ 8 % more.
 
 **Housing**: tenants pay daily rent to the landlord (a person or the Treasury).
 Homeless people take the cheapest acceptable vacant slot; long commuters may
-move closer. Arrears for 10 days → eviction.
+move closer. Arrears for 10 days → eviction. Landlords set rents monthly: a
+full house raises its rent only while the town has hardly any room left (with
+empty slots elsewhere the homeless who could pay would move there); a room that
+stands empty is cut deeper the longer it stays empty; only let houses pass on
+expected inflation (and a falling price level lowers every rent).
 
 **Demography**: births (~1.2 %/year when healthy and housed), deaths (base 1 %/
-year + hunger mortality), immigration (monthly, when vacancies exceed
-unemployed and there is housing), emigration (long unemployment, hunger,
+year + hunger mortality), immigration (monthly, while a town is hiring, its job
+seekers number fewer than its vacancies + IMMIGRATION_QUEUE_SHARE of its people —
+newcomers accept the chance of a spell without work, as in Harris–Todaro — its
+real wage is near the realm's base (arrivals taper off from IMMIGRATION_WAGE_FLOOR
+of it: with fixed workshops and land each hand adds less than the last, and
+without this brake a hiring realm would draw people until wages fell to
+subsistence) and there is housing), emigration (long unemployment, hunger,
 misery), internal migration between towns. Emigrants take their money abroad
 (it moves to the foreign desk, which converts it to gold → capital flight).
 
@@ -179,31 +199,63 @@ misery), internal migration between towns. Emigrants take their money abroad
 Producer firms hire, produce, buy inputs and tools, sell output, borrow, pay
 dividends to their owner, invest, and can go bankrupt.
 
-* **Employment target** — profit-maximising labour given expected net price,
-  expected input costs and wage (`L* = (α·margin·A·S·K^β / w_eff)^(1/(1−α))`),
-  limited by what expected sales + inventory correction require and by building
-  capacity. Moves gradually (hire ≤ ~10 %/day, fire ≤ ~5 %/day).
-* **Wages** — one posted wage per firm. Rises 0.4 %/day while vacancies stay
-  unfilled > 3 days; falls only slowly (−0.15 %/day) when the firm is losing money
-  and the local labour market is slack (downward nominal rigidity); partially
-  indexed to expected inflation. Clamped by any wage Limit.
-* **Selling** — ask ladder over sellable inventory around the expected net
-  price; more inventory → lower asks; never below a cost floor unless
+* **Employment target** — demand-driven (`firms.planTarget`). The static
+  profit-maximising workforce reacts to the margin with elasticity 1/(1−α) ≈ 4–7
+  and turns every price wobble into hiring and firing, so firms instead plan to
+  make their *normal sales* × (1 + DEMAND_SLACK) × a bounded supply response
+  (price / (marginal cost × BASE_MARKUP), elasticity SUPPLY_ELASTICITY, within
+  −SUPPLY_RESP_DOWN … +SUPPLY_RESP_MAX; the upper bound widens by
+  ln(price / (cost × SUPPLY_SCARCITY_FROM)) when the price is several times cost,
+  so makers come back fast after a shortage) + a stock correction closed over
+  INV_ADJUST_DAYS and never more than INV_CORR_MAX of sales. Normal sales are a
+  slow EMA (SALES_LONG_EMA) of de-seasonalised sales plus a share of the market's
+  unmet demand; for its first NEW_FIRM_RAMP_DAYS an entrant plans at least its
+  share of the town's sales of its good. A firm whose profit has been negative for LOSS_SHRINK_DAYS sheds
+  hands step by step; one that has been losing money at a price below its
+  materials cost stops at once; a firm short of cash plans only the payroll its
+  takings and cash can pay (keeping LIQUIDITY_RESERVE_DAYS in hand). Targets move
+  gradually (TARGET_SMOOTH, capped at TARGET_MAX_STEP a day, with hysteresis).
+* **Seasonal trades** (farms: harvest; coal mines: heating) keep a steady
+  workforce and let stock carry the season. Every producer records its sales by
+  calendar month (`salesMonths`); a coal mine learns its demand season and its
+  seasonal stock path from that record (households lay coal in ahead of the cold,
+  so the heating curve itself would misplace the season), seasonal trades plan
+  on the year's mean sales, close the gap to the seasonal stock path over
+  INV_ADJUST_DAYS_SEASONAL, size their storage on the year's mean sales, and
+  judge losses on a slow profit (PROFIT_LONG_EMA): a winter of selling the
+  carried harvest is part of a profitable year.
+* **Wages** — one posted wage per firm. Rises WAGE_UP_DAY a day while vacancies
+  stay unfilled > 3 days — faster (× up to 1 + WAGE_URGENCY_MAX) the more the
+  marginal hand's output is worth relative to its wage; drifts down while local
+  unemployment is above WAGE_CUT_UNEMP and the firm has no vacancy (at
+  WAGE_DOWN_DAY for a losing firm, scaled by the slack for any other: the
+  downward side of the Phillips curve); partially indexed to expected inflation.
+  Clamped by any wage Limit.
+* **Selling** — ask ladder over sellable inventory centred on the firm's cost
+  anchor (marginal cost of its planned sales × BASE_MARKUP, kept within
+  ASK_ANCHOR_BAND of the price expectation) times a stock shift (more stock
+  relative to target → lower asks). Centring on the expectation alone would let
+  a lasting gap ratchet the price far from cost. Never below a cost floor unless
   distressed or the good is perishable.
 * **Buying inputs** — bid ladders to keep ~5 days of inputs; limit prices
   bounded by break-even.
 * **Tools (capital)** — desired stock `K* = β·Q·p_net / (p_tools·(r_loan/360 + δ))`,
   closing 10 % of the gap per day. Higher loan rates → fewer tools.
 * **Finance** — keeps a cash buffer (~15 days of costs); requests working-capital
-  loans when short, investment loans for tools/expansion; pays 50 % of excess
-  cash to the owner monthly; distress (unpaid wages / overdue loans) for
+  loans when short, investment loans for tools/expansion; pays DIVIDEND_SHARE of
+  the cash above its reserve to the owner every day (profits circulate instead
+  of piling up in tills); distress (unpaid wages / overdue loans) for
   20 days → bankruptcy: workers laid off, stock dumped at fire-sale prices,
   loans written off against bank equity, building becomes *vacant*.
 * **Entry & expansion** (`agents/entry.ts`, monthly): when a sector's return on
   capital in a town beats the loan rate + hurdle, an entrepreneur (a wealthy
   person, or a startup with a bank loan) commissions a new building (or reopens
-  a vacant one, or expands a full one). Developers build houses when rent
-  yields beat loan rate + hurdle. Both are strongly interest-rate sensitive.
+  a vacant one, or expands a full one). An entrant expects the trade's profit
+  shared among the incumbents, itself and the entrants already being built, and
+  must pay its way — whole hands, materials and tool wear at today's prices — at
+  its share of the trade's sales plus unmet demand (so a town that buys two sets
+  of tools a day gets no second toolworks, however well the first one does).
+  Developers build houses when rent yields beat loan rate + hurdle.
 
 ### 3.3 Builders (construction)
 One Builders' Yard firm per town with a project queue. A project needs
@@ -214,16 +266,22 @@ labour to Treasury-owned projects for free. Private and Treasury projects
 compete for the same labour and materials (crowding out emerges naturally).
 
 ### 3.4 Traders (shipping)
-One Trading House per town. Owns wagons (capital = tools), employs one driver
-per wagon, burns oil per tile travelled. Every day it compares expected prices
-in its home market with every other town's market:
+One Trading House per town. Owns wagons (capital = tools), employs drivers for
+the wagons it expects to use (× TRADER_DRIVER_SLACK), burns oil per tile
+travelled. Every day it compares expected prices in its home market with every
+other town's market:
 ```
 margin = p̂_dest·(1 − dest seller levies) − p̂_home·(1 + home buyer levies)
          − freight(home, dest) − shipment levies − min margin
 ```
-and bids in the home market for the most profitable goods (limit price =
-break-even), loads wagons, and ships. On arrival it sells at the destination
-(asks above landed cost, falling as stock ages). Freight per unit =
+and plans **mixed loads per destination**: the goods worth sending to one town
+share wagons (freight is paid per wagon, so a part load of fish rides with the
+coal), sized by what the destination absorbs (competitive arbitrage: the full
+curve gap, TRADE_CURVE_SHARE) and by what the home market can supply at the
+limit (the home-supply cap), with limit prices = break-even and never above
+TRADE_FAIR_MULT × the home fair price. On arrival it sells at the destination:
+asks undercut toward landed cost + margin, falling as stock ages. Durables keep a
+longer pipeline at the destination (TRADE_PENDING_DAYS_DURABLE). Freight per unit =
 (driver wage × round-trip days + oil × tiles × fuel rate + wagon wear) / wagon
 capacity. The published **shipping rate** index is the freight cost per unit
 per 10 tiles. Oil scarcity or oil levies raise freight; paved roads cut it.
@@ -240,12 +298,20 @@ One commercial bank (owned by a wealthy person). Balance sheet:
   are rationed instead). Deposit rate ≈ reserve rate − 1 % (floored near 0).
 * Lending standards: debt-service coverage, leverage, capital ratio ≥ max(8 %,
   Limit), and a stance that tightens after defaults (pro-cyclical credit).
+  Coverage is judged on interest, counting the yield of what the new money
+  finances (term credit: the capital's yield; working capital:
+  BANK_WORKING_YIELD on the stock and payroll it turns over) — and a working
+  line must also cover the firm's running losses.
 * Lending creates deposits (money creation); repayment destroys them.
 * Reserves below requirement (a Limit) or negative → borrows at the window.
 * Buys IOUs with excess reserves when yield > reserve rate + margin; sells for
   liquidity. IOUs are held at book value; unrealised losses are reported.
 * Equity < 0 → the bank stops lending; after 30 days without recapitalisation,
   depositors are bailed in (all deposits cut pro-rata to restore equity).
+* Dividends: a share of the month's profit while capital is comfortable, the
+  capital ratio measured on at least BANK_DIVIDEND_BOOK_SHARE of deposits as a
+  loan book (a bank whose old loans are being repaid keeps the capital to lend
+  again).
 
 ### 3.6 The outside world (Port at Saltmere)
 World prices are quoted in **gold** and drift slowly (plus scenario shocks).
@@ -256,7 +322,10 @@ sell orders at `E·w_g·(1 + IMPORT_MARKUP)` and buy orders at
 Coin that foreigners earn is converted in the national **Gold market**:
 the foreign desk bids for gold with its surplus coin or sells gold when it
 needs coin. Foreign dealers provide liquidity around a valuation that drifts
-toward purchasing-power parity. Households hoard gold when inflation erodes
+toward purchasing-power parity, marked up while the desk holds more coin than
+its working balance — DESK_COIN_DAYS of its *two-way* trade (min of imports and
+exports): coin earned on a one-sided import surplus weakens the coin rather than
+raising the desk's appetite for it, so the realm's money does not drain abroad. Households hoard gold when inflation erodes
 deposits; the Treasury can trade gold (hold reserves, defend a price…).
 
 ---------------------------------------------------------------------------
@@ -284,7 +353,10 @@ day by a **uniform-price call auction** (`market/auction.ts`):
 6. Record price, volume, unfilled demand (shortage), unsold supply (surplus),
    and an aggregated curve snapshot for the UI.
 If bids and asks do not cross, the market records an indicative price
-(mid of best bid/ask) and zero volume.
+(mid of best bid/ask) and zero volume. A one-sided book moves the indicative
+price toward its best order (at most INDICATIVE_STEP a day): buyers with nobody
+selling quote it up, sellers with nobody buying down — a frozen reference would
+hide an unserved town from every carter and maker that could serve it.
 
 Labour and housing are matching markets (sections 3.1, 3.2), not auctions.
 
@@ -432,3 +504,12 @@ Layout (dark, native-feeling on macOS, system font, tabular numerals):
       take-home pay and employment (economic incidence ≠ statutory incidence).
 * Baseline with no player action must stay sane for 20+ years: no NaN, CPI
   within ×0.6–×1.8 of start, unemployment < 15 %, population > 80 % of start.
+* Health across seeds (`npx tsx scripts/health.ts --seeds 1,2,3,4,5 --days 1080
+  --warmup`): after the warm-up, unemployment mean 3–10 % and never above 20 %,
+  every producer sector operating, CPI within ×0.7–×1.5, population ≥ 95 % of
+  start with hunger < 5 %, carters ≲ 10 % of employment.
+* Founding calibration (`world/init.ts`) is built to be close to the model's own
+  steady state: prices include spoilage and BASE_MARKUP over marginal cost, route
+  loads and part-load freight follow the traders' own dispatch history, founding
+  mortgages are long (INIT_LOAN_TERM), and firms start with a year of sales by
+  month as the plan expects them.

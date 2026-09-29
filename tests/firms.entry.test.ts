@@ -25,7 +25,7 @@ import { entryStep } from '../src/sim/agents/entry';
 import { createFirm } from '../src/sim/agents/firms';
 import { DAYS_PER_MONTH, ENTRY_DAY, EXIT_LOSS_DAYS } from '../src/sim/config';
 import { newBuilding, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
-import { N_GOODS, SECTORS } from '../src/sim/goods';
+import { G, N_GOODS, SECTORS } from '../src/sim/goods';
 import { reconcileBank } from '../src/sim/ledger';
 import type { Firm, MapData, Person, Sector, SimState } from '../src/sim/types';
 import { STATE } from '../src/sim/types';
@@ -89,11 +89,12 @@ function newBakeryProjects(s: SimState): number {
 }
 
 describe('entry', () => {
-  /** Two mature bakeries earning a moderate return on the cost of a new one. */
+  /** Two mature bakeries earning a moderate return on the cost of a new one, in a market with room for a third. */
   function profitableTown(rate: number): { s: SimState; owner: Person } {
     const s = world();
     s.bank.baseRate = rate;
-    for (let i = 0; i < 2; i++) firm(s, 'bakery', 10 + i, { profit: 25, capacity: 8, target: 4 });
+    s.markets[G.bread].ema = 5; // a margin over grain and coal that pays a newcomer's hands at its share of the trade
+    for (let i = 0; i < 2; i++) firm(s, 'bakery', 10 + i, { profit: 25, capacity: 8, target: 4, sales: 100, salesLong: 100 });
     const owner = person(s, 200000); // can pay for a workshop outright
     s.bank.reserves = 1e6;
     reconcileBank(s);
@@ -120,6 +121,13 @@ describe('entry', () => {
     expect(owner.cash).toBeCloseTo(cash0 - mine[0].prepaid, 6);
     const b = s.firms[mine[0].builder];
     expect(b.cash).toBeCloseTo(mine[0].prepaid, 6);
+  });
+
+  it('a newcomer must pay its way at its share of the trade: a thin market gets no second workshop', () => {
+    const { s } = profitableTown(0.02);
+    for (const f of s.firms) if (f.sector === 'bakery') f.sales = f.salesLong = 8; // the town buys 16 loaves a day
+    months(s, 12);
+    expect(newBakeryProjects(s)).toBe(0);
   });
 
   it('chronic loss-makers leave one at a time, and the last firm of a trade in a town stays', () => {

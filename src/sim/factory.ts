@@ -108,6 +108,10 @@ export function newFirm(s: SimState, sector: Sector, town: TownId, building: num
     founded: s.day,
     liquidationDays: 0,
     lossDays: 0,
+    salesLong: 0,
+    salesMonths: new Array(12).fill(-1),
+    monthSold: 0,
+    profitLong: 0,
     trade: null,
     build: null,
   };

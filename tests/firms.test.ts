@@ -21,9 +21,9 @@ vi.mock('../src/sim/world/layout', async () => {
   };
 });
 
-import { closeFirm, createFirm, fairPrice, firmAssets, firmOrders, firmsEndDay, firmsPayWages, firmsPlan, firmsProduce, inventoryTarget, seasonalCarryDays } from '../src/sim/agents/firms';
+import { closeFirm, createFirm, fairPrice, firmAssets, firmOrders, firmsEndDay, firmsPayWages, firmsPlan, firmsProduce, inventoryTarget, learntMean, salesSeason, seasonalCarryDays, stockTargetOf } from '../src/sim/agents/firms';
 import { potentialOutput } from '../src/sim/agents/production';
-import { DISTRESS_BANKRUPT_DAYS, LIQUIDATION_DAYS, TOOLLESS, TOOLS_MAX_BID_MULT } from '../src/sim/config';
+import { BASE_MARKUP, DISTRESS_BANKRUPT_DAYS, LIQUIDATION_DAYS, TOOLLESS, TOOLS_MAX_BID_MULT } from '../src/sim/config';
 import { newBuilding, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { G, N_GOODS, SECTORS } from '../src/sim/goods';
 import { checkLedger, firmRef, reconcileBank } from '../src/sim/ledger';
@@ -181,6 +181,38 @@ describe('production', () => {
     expect(spring).toBeLessThan(2);
     expect(inventoryTarget('farm', 10, 225)).toBeGreaterThan(inventoryTarget('farm', 10, 45) * 5);
   });
+
+  it('a farm brings the harvest in after its sales dip: storage is sized on the year\'s mean sales', () => {
+    const s = world();
+    const f = firm(s, 'farm', { workers: 8 });
+    f.tools = 8;
+    f.salesMonths = new Array(12).fill(150);
+    f.salesLong = 150;
+    f.sales = 60; // a dip: sized on this, the store would already be full
+    f.inv[G.grain] = 9000;
+    reconcile(s);
+    firmsProduce(s);
+    expect(f.producedToday).toBeGreaterThan(0);
+  });
+
+  it('a coal mine learns its season from a year of its own sales', () => {
+    const s = world();
+    const f = firm(s, 'coalmine', { workers: 8 });
+    // sells twice as much in the cold months (Frost … Wane, months 8–11) as in summer
+    f.salesMonths = [80, 60, 60, 60, 60, 60, 80, 100, 120, 120, 120, 100];
+    const mean = learntMean(f);
+    expect(mean).toBeCloseTo(85, 9);
+    expect(salesSeason(f, G.coal, 9 * 30 + 15)).toBeCloseTo(120 / mean, 6); // mid-Deepwinter
+    expect(salesSeason(f, G.coal, 3 * 30 + 15)).toBeCloseTo(60 / mean, 6);
+    // a steady output of `mean` builds stock through the slack months and draws it down in the cold:
+    // most stock on the eve of the cold (start of Frost), least when the cold months end
+    const eve = stockTargetOf(f, mean, 8 * 30);
+    const spring = stockTargetOf(f, mean, 0);
+    expect(eve).toBeGreaterThan(spring + 40 * mean);
+    // an incomplete record falls back on the assumed heating season
+    f.salesMonths[4] = -1;
+    expect(learntMean(f)).toBe(-1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -289,10 +321,12 @@ describe('workforce planning', () => {
     const f = firm(s, 'bakery', { workers: 5 });
     f.capacity = 8;
     f.target = 5;
-    f.sales = 70;
-    f.output = 70;
+    // workforce follows sales: five bakers (with full tools) make ~100 loaves a day
+    f.sales = 110;
+    f.output = 110;
+    f.salesLong = 110;
     f.inv[G.bread] = 50;
-    f.pExp = PRICES[G.bread] * 1.05;
+    f.pExp = PRICES[G.bread] * 1.15; // founding prices carry the markup: this is above it
     reconcile(s);
     for (let d = 0; d < 20; d++) firmsPlan(s);
     expect(f.target).toBeGreaterThanOrEqual(5);
@@ -341,12 +375,59 @@ describe('workforce planning', () => {
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
   });
 
+  it('a seasonal trade plans on its year of sales, not on a two-month dip', () => {
+    const s = world();
+    const mk = (record: boolean) => {
+      const f = firm(s, 'farm', { workers: 20 });
+      f.capacity = 30;
+      f.tools = 20;
+      f.target = 20;
+      f.sales = 100;
+      f.salesLong = 100;
+      f.output = 150;
+      f.pExp = PRICES[G.grain] * 1.1;
+      if (record) f.salesMonths = new Array(12).fill(150);
+      f.inv[G.grain] = inventoryTarget('farm', 150, s.day);
+      return f;
+    };
+    const withYear = mk(true);
+    const without = mk(false);
+    reconcile(s);
+    for (let d = 0; d < 20; d++) firmsPlan(s);
+    expect(withYear.target).toBeGreaterThan(without.target + 1);
+  });
+
+  it('a farm losing money in the lean season keeps its hands while its year is profitable', () => {
+    const s = world();
+    const mk = (profitLong: number) => {
+      const f = firm(s, 'farm', { workers: 20 });
+      f.capacity = 30;
+      f.tools = 20;
+      f.target = 20;
+      f.sales = f.salesLong = f.output = 150;
+      f.salesMonths = new Array(12).fill(150);
+      f.pExp = PRICES[G.grain];
+      f.inv[G.grain] = inventoryTarget('farm', 150, s.day);
+      f.profit = -30;
+      f.lossDays = 40;
+      f.profitLong = profitLong;
+      return f;
+    };
+    const goodYear = mk(50);
+    const badYear = mk(-5);
+    reconcile(s);
+    for (let d = 0; d < 20; d++) firmsPlan(s);
+    expect(badYear.target).toBeLessThan(goodYear.target - 1);
+  });
+
   it('a price that no longer covers materials sends the target to zero', () => {
     const s = world();
     const f = firm(s, 'bakery', { workers: 5 });
     f.sales = 70;
     f.pExp = 2.0; // below grain + coal cost per loaf …
     s.markets[G.bread].ema = 2.0; // … and so is the market: even a 25 % price rise would not cover materials
+    f.profit = -40; // … and it has been losing money for weeks
+    f.lossDays = 30;
     reconcile(s);
     for (let d = 0; d < 40; d++) firmsPlan(s);
     expect(f.target).toBe(0);
@@ -368,7 +449,7 @@ describe('orders', () => {
     fur.sales = 4;
     fur.output = 4;
     fur.pExp = 23;
-    fur.inv[G.furniture] = 28; // at target (7 days)
+    fur.inv[G.furniture] = 40; // at target (INV_TARGET_DAYS of sales)
     reconcile(s);
     const books = openBooks(s);
     firmOrders(s, books);
@@ -394,7 +475,7 @@ describe('orders', () => {
     const tools = books.goods[G.tools].bids.filter((o) => o.ref === firmRef(f.id));
     const top = Math.max(...tools.map((o) => o.limit));
     expect(top).toBeLessThanOrEqual(TOOLS_MAX_BID_MULT * fairPrice(s, 0, G.tools) + 1e-9);
-    expect(top).toBeLessThan(PRICES[G.tools] * 3);
+    expect(top).toBeLessThan(PRICES[G.tools] * 3 * BASE_MARKUP);
   });
 
   it('a cash-short firm funds the inputs it needs to keep producing before buying tools', () => {

@@ -220,9 +220,13 @@ export function fire(s: SimState, f: Firm, p: Person): void {
 // Daily matching
 // ---------------------------------------------------------------------------
 
-/** Whole-number workforce the firm wants to reach (hysteresis band between round and ceil). */
+/**
+ * Whole-number workforce the firm wants to reach: the target rounded (firms smooth their
+ * targets, so there is no need for a further band; a band between round and ceil kept a
+ * five-worker shop at five hands for any target above 4.05 — 20 % over its plan for months).
+ */
 function wantUpper(f: Firm): number {
-  return Math.max(0, Math.ceil(fin(f.target) - 0.05));
+  return Math.max(0, Math.floor(fin(f.target) + 0.5));
 }
 function wantLower(f: Firm): number {
   return Math.max(0, Math.floor(fin(f.target) + 0.5));

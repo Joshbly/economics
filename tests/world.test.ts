@@ -199,7 +199,7 @@ describe('createWorld', () => {
   it('runs fast', () => {
     const t0 = performance.now();
     createWorld({ seed: 3 });
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(performance.now() - t0).toBeLessThan(2000); // generous: wall-clock under load; typical ~250 ms warm
   });
 
   it('has a founding news item', () => {

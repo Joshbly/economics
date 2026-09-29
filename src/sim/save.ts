@@ -240,6 +240,13 @@ function fillDefaults(s: SimState): void {
   if (typeof t.autoMint !== 'boolean') t.autoMint = false;
   if (!Array.isArray(s.foreign.shocks)) s.foreign.shocks = [];
   if (!Array.isArray(s.bank.requests)) s.bank.requests = [];
+  for (const f of s.firms) {
+    if (!f) continue;
+    if (!isNum(f.salesLong)) f.salesLong = 0;
+    if (!Array.isArray(f.salesMonths) || f.salesMonths.length !== 12) f.salesMonths = new Array(12).fill(-1);
+    if (!isNum(f.monthSold)) f.monthSold = 0;
+    if (!isNum(f.profitLong)) f.profitLong = 0;
+  }
   const set = s.settings;
   if (typeof set.events !== 'boolean') set.events = true;
   if (typeof set.scenario !== 'string') set.scenario = 'founding';
