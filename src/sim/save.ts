@@ -361,7 +361,8 @@ function fillLines(s: SimState): void {
       continue;
     }
     for (const k of LINE_NUMS) if (!isNum(L[k])) L[k] = 0;
-    if (L.fare !== 'fixed' && L.fare !== 'cost' && L.fare !== 'free') L.fare = 'cost';
+    if (L.fare !== 'fixed' && L.fare !== 'cost' && L.fare !== 'under' && L.fare !== 'free') L.fare = 'cost';
+    if (L.margin !== undefined && !isNum(L.margin)) delete L.margin;
     if (typeof L.enabled !== 'boolean') L.enabled = true;
     if (typeof L.label !== 'string') L.label = 'Freight line';
     if (L.staffing !== 'asNeeded' && L.staffing !== 'permanent') L.staffing = 'asNeeded';

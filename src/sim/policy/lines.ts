@@ -50,6 +50,10 @@ import {
   LINE_DRIVER_SLACK,
   LINE_FUEL_DAYS,
   LINE_FUEL_MIN_LEGS,
+  LINE_MARGIN_MAX,
+  LINE_MARGIN_MIN,
+  LINE_UNDER_DEFAULT,
+  LINE_UNDER_MAX,
   LINE_TOOLS_DAY,
   LINE_USE_EMA,
   LINE_WAGE_PREMIUM,
@@ -70,14 +74,16 @@ import type { Firm, FreightLine, LineFare, LineStaffing, Order, SimState, TownId
 import { clamp, ema, fin } from '../util';
 import { routeBetweenTowns } from '../world/paths';
 import { FLOW_USED, noteFlow } from '../stats/flows';
+import { freightPerUnit } from '../agents/traders';
 
 // ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------
 
 /** A fresh line record (no wagons yet, all counters zero). */
-export function newLine(id: number, a: TownId, b: TownId, wagons: number, fare: LineFare, farePrice: number, day: number, label: string, staffing: LineStaffing = 'asNeeded'): FreightLine {
+export function newLine(id: number, a: TownId, b: TownId, wagons: number, fare: LineFare, farePrice: number, day: number, label: string, staffing: LineStaffing = 'asNeeded', margin?: number): FreightLine {
   return {
+    ...(margin !== undefined && (fare === 'cost' || fare === 'under') ? { margin } : {}),
     id,
     label,
     enabled: true,
@@ -318,11 +324,32 @@ export function costPerUnit(s: SimState, L: FreightLine): number {
   return clamp(fin(c, full), LINE_COST_FLOOR_MULT * full, LINE_COST_CAP_MULT * full);
 }
 
-/** The fare the rule sets today (¤ per unit). */
+/** The margin of a 'cost' or 'under' fare (absent: at cost; 10 % under). */
+export function fareMargin(L: Pick<FreightLine, 'fare' | 'margin'>): number {
+  if (L.fare === 'under') return clamp(fin(L.margin ?? LINE_UNDER_DEFAULT, LINE_UNDER_DEFAULT), 0, LINE_UNDER_MAX);
+  return clamp(fin(L.margin ?? 0, 0), LINE_MARGIN_MIN, LINE_MARGIN_MAX);
+}
+
+/**
+ * The fare on the leg leaving `from` (¤ per unit): 'under' asks the house of `from` what its own
+ * wagons would cost it to `to` (a full wagon's trip per unit) and charges that less the margin —
+ * so the line always pays them better than their own wagons, and the Treasury keeps the rest of
+ * the saving; the other rules charge the same both ways.
+ */
+export function fareFrom(s: SimState, L: FreightLine, from: TownId): number {
+  if (L.fare !== 'under') return fareFor(s, L);
+  const to = from === L.a ? L.b : L.a;
+  const own = freightPerUnit(s, from, to);
+  if (!(own > 0)) return costPerUnit(s, L);
+  return Math.max(0, fin(own * (1 - fareMargin(L))));
+}
+
+/** The fare the rule sets today (¤ per unit; 'under': the mean of the two legs). */
 export function fareFor(s: SimState, L: FreightLine): number {
   if (L.fare === 'free') return 0;
   if (L.fare === 'fixed') return Math.max(0, fin(L.farePrice));
-  return costPerUnit(s, L);
+  if (L.fare === 'under') return 0.5 * (fareFrom(s, L, L.a) + fareFrom(s, L, L.b));
+  return Math.max(0, fin(costPerUnit(s, L) * (1 + fareMargin(L))));
 }
 
 /** Estimate for a line not yet opened (the composer's preview). */
@@ -452,7 +479,7 @@ export function lineOffer(s: SimState, from: TownId, to: TownId): LineOffer | nu
   for (const L of ls) {
     if (!L.enabled || !serves(L, from, to)) continue;
     const room = lineRoom(s, L, from);
-    const fare = Math.max(0, fin(L.fareToday));
+    const fare = L.fare === 'under' ? fareFrom(s, L, from) : Math.max(0, fin(L.fareToday));
     const open = room > 0.5;
     if (!best || (open && !(best.room > 0.5)) || (open === best.room > 0.5 && fare < best.fare)) best = { line: L, fare, room: open ? room : 0 };
   }

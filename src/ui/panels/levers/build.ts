@@ -8,7 +8,7 @@
 // the first town, carrying the trading houses' goods between the two towns for
 // a fare the player sets); the lines are listed below with their accounts.
 // ============================================================================
-import { LINE_MAX_FARE, LINE_MAX_WAGONS, PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED, TOOLS_PER_WAGON, WAGON_CAPACITY } from '../../../sim/config';
+import { LINE_MARGIN_MAX, LINE_MARGIN_MIN, LINE_MAX_FARE, LINE_MAX_WAGONS, LINE_UNDER_MAX, PIER_CAP_BONUS, SPEED_DIRT, SPEED_PAVED, TOOLS_PER_WAGON, WAGON_CAPACITY } from '../../../sim/config';
 import { freightPerUnit } from '../../../sim/agents/traders';
 import { estimateLine, lineBetween } from '../../../sim/policy/lines';
 import type { LineFare, LineStaffing } from '../../../sim/types';
@@ -93,6 +93,7 @@ export function buildLever(): Lever {
   let fare: LineFare = 'cost';
   let staffing: LineStaffing = 'asNeeded';
   let farePrice = 0.2;
+  let marginPct = 10; // 'cost': markup over the line's cost, 'under': below the houses' own freight (%)
   let last: SimState | null = null;
   let planKey = '';
   let plan: number[] = [];
@@ -138,7 +139,8 @@ export function buildLever(): Lever {
   const wagonsIn = numberInput({ value: wagons, min: 1, max: LINE_MAX_WAGONS, integer: true, unit: 'wagons', width: '120px', onChange: (v) => ((wagons = v), changed()) });
   const fareSeg = segmented<LineFare>({
     options: [
-      { value: 'cost', label: 'At cost', title: 'Traders pay what the line’s recent trips cost per unit carried' },
+      { value: 'cost', label: 'Cost +', title: 'Traders pay what the line’s recent trips cost per unit carried, plus your margin (0 % = at cost)' },
+      { value: 'under', label: 'Undercut', title: 'Traders pay what their own wagons would cost them on each leg, less your share: they always come out ahead, and the Treasury keeps the rest of what the line saves' },
       { value: 'fixed', label: 'Fixed', title: 'Traders pay a set amount per unit carried' },
       { value: 'free', label: 'Free', title: 'Traders pay nothing: the Purse pays all its running costs' },
     ],
@@ -147,6 +149,7 @@ export function buildLever(): Lever {
     onChange: (v) => ((fare = v), changed()),
   });
   const fareIn = numberInput({ value: farePrice, min: 0, max: LINE_MAX_FARE, prefix: '¤', unit: 'a unit', width: '120px', onChange: (v) => ((farePrice = v), changed()) });
+  const marginIn = numberInput({ value: marginPct, min: LINE_MARGIN_MIN * 100, max: LINE_MARGIN_MAX * 100, unit: '%', width: '96px', onChange: (v) => ((marginPct = v), changed()) });
   const staffSeg = segmented<LineStaffing>({
     options: [
       { value: 'asNeeded', label: 'As needed', title: 'As many drivers as the loads need; when the wagons stand idle they join the town’s works crew' },
@@ -158,7 +161,7 @@ export function buildLever(): Lever {
   });
   const wagonsRow = row('Wagons', wagonsIn.el);
   const staffRow = row('Drivers', staffSeg.el);
-  const fareRow = row('Traders pay', fareSeg.el, fareIn.el);
+  const fareRow = row('Traders pay', fareSeg.el, fareIn.el, marginIn.el);
   const townRow = dynRow('Town', townSel.el);
   const sectorRow = row('Trade', sectorSel.el);
   const firmRow = row('Workshop', firmSel.el);
@@ -247,6 +250,8 @@ export function buildLever(): Lever {
     show(staffRow, kind === 'line');
     show(fareRow, kind === 'line');
     show(fareIn.el, fare === 'fixed');
+    show(marginIn.el, fare === 'cost' || fare === 'under');
+    marginIn.el.title = fare === 'under' ? 'How far below the trading houses’ own freight (0 to 90 %)' : 'Your margin over what the line’s trips cost (0 % = at cost; below 0 the Purse pays part)';
     fareSeg.set(fare);
     show(townRow.el, kind === 'house' || kind === 'firm' || kind === 'pier');
     setText(townRow.lab, kind === 'pier' ? 'Harbour' : 'Town');
@@ -379,13 +384,13 @@ export function buildLever(): Lever {
     } else if (dup) {
       desc = `A Treasury freight line already runs between ${A} and ${Bn}: change its fare or its wagons below.`;
       ok = false;
-    } else if (!wagonsIn.valid || (fare === 'fixed' && !fareIn.valid)) {
+    } else if (!wagonsIn.valid || (fare === 'fixed' && !fareIn.valid) || ((fare === 'cost' || fare === 'under') && !marginOk())) {
       desc = 'Check the numbers.';
       ok = false;
     } else {
       desc =
         `The Treasury keeps ${plural(n, 'wagon')} in ${A} (${TOOLS_PER_WAGON} tool sets each, bought there), ${staffing === 'permanent' ? `each with its own driver — ${plural(n, 'Treasury worker')} hired there and kept on, whatever the loads` : 'drives them with Treasury workers hired there as the loads need them'}, and buys their oil there. ` +
-        `The trading houses of both towns load their goods onto it when it is cheaper than their own wagons, and pay ${fare === 'free' ? 'nothing' : fare === 'fixed' ? `${fmtM(farePrice)} a unit` : 'what its recent trips cost per unit carried'}. The Treasury’s own goods between the two towns ride it too.`;
+        `The trading houses of both towns load their goods onto it when it is cheaper than their own wagons, and pay ${fare === 'free' ? 'nothing' : fare === 'fixed' ? `${fmtM(farePrice)} a unit` : fare === 'under' ? `${fmtNum(marginPct)} % less than their own wagons would cost them on each leg — they always come out ahead, and the Treasury keeps the rest of what the line saves` : marginPct !== 0 ? `what its recent trips cost per unit carried ${marginPct > 0 ? 'plus' : 'less'} ${fmtNum(Math.abs(marginPct))} %` : 'what its recent trips cost per unit carried'}. The Treasury’s own goods between the two towns ride it too.`;
     }
     setText(whatD, desc);
     setText(costV, ok && est ? `≈ ${fmtM(n * est.wagonCost)}` : '');
@@ -409,11 +414,33 @@ export function buildLever(): Lever {
         ' a day with every wagon on the road (drivers, oil, wear), ',
         B(fmtM(est.idleDay)),
         ` standing. A wagon carries ${WAGON_CAPACITY}.`,
+        ...earnText(own, back, est.perUnit),
       );
     }
     go.disabled = !ok;
     pickSite.disabled = true;
     show(placingNote, !!ui.placing);
+  }
+
+  function marginOk(): boolean {
+    if (!marginIn.valid) return false;
+    return fare === 'under' ? marginPct >= 0 && marginPct <= LINE_UNDER_MAX * 100 : marginPct >= LINE_MARGIN_MIN * 100 && marginPct <= LINE_MARGIN_MAX * 100;
+  }
+
+  /** What the Treasury would keep a unit carried in full wagons, by the fare chosen. */
+  function earnText(own: number, back: number, perUnit: number): (string | HTMLElement)[] {
+    if (!(perUnit > 0)) return [];
+    const Bx = (x: string, cls?: string) => h('b', { class: cls ?? null }, x);
+    let keep: number;
+    if (fare === 'free') keep = -perUnit;
+    else if (fare === 'fixed') keep = farePrice - perUnit;
+    else if (fare === 'cost') keep = (perUnit * marginPct) / 100;
+    else {
+      const legs = [own, back].filter((x) => x > 0);
+      if (!legs.length) return [];
+      keep = legs.reduce((a, x) => a + x * (1 - marginPct / 100), 0) / legs.length - perUnit;
+    }
+    return [' The Treasury keeps about ', Bx(fmtM(keep), keep >= 0 ? 'good' : 'warn'), ' a unit carried in full wagons, before its drivers’ idle days and the wagons’ standing wear.'];
   }
 
   function showOnMap(): void {
@@ -466,7 +493,12 @@ export function buildLever(): Lever {
       case 'line':
         if (!wagonsIn.valid) return msg.err(`The number of wagons must be a whole number from 1 to ${LINE_MAX_WAGONS}.`);
         if (fare === 'fixed' && !fareIn.valid) return msg.err('Set the fare per unit.');
-        r = run({ type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined, staffing }, msg, '✓ Line opened — see Treasury freight lines below.');
+        if ((fare === 'cost' || fare === 'under') && !marginOk()) return msg.err(fare === 'under' ? 'Undercut the trading houses by 0 to 90 %.' : 'Set the margin over cost (−90 % to +500 %).');
+        r = run(
+          { type: 'openLine', a: from, b: to, wagons: Math.round(wagons), fare, farePrice: fare === 'fixed' ? farePrice : undefined, margin: fare === 'cost' || fare === 'under' ? marginPct / 100 : undefined, staffing },
+          msg,
+          '✓ Line opened — see Treasury freight lines below.',
+        );
         break;
     }
     if (r?.ok) {

@@ -78,13 +78,14 @@ import { cancelProject, needCost, startProject, treasuryCrewWanted } from '../ag
 import { deliverTreasuryDue, freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
 import { roadPlan, trackPlan } from '../world/paths';
 import { nearestTown, townCentreTile } from '../world/layout';
-import { LINE_MAX_FARE, LINE_MAX_WAGONS, TOOLS_PER_WAGON } from '../config';
+import { LINE_MARGIN_MAX, LINE_MARGIN_MIN, LINE_MAX_FARE, LINE_MAX_WAGONS, LINE_UNDER_MAX, TOOLS_PER_WAGON } from '../config';
 import { G } from '../goods';
 import type { FreightLine, LineFare } from '../types';
 import {
   estimateLine,
   fareFor,
   lineBetween,
+  fareMargin,
   lineById,
   lineDriversWanted,
   lineOffer,
@@ -1630,14 +1631,17 @@ function projectResult(s: SimState, r: ReturnType<typeof startProject>, label: s
 // ---------------------------------------------------------------------------
 // Freight lines (policy/lines.ts)
 // ---------------------------------------------------------------------------
-const LINE_FARES: LineFare[] = ['fixed', 'cost', 'free'];
+const LINE_FARES: LineFare[] = ['fixed', 'cost', 'under', 'free'];
 const TOOLS_GOOD = G.tools;
 const OIL_GOOD = G.oil;
 
 /** How a line charges, in words: "¤0.40 a unit carried", "what the line costs to run per unit carried (about ¤0.62 today)", "nothing". */
-function fareText(L: Pick<FreightLine, 'fare' | 'farePrice' | 'fareToday'>): string {
+function fareText(L: Pick<FreightLine, 'fare' | 'farePrice' | 'fareToday' | 'margin'>): string {
   if (L.fare === 'free') return 'nothing';
   if (L.fare === 'fixed') return `${moneyText(L.farePrice)} a unit carried`;
+  const m = fareMargin(L);
+  if (L.fare === 'under') return `${pctText(m)} less than their own wagons would cost them on each leg (about ${moneyText(L.fareToday)} a unit today) — the Treasury keeps what the line saves beyond that`;
+  if (Math.abs(m) > 1e-9) return `what the line costs to run per unit carried ${m > 0 ? 'plus' : 'less'} ${pctText(Math.abs(m))} (about ${moneyText(L.fareToday)} today)`;
   return `what the line costs to run per unit carried (about ${moneyText(L.fareToday)} today)`;
 }
 
@@ -1659,10 +1663,19 @@ function lineLabel(s: SimState, a: TownId, b: TownId): string {
 }
 
 function checkFare(fare: unknown, price: unknown): { ok: true; fare: LineFare; price: number } | { ok: false; message: string } {
-  if (!LINE_FARES.includes(fare as LineFare)) return { ok: false, message: 'Choose what the line charges: a fixed amount per unit, what it costs to run, or nothing.' };
+  if (!LINE_FARES.includes(fare as LineFare))
+    return { ok: false, message: 'Choose what the line charges: a fixed amount per unit, what it costs to run (plus or less a margin), less than the trading houses’ own wagons cost them, or nothing.' };
   if (fare !== 'fixed') return { ok: true, fare: fare as LineFare, price: 0 };
   if (!isNum(price) || price < 0 || price > LINE_MAX_FARE) return { ok: false, message: `The fare per unit must be a number between ${moneyText(0)} and ${moneyText(LINE_MAX_FARE)}.` };
   return { ok: true, fare: 'fixed', price };
+}
+
+function checkMargin(fare: LineFare, m: unknown): string | null {
+  if (m === undefined) return null;
+  if (!isNum(m)) return 'The margin must be a number (0.2 = 20 %).';
+  if (fare === 'under' && (m < 0 || m > LINE_UNDER_MAX)) return `Undercut the trading houses by 0 to ${pctText(LINE_UNDER_MAX)}.`;
+  if (fare === 'cost' && (m < LINE_MARGIN_MIN || m > LINE_MARGIN_MAX)) return `The margin over cost must lie between ${pctText(LINE_MARGIN_MIN)} and +${pctText(LINE_MARGIN_MAX)}.`;
+  return null;
 }
 
 function checkStaffing(x: unknown): string | null {
@@ -1685,12 +1698,14 @@ function openLine(s: SimState, a: Extract<PlayerAction, { type: 'openLine' }>): 
   if (we) return fail(we);
   const fc = checkFare(a.fare, a.farePrice);
   if (!fc.ok) return fail(fc.message);
+  const me = checkMargin(fc.fare, a.margin);
+  if (me) return fail(me);
   const se = checkStaffing(a.staffing);
   if (se) return fail(se);
   if (lineBetween(s, a.a, a.b)) return fail(`A Treasury freight line already runs between ${townName(s, a.a)} and ${townName(s, a.b)}; change its wagons or its fare instead.`);
   if (!s.policy.lines) s.policy.lines = [];
   const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : lineLabel(s, a.a, a.b);
-  const L = newLine(s.ids.policy++, a.a, a.b, a.wagons, fc.fare, fc.price, s.day, label, a.staffing === 'permanent' ? 'permanent' : 'asNeeded');
+  const L = newLine(s.ids.policy++, a.a, a.b, a.wagons, fc.fare, fc.price, s.day, label, a.staffing === 'permanent' ? 'permanent' : 'asNeeded', a.margin);
   s.policy.lines.push(L);
   const took = takeStoredTools(s, L);
   L.fareToday = fareFor(s, L);
@@ -1716,10 +1731,12 @@ function updateLine(s: SimState, a: Extract<PlayerAction, { type: 'updateLine' }
     if (we) return fail(we);
   }
   let fare: { fare: LineFare; price: number } | null = null;
-  if (p.fare !== undefined || p.farePrice !== undefined) {
+  if (p.fare !== undefined || p.farePrice !== undefined || p.margin !== undefined) {
     const mode = p.fare ?? L.fare;
     const fc = checkFare(mode, p.farePrice ?? (mode === 'fixed' ? L.farePrice : undefined));
     if (!fc.ok) return fail(fc.message);
+    const me = checkMargin(fc.fare, p.margin);
+    if (me) return fail(me);
     fare = fc;
   }
   const se = checkStaffing(p.staffing);
@@ -1734,8 +1751,11 @@ function updateLine(s: SimState, a: Extract<PlayerAction, { type: 'updateLine' }
     if (back > 1e-6) notes.push(`${amountOf(TOOLS_GOOD, back)} from its spare wagons go to the Treasury's stores in ${townName(s, L.a)}.`);
   }
   if (fare) {
+    const changedMode = fare.fare !== L.fare;
     L.fare = fare.fare;
     L.farePrice = fare.price;
+    if (p.margin !== undefined && (fare.fare === 'cost' || fare.fare === 'under')) L.margin = p.margin;
+    else if (changedMode || (fare.fare !== 'cost' && fare.fare !== 'under')) delete L.margin; // a new rule starts from its default margin
     L.fareToday = fareFor(s, L);
   }
   if (p.staffing !== undefined) L.staffing = p.staffing;

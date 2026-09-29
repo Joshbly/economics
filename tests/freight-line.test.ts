@@ -13,7 +13,7 @@ import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, reconcileBank } from '../src/sim/ledger';
 import { addAsk, bookFor, clearAll, marketOf, openBooks, type Books } from '../src/sim/market/markets';
 import { describeLine, dispatch, playerAfterClear, playerOrders, policyBeginDay } from '../src/sim/policy/player';
-import { costPerUnit, crewOf, lineById, lineRoom, staffLines } from '../src/sim/policy/lines';
+import { costPerUnit, crewOf, fareFor, lineById, lineOffer, lineResult, lineRoom, staffLines } from '../src/sim/policy/lines';
 import { rt, type Route } from '../src/sim/runtime';
 import { deserialize } from '../src/sim/save';
 import { activeLines, routeLabel } from '../src/ui/map/routes';
@@ -481,5 +481,71 @@ describe('freight lines — saving and loading', () => {
     const dropped = deserialize(JSON.stringify(raw2));
     expect(dropped.policy.lines.length).toBe(0);
     expect(dropped.treasury.goods[cap][G.tools]).toBeCloseTo(held + tools, 9);
+  });
+});
+
+describe('freight lines — fares that earn', () => {
+  const open = (w: World, fare: 'cost' | 'under', margin?: number): FreightLine => {
+    w.s.treasury.goods[0][G.tools] = 100;
+    const r = dispatch(w.s, { type: 'openLine', a: 0, b: 1, wagons: 2, fare, margin });
+    expect(r.ok, r.message).toBe(true);
+    const L = line(w.s, r.id!);
+    L.oil = 20;
+    L.oilBasis = PRICES[G.oil];
+    expect(r.message).not.toMatch(FORBIDDEN);
+    return L;
+  };
+
+  it('cost + margin: the running cost per unit plus the markup', () => {
+    const w = world();
+    const L = open(w, 'cost', 0.25);
+    day(w);
+    expect(L.margin).toBe(0.25);
+    expect(fareFor(w.s, L)).toBeCloseTo(costPerUnit(w.s, L) * 1.25, 9);
+    expect(describeLine(w.s, L)).toMatch(/plus 25/);
+    // a new rule starts from its own default
+    expect(dispatch(w.s, { type: 'updateLine', id: L.id, patch: { fare: 'fixed', farePrice: 0.3 } }).ok).toBe(true);
+    expect(L.margin).toBeUndefined();
+    ledgerOk(w.s);
+  });
+
+  it('undercut: each leg at the houses’ own freight less the share; they still load the line', () => {
+    const w = world();
+    const L = open(w, 'under', 0.2);
+    day(w);
+    const own = freightPerUnit(w.s, 0, 1);
+    expect(own).toBeGreaterThan(0);
+    expect(lineOffer(w.s, 0, 1)!.fare).toBeCloseTo(own * 0.8, 9);
+    for (let d = 0; d < 20; d++) day(w);
+    expect(L.carried).toBeGreaterThan(0);
+    expect(L.fares).toBeGreaterThan(0);
+    ledgerOk(w.s);
+  });
+
+  it('an undercut fare earns the Treasury more than running at cost', () => {
+    const run = (fare: 'cost' | 'under') => {
+      const w = world();
+      const L = open(w, fare, fare === 'under' ? 0.1 : undefined);
+      for (let d = 0; d < 40; d++) day(w);
+      return { result: lineResult(L).result, carried: L.carried };
+    };
+    const atCost = run('cost');
+    const under = run('under');
+    expect(under.carried).toBeGreaterThan(0);
+    expect(under.result).toBeGreaterThan(atCost.result);
+  });
+
+  it('refuses margins out of range, keeps them across a save', () => {
+    const w = world();
+    w.s.treasury.goods[0][G.tools] = 100;
+    expect(dispatch(w.s, { type: 'openLine', a: 0, b: 1, wagons: 2, fare: 'cost', margin: 6 }).ok).toBe(false);
+    expect(dispatch(w.s, { type: 'openLine', a: 0, b: 1, wagons: 2, fare: 'under', margin: 0.95 }).ok).toBe(false);
+    expect(dispatch(w.s, { type: 'openLine', a: 0, b: 1, wagons: 2, fare: 'under', margin: -0.1 }).ok).toBe(false);
+    const L = open(w, 'under', 0.15);
+    const t = deserialize(JSON.stringify(w.s));
+    expect(t.policy.lines![0].fare).toBe('under');
+    expect(t.policy.lines![0].margin).toBe(0.15);
+    expect(dispatch(w.s, { type: 'updateLine', id: L.id, patch: { margin: 0.3 } }).ok).toBe(true);
+    expect(L.margin).toBe(0.3);
   });
 });

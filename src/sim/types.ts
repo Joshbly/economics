@@ -754,7 +754,12 @@ export interface CarryRule {
 }
 
 /** How a Treasury freight line charges for what it carries: a fixed ¤ per unit, its own running cost per unit, or nothing. */
-export type LineFare = 'fixed' | 'cost' | 'free';
+/**
+ * What a Treasury freight line charges the trading houses per unit carried: 'fixed' ¤, 'cost' — what
+ * its trips cost it × (1 + margin), 'under' — the house's own freight on that leg × (1 − margin)
+ * (the most they would pay, less a share), or 'free'.
+ */
+export type LineFare = 'fixed' | 'cost' | 'under' | 'free';
 /** How a Treasury freight line keeps its drivers (FreightLine.staffing). */
 export type LineStaffing = 'asNeeded' | 'permanent';
 
@@ -775,7 +780,13 @@ export interface FreightLine {
   wagonsWanted: number; // fleet the Treasury keeps (whole wagons)
   fare: LineFare;
   farePrice: number; // ¤ per unit when fare === 'fixed'
-  fareToday: number; // ¤ per unit charged today (the rule applied each morning)
+  /**
+   * 'cost': the markup over what its trips cost per unit (0 = at cost, 0.2 = +20 %, below 0 =
+   * the Purse pays part); 'under': how far below the trading houses' own freight the fare is set
+   * (0.1 = 10 % less than their own wagons would cost them on that leg). Absent = 0 / 0.1.
+   */
+  margin?: number;
+  fareToday: number; // ¤ per unit charged today (the rule applied each morning; 'under': the mean of the two legs)
   wage: number; // daily wage offered to its drivers (the going carters' wage in `a`)
   created: number;
   // ---- capital & stores (Treasury property, kept apart from treasury.goods) ----
@@ -913,11 +924,13 @@ export type PlayerAction =
       fare: LineFare;
       /** ¤ per unit, for fare 'fixed'. */
       farePrice?: number;
+      /** 'cost': markup over the line's cost (0.2 = +20 %); 'under': share below the houses' own freight (0.1 = 10 %). */
+      margin?: number;
       /** How it keeps its drivers (default 'asNeeded'). */
       staffing?: LineStaffing;
       label?: string;
     }
-  | { type: 'updateLine'; id: number; patch: { wagons?: number; fare?: LineFare; farePrice?: number; enabled?: boolean; staffing?: LineStaffing } }
+  | { type: 'updateLine'; id: number; patch: { wagons?: number; fare?: LineFare; farePrice?: number; margin?: number; enabled?: boolean; staffing?: LineStaffing } }
   /** Close a line: its wagons (tools) and fuel go to the Treasury's stores in its depot town. */
   | { type: 'closeLine'; id: number }
   | {

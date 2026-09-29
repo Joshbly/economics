@@ -7,17 +7,17 @@
 //   terms  wagons · fare rule · drivers · the trading houses' own freight
 //   strip  wagons out · carried today · carried in all · fare today
 //   money  fares in · drivers · fuel & wear · result (lifetime; + = into the Purse)
-//   chips  fare: free / at cost / fixed · wagons −1 / +1
+//   chips  fare: free / at cost / cost +20% / undercut 10% · wagons −1 / +1
 //
 // Keyed by line id and updated in place (4×/s safe). Money moves only through
 // the sim (updateLine / closeLine via run()).
 // ============================================================================
 import { freightPerUnit } from '../../../sim/agents/traders';
-import { costPerUnit, lineResult, wagonsOut } from '../../../sim/policy/lines';
+import { costPerUnit, fareMargin, lineResult, wagonsOut } from '../../../sim/policy/lines';
 import { describeLine } from '../../../sim/policy/player';
-import type { FreightLine, LineStaffing, SimState } from '../../../sim/types';
+import type { FreightLine, LineFare, LineStaffing, SimState } from '../../../sim/types';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
-import { fmtNum, fmtPrice, plural } from '../../format';
+import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { centerMap } from '../../uiState';
 import { attachTip, icon, tipNote, tipTitle, toggle } from '../../widgets';
 import { chip, fin, flowTone, fmtM, fmtMS, fmtQ, keyedList, run, safe, signedMoney, tersely, townName, TONES } from './common';
@@ -45,10 +45,13 @@ function money(el: HTMLElement, x: number, signed = false): void {
   el.title = signed ? signedMoney(v) : fmtM(v);
 }
 
-/** The fare rule in a few words: "free", "¤0.40 a unit", "at cost ≈ ¤0.21". */
-export function fareWords(L: Pick<FreightLine, 'fare' | 'farePrice' | 'fareToday'>): string {
+/** The fare rule in a few words: "free", "¤0.40 a unit", "at cost ≈ ¤0.21", "cost +20 % ≈ ¤0.25", "10 % under theirs ≈ ¤0.33". */
+export function fareWords(L: Pick<FreightLine, 'fare' | 'farePrice' | 'fareToday' | 'margin'>): string {
   if (L.fare === 'free') return 'free';
   if (L.fare === 'fixed') return `${fmtPrice(L.farePrice)} a unit`;
+  const m = fareMargin(L);
+  if (L.fare === 'under') return `${fmtPct(m, 0)} under theirs ≈ ${fmtPrice(L.fareToday)}`;
+  if (Math.abs(m) > 1e-9) return `cost ${m > 0 ? '+' : '−'}${fmtPct(Math.abs(m), 0)} ≈ ${fmtPrice(L.fareToday)}`;
   return `at cost ≈ ${fmtPrice(L.fareToday)}`;
 }
 
@@ -135,14 +138,16 @@ function card(L: FreightLine, state: () => SimState | null, compact: boolean): C
     { class: 'icon-btn lv-ibtn', type: 'button', title: 'Close this line: its wagons (tools) and fuel go to the Treasury’s stores in its depot town', 'aria-label': 'Close line', onClick: () => run({ type: 'closeLine', id }, null) },
     icon('trash', 15),
   );
-  const fareBtn = (label: string, title: string, patch: { fare: 'free' | 'cost' | 'fixed'; farePrice?: number }) => {
+  const fareBtn = (label: string, title: string, patch: { fare: LineFare; farePrice?: number; margin?: number }) => {
     const b = chip(label, () => run({ type: 'updateLine', id, patch }, null), title);
     b.classList.add('chip');
     return b;
   };
   const fareBtns = [
     fareBtn('free', 'Carry the trading houses’ goods for nothing: the Purse pays all its running costs', { fare: 'free' }),
-    fareBtn('at cost', 'Charge what the line’s recent trips cost per unit carried', { fare: 'cost' }),
+    fareBtn('at cost', 'Charge what the line’s recent trips cost per unit carried', { fare: 'cost', margin: 0 }),
+    fareBtn('cost +20%', 'Charge what the line’s trips cost per unit carried, plus 20 % for the Purse', { fare: 'cost', margin: 0.2 }),
+    fareBtn('undercut 10%', 'Charge each leg 10 % less than the trading houses’ own wagons would cost them: they come out ahead, and the Treasury keeps the rest of what the line saves', { fare: 'under', margin: 0.1 }),
   ];
   const less = chip('−1 wagon', () => {
     const x = cur();
@@ -217,7 +222,7 @@ function paint(s: SimState, v: Card, L: FreightLine): void {
   setText(cAll.sub, plural(L.legs, 'load'));
   toggleClass(cAll.el, 'on', fin(L.carried) > 0.5);
   setText(cFare.v, fmtPrice(fin(L.fareToday)));
-  setText(cFare.sub, L.fare === 'free' ? 'free' : L.fare === 'cost' ? `cost ${fmtPrice(safe(() => costPerUnit(s, L), 0))}` : 'fixed');
+  setText(cFare.sub, L.fare === 'free' ? 'free' : L.fare === 'cost' ? `cost ${fmtPrice(safe(() => costPerUnit(s, L), 0))}` : L.fare === 'under' ? `theirs −${fmtPct(fareMargin(L), 0)}` : 'fixed');
   toggleClass(cFare.el, 'on', true);
   const r = lineResult(L);
   money(v.fares.v, L.fares);
@@ -226,7 +231,10 @@ function paint(s: SimState, v: Card, L: FreightLine): void {
   money(v.result.v, r.result, true);
   setTone(v.result.v, TONES, flowTone(r.result));
   v.fareBtns[0].classList.toggle('on', L.fare === 'free');
-  v.fareBtns[1].classList.toggle('on', L.fare === 'cost');
+  const m = fareMargin(L);
+  v.fareBtns[1].classList.toggle('on', L.fare === 'cost' && Math.abs(m) < 1e-9);
+  v.fareBtns[2].classList.toggle('on', L.fare === 'cost' && Math.abs(m - 0.2) < 1e-9);
+  v.fareBtns[3].classList.toggle('on', L.fare === 'under' && Math.abs(m - 0.1) < 1e-9);
   v.less.disabled = L.wagonsWanted <= 1;
   v.staffBtns[0].classList.toggle('on', L.staffing !== 'permanent');
   v.staffBtns[1].classList.toggle('on', L.staffing === 'permanent');

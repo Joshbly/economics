@@ -619,9 +619,18 @@ that pay ¤5 per year each, forever). Seven primitives:
      `cost` = the cost of its recent trips (drivers' days on the road, fuel, road wear;
      EMAs over LINE_COST_EMA) per unit carried, blended toward a full wagon's round
      trip per unit below LINE_COST_MIN_UNITS a day and kept within
-     LINE_COST_FLOOR_MULT … LINE_COST_CAP_MULT of it, or `free`. The gap between the
-     fares and the running cost is paid by the Purse and shown as such (the line's
-     card: fares in, drivers, fuel & wear, result). The Treasury's own cargo
+     LINE_COST_FLOOR_MULT … LINE_COST_CAP_MULT of it, × (1 + `margin`) — a markup for
+     the Purse (LINE_MARGIN_MIN … LINE_MARGIN_MAX; 0 = at cost), `under` = on each leg
+     what the house of the leaving town would pay for its own full wagon
+     (traders.freightPerUnit) × (1 − `margin`) (0 … LINE_UNDER_MAX, default 10 %): the most
+     the houses would pay, less a share — they always come out ahead, and the Treasury
+     keeps the rest of what the line saves them (lineOffer gives each leg its own fare;
+     `fareToday` is the mean) — or `free`. The gap between the fares and the running cost
+     is the line's result, into or out of the Purse (the line's card: fares in, drivers,
+     fuel & wear, result). A line earns only where it carries more cheaply than the
+     houses' own wagons — part loads shared, loads meeting a load coming back, houses short
+     of wagons or drivers; on a lane where its trips cost what theirs do, even an
+     undercut fare cannot cover drivers waiting for loads. The Treasury's own cargo
      between the two towns (carry rules, and goods carried once) rides the line first,
      without a fare (the cargo's basis counts the line's cost per unit), the rest with the trading house
      as before. Paused: no loads, no purchases; only the drivers on the road kept
