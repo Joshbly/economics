@@ -294,6 +294,7 @@ export interface Shipment {
   depart: number; // day (fractional allowed)
   arrive: number; // day (fractional allowed)
   wagons: number;
+  order: number; // Treasury supply-route order id this cargo belongs to, or -1
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +592,35 @@ export interface PlayerOrder {
   value: number; // lifetime ¤ (positive = spent)
   filledToday: number;
   created: number;
+  /**
+   * Supply route (goods buy orders only): every unit this order buys is loaded onto
+   * the Treasury's wagons and carried to `route.to`, where it is offered in that
+   * town's market. null = an ordinary order.
+   */
+  route: OrderRoute | null;
+}
+
+/**
+ * A Treasury supply route: buy in the order's town → carry → offer at the destination.
+ * Composed entirely of real steps: the purchase clears in the origin auction, freight
+ * is paid to the origin's trading house from the Purse, the goods ride real wagons,
+ * and they are sold through the destination's auction like any other ask.
+ */
+export interface OrderRoute {
+  to: TownId; // destination town
+  /** How the goods are offered on arrival: at a fixed floor, at landed cost (+margin), or for whatever they fetch. */
+  sell: 'fixed' | 'cost' | 'market';
+  sellPrice: number; // floor (base ¤/unit) when sell === 'fixed'
+  sellMargin: number; // when sell === 'cost': floor = landed cost × (1 + sellMargin)
+  inTransit: number; // units on the road now
+  waiting: number; // units arrived at `to` and not yet sold
+  landed: number; // average landed cost per unit (purchase + freight) of the waiting units
+  shippedToday: number;
+  soldToday: number;
+  shippedTotal: number; // lifetime units loaded
+  soldTotal: number; // lifetime units sold at the destination
+  freightPaid: number; // lifetime ¤ of freight
+  revenue: number; // lifetime ¤ received from sales at the destination
 }
 
 export interface Policy {
@@ -617,10 +647,20 @@ export type PlayerAction =
       days?: number; // undefined/0 = standing until cancelled
       once?: boolean;
       label?: string;
+      /** Goods BUY orders only: carry everything bought to another town and offer it there. */
+      route?: { to: TownId; sell: OrderRoute['sell']; sellPrice?: number; sellMargin?: number };
     }
   | { type: 'updateOrder'; id: number; patch: Partial<Pick<PlayerOrder, 'price' | 'qty' | 'enabled' | 'total' | 'until'>> }
   | { type: 'cancelOrder'; id: number }
-  | { type: 'moveGoods'; from: TownId; to: TownId; good: GoodId; qty: number }
+  | {
+      type: 'moveGoods';
+      from: TownId;
+      to: TownId;
+      good: GoodId;
+      qty: number;
+      /** Optionally offer the goods at the destination once they arrive (a sell order capped at qty). */
+      sell?: { mode: OrderRoute['sell']; price?: number; margin?: number };
+    }
   | { type: 'addLevy'; levy: Omit<Levy, 'id' | 'created' | 'today' | 'month' | 'lastMonth' | 'total'> }
   | { type: 'updateLevy'; id: number; patch: Partial<Levy> }
   | { type: 'removeLevy'; id: number }
@@ -633,7 +673,17 @@ export type PlayerAction =
   | { type: 'build'; kind: 'firm'; sector: Sector; town: TownId; x?: number; y?: number }
   | { type: 'build'; kind: 'expand'; firm: number }
   | { type: 'cancelProject'; id: number }
-  | { type: 'transfer'; group: TransferGroup; town: number; amount: number; dir: 1 | -1 }
+  | {
+      type: 'transfer';
+      group: TransferGroup;
+      town: number;
+      amount: number; // ¤ per recipient; or, with `good`, units per recipient
+      dir: 1 | -1;
+      /** In kind: hand out (dir 1) units of a good the Treasury holds in `town` (town required). */
+      good?: GoodId;
+      /** With group 'firms': only workshops of this trade. */
+      sector?: Sector;
+    }
   | { type: 'setAutoMint'; value: boolean }
   | { type: 'setEvents'; value: boolean };
 

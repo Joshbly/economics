@@ -216,7 +216,7 @@ export function newShipment(
   arrive: number,
   wagons: number,
 ): Shipment {
-  const sh: Shipment = { id: s.ids.shipment++, owner, from, to, good, qty, basis, depart, arrive, wagons };
+  const sh: Shipment = { id: s.ids.shipment++, owner, from, to, good, qty, basis, depart, arrive, wagons, order: -1 };
   s.shipments.push(sh);
   return sh;
 }

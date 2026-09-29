@@ -988,6 +988,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
     value: 0,
     filledToday: 0,
     created: s.day,
+    route: null, // TODO(routes): build from a.route
   };
   s.policy.orders.push(o);
   let note = '';
