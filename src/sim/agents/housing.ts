@@ -52,16 +52,13 @@ interface HousingCache {
   version: number;
   count: number;
   byTown: number[][];
-  /** Evictions per town this month (for news), keyed by month index. */
-  evMonth: number;
-  evictions: number[];
 }
 
 function cache(s: SimState): HousingCache {
   const r = rt(s);
   let c = r.bag.housing as HousingCache | undefined;
   if (!c) {
-    c = { version: -1, count: -1, byTown: [], evMonth: -1, evictions: [] };
+    c = { version: -1, count: -1, byTown: [] };
     r.bag.housing = c;
   }
   if (c.version !== r.buildingVersion || c.count !== s.buildings.length || c.byTown.length !== s.towns.length) {
@@ -241,17 +238,13 @@ function housingDay(s: SimState): void {
   const c = cache(s);
   const people = s.people;
   const nT = s.towns.length;
-  const month = Math.floor(s.day / 30);
-  if (c.evMonth !== month) {
+  if (CAL.dayOfMonth(s.day) === 1) {
     // Report last month's eviction waves, then reset.
-    if (c.evMonth >= 0) {
-      for (let t = 0; t < nT; t++) {
-        const n = c.evictions[t] || 0;
-        if (n >= 5) news(s, `Landlords in ${s.towns[t].name} turned out ${n} households for unpaid rent last month.`, 'bad', t);
-      }
+    for (let t = 0; t < nT; t++) {
+      const n = s.towns[t].evictions || 0;
+      if (n >= 5) news(s, `Landlords in ${s.towns[t].name} turned out ${n} households for unpaid rent last month.`, 'bad', t);
+      s.towns[t].evictions = 0;
     }
-    c.evMonth = month;
-    c.evictions = new Array(nT).fill(0);
   }
 
   // ---- legal rent bounds (apply immediately) + resident list hygiene -----------
@@ -309,7 +302,8 @@ function housingDay(s: SimState): void {
       if (p.arrears >= EVICT_ARREARS_DAYS) {
         leaveHome(s, p);
         bump(s, 'evictions');
-        c.evictions[b.town] = (c.evictions[b.town] || 0) + 1;
+        const tw = s.towns[b.town];
+        if (tw) tw.evictions = (tw.evictions || 0) + 1;
       }
     }
   }

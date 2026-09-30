@@ -91,6 +91,7 @@ export interface Town {
   strikeDays: number; // > 0 while a strike is on (production reduced)
   unrestDays: number; // consecutive days contentment < threshold
   droughtDays: number; // > 0 while a drought hits farms here
+  evictions?: number; // households turned out for unpaid rent so far this month (for the month's news)
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,9 @@ export interface Firm {
   sector: Sector;
   town: TownId; // trades in this town's market
   building: number; // building id (-1 for stateworks)
-  owner: Ref; // person ref, or STATE
+  owner: Ref; // person ref, or STATE — the controlling owner (largest share), who runs it
+  /** Other part-owners (people or firms) and their shares of the firm; the owner holds the rest (agents/ownership.ts). Absent = the owner holds it all. */
+  partners?: { ref: Ref; share: number }[];
   workers: number[]; // person ids
   capacity: number; // max workers
   target: number; // desired workforce
@@ -223,6 +226,8 @@ export interface Firm {
   salesMonths: number[]; // mean units sold a day in each calendar month over the last year, length 12 (-1 = no record): the learnt season
   monthSold: number; // units sold so far this month
   profitLong: number; // slow EMA (PROFIT_LONG_EMA) of daily profit: a seasonal trade judges losses over the year
+  /** Profit summed over its life (¤): what the investors learn from (agents/experience.ts). Absent in old saves. */
+  profitLife?: number;
   // specialisations
   trade: TraderState | null;
   build: BuilderState | null;
@@ -282,6 +287,8 @@ export interface Project {
   label: string;
   prepaid: number; // ¤ the owner has advanced to the builder and not yet been billed (a liability of the builder) // added by firms engineer
   loanWanted: number; // ¤ of financing requested from the bank and not yet granted; > 0 = waiting, no work starts // added by firms engineer
+  /** Co-investors of a new venture and the shares of the firm they will hold (the owner holds the rest); what each advanced. */
+  partners?: { ref: Ref; share: number; paid: number }[];
   /** Treasury projects: labour-days its Treasury workers put in today, and about how many of them that was. */
   crewToday?: number;
   crewHeads?: number;
@@ -1014,6 +1021,8 @@ export interface Ids {
 export interface SimState {
   version: number;
   seed: number;
+  /** The realm's investment experience (agents/experience.ts). Absent until the first venture is judged. */
+  invest?: InvestState;
   rng: number[]; // RNG state words
   day: number; // days since founding (warm-up included)
   startDay: number; // day the player took control (after warm-up)
@@ -1036,4 +1045,14 @@ export interface SimState {
   news: NewsItem[]; // newest last, capped
   ids: Ids;
   settings: Settings;
+}
+
+// ---------------------------------------------------------------------------
+// Investment experience (agents/experience.ts)
+// ---------------------------------------------------------------------------
+export interface InvestState {
+  /** A small neural network: features → how far off the investors' formula is (annual return). */
+  net: { w1: number[]; b1: number[]; w2: number[]; b2: number; trained: number; err: number };
+  /** Ventures waiting to be judged: what was known, the return promised, the capital put in. */
+  pending: { project: number; firm: number; day: number; x: number[]; promised: number; capital: number }[];
 }

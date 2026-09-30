@@ -236,6 +236,10 @@ export function placeOf(s: SimState, b: Building): Place {
   if (people) {
     const tot = (people as number[]).reduce((a, x) => a + x, 0);
     if (tot > 0) people = (people as number[]).map((x) => x / tot);
+  } else if (b.town >= 0 && b.town < nT && b.status !== 'construction') {
+    // Nobody works (or lives) there just now: no evidence it has moved — its people count for the town it is in.
+    people = new Array(nT).fill(0);
+    (people as number[])[b.town] = 1;
   }
   const owner = b.kind === 'firm' && b.firm >= 0 ? (s.firms[b.firm]?.owner ?? b.owner) : b.owner;
   return { x: b.x, y: b.y, w: b.w, h: b.h, door: doorTile(s, b), people, ownerTown: ownerTown(s, owner), now: b.town };
@@ -371,7 +375,7 @@ export function settleTowns(s: SimState): number {
   for (const t of s.towns) updateTownRadius(s, t.id);
   let n = 0;
   for (const b of s.buildings) {
-    if (!b || b.status === 'ruin' || (b.kind !== 'firm' && b.kind !== 'house')) continue;
+    if (!b || b.status === 'ruin' || b.status === 'construction' || (b.kind !== 'firm' && b.kind !== 'house')) continue;
     const to = belongingOf(s, b);
     if (to >= 0 && to !== b.town) {
       moveBuilding(s, b, to);
@@ -396,7 +400,8 @@ export function townsStep(s: SimState): void {
   for (const t of s.towns) updateTownRadius(s, t.id);
   const moved: { b: Building; from: TownId; to: TownId }[] = [];
   for (const b of s.buildings) {
-    if (!b || b.status === 'ruin' || (b.kind !== 'firm' && b.kind !== 'house')) continue;
+    // (a building going up stays with the town whose builders are putting it up)
+    if (!b || b.status === 'ruin' || b.status === 'construction' || (b.kind !== 'firm' && b.kind !== 'house')) continue;
     const to = belongingOf(s, b);
     if (to >= 0 && to !== b.town) {
       moved.push({ b, from: b.town, to });

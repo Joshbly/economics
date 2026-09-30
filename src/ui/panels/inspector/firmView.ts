@@ -29,6 +29,8 @@ import {
 } from './common';
 import { hero, linkList, statStrip, statTile, type View } from './kit';
 import { belongingOf, belongingReason } from '../../../sim/world/belonging';
+import { holders } from '../../../sim/agents/ownership';
+import { refName } from '../../../sim/ledger';
 import type { Building } from '../../../sim/types';
 
 /** "It belongs to X: it is nearest X; …" — and, if the rules now point elsewhere, when it moves. */
@@ -119,6 +121,7 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
   const mo = kvBlock();
   const rCash = mo.row('Cash');
   const rDebt = mo.row('Owes the bank');
+  const rOwners = mo.row('Owners', 'Everyone who holds a share of it: profits and anything paid for it go to each by share; the largest holder runs it');
   const rRev = mo.row('Today: received');
   const rSpent = mo.row('Today: spent', 'In markets (materials, tools), including levies it paid there');
   const rWages = mo.row('Today: wages', 'Including any levy the employer pays on wages');
@@ -276,6 +279,9 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
     // money
     rCash.text(fmtMoney(f.cash), f.cash < 0 ? 'bad' : undefined);
     rDebt.text(debt > 0.005 ? fmtMoney(debt) : 'nothing');
+    const hs = holders(f);
+    rOwners.show(hs.length > 1);
+    if (hs.length > 1) rOwners.text(hs.map((x) => `${refName(s, x.ref)} ${fmtPct(x.share, 0)}`).join(' · '));
     rRev.text(fmtMoney(f.revenue));
     rSpent.text(fmtMoney(f.spent));
     rWages.text(fmtMoney(f.wageBill));

@@ -999,3 +999,60 @@ export const ROAD_MIN_LANE = 3;
 export const ROAD_HURDLE = 0.08;
 /** A new track must cut the trip by at least this share to be worth laying beside the old road. */
 export const ROAD_SHORTCUT_GAIN = 0.1;
+
+// ---- syndicates: ventures with several owners (agents/entry.ts pickSyndicate) ----
+/** The lead of a syndicate puts in at least this share of the equity (and runs the firm). */
+export const SYNDICATE_LEAD_SHARE = 0.2;
+/** Co-investors put in at most this share of their spare cash. */
+export const SYNDICATE_APPETITE = 0.5;
+/** Smallest stake a co-investor takes (¤). */
+export const SYNDICATE_MIN_STAKE = 150;
+/** At most this many co-investors in one venture. */
+export const SYNDICATE_MAX = 8;
+/** A new venture that must lure hands from other employers (none jobless in its town) pays them this much more than the going wage. */
+export const WAGE_POACH_PREMIUM = 0.35;
+/** A venture goes ahead only if its town has free hands (jobless less open posts and the ventures being built) for at least this share of what it needs. */
+export const ENTRY_MIN_HANDS_SHARE = 0.5;
+/** A firm that has been losing money plans to grow again once its price is this many times the marginal cost of serving its sales (a glut turned shortage). */
+export const LOSS_RECOVER_GAP = 1.5;
+/**
+ * How strongly buyers answer a fall in price, by good (grain, fish, wood, coal, oil, ore, iron,
+ * tools, bread, ale, furniture): a would-be entrant expects its own output (beyond what buyers go
+ * without now) to lower the price by output / (sales × elasticity) — necessities little, luxuries more.
+ */
+export const ENTRY_DEMAND_ELASTICITY: readonly number[] = [0.8, 0.9, 0.9, 0.6, 0.7, 0.9, 0.9, 0.9, 0.6, 1.2, 1.3];
+/** The expected price never falls below this share of today's in an entrant's reckoning. */
+export const ENTRY_PRICE_FLOOR_SHARE = 0.3;
+
+// ---- the realm's investment experience (agents/experience.ts) ----
+/** Hidden units of the experience network. */
+export const EXP_HIDDEN = 8;
+/** Step size of its learning (one step per venture judged). */
+export const EXP_LEARN_RATE = 0.02;
+/** Its correction is kept within ± this (annual return). */
+export const EXP_MAX_ADJ = 0.3;
+/** A venture is judged once its workshop has been open this long (days), or when it closes. */
+export const EXP_MIN_AGE = 360;
+/** How far investors trust experience over the formula (0 … 1). */
+export const EXP_TRUST = 0.7;
+
+// ---- the market for companies (agents/invest.ts) ----
+/** Day of the month it meets. */
+export const MARKET_DAY = 22;
+/** Firms looked at each month, and would-be buyers asked about each. */
+export const COMPANY_OFFERS = 6;
+export const COMPANY_BIDDERS = 5;
+/** A buyer must value a firm this much above the holders' reservation to buy it. */
+export const COMPANY_DEAL_GAIN = 0.1;
+/** Holders of a firm in trouble (distress, or losing money for two months) take this much less. */
+export const COMPANY_DISTRESS_DISCOUNT = 0.3;
+/** What a rival of the same trade and town adds to its buyer a year, as a share of its sales; and a supplier or customer, of the trade between them. */
+export const INTEGRATION_HORIZONTAL = 0.03;
+export const INTEGRATION_VERTICAL = 0.02;
+/** An empty workshop is bought by whoever reopens it for this share of its book value (less the longer it has stood empty). */
+export const VACANT_PRICE_SHARE = 0.4;
+/** Firms of one owner making the same good in a town add this × (the group's market share − their own) / elasticity to their price, at most INTEGRATION_MARKUP_MAX. */
+export const INTEGRATION_POWER = 0.5;
+export const INTEGRATION_MARKUP_MAX = 0.3;
+/** A group's supplier passes a sister firm of its town what it needs for this many days of making, each morning. */
+export const SISTER_DAYS = 3;

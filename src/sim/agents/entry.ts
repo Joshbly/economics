@@ -61,6 +61,16 @@ import {
   NEW_FIRM_WC_DAYS,
   STARTUP_LOAN_TERM,
   BASE_RENT_SHARE,
+  VACANT_PRICE_SHARE,
+  EXP_TRUST,
+  ENTRY_DEMAND_ELASTICITY,
+  ENTRY_PRICE_FLOOR_SHARE,
+  ENTRY_MIN_HANDS_SHARE,
+  WAGE_POACH_PREMIUM,
+  SYNDICATE_APPETITE,
+  SYNDICATE_LEAD_SHARE,
+  SYNDICATE_MAX,
+  SYNDICATE_MIN_STAKE,
   ROAD_HURDLE,
   ROAD_MIN_LANE,
   ROAD_SHORTCUT_GAIN,
@@ -70,12 +80,12 @@ import { G, GOODS, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId } from '../ledger';
 import { expectedGrossFor, expectedNetFor, marketOf } from '../market/markets';
 import { employerWageCost } from '../policy/levies';
-import { chance, rand } from '../rng';
+import { decisionRand } from '../rng';
 import { news } from '../stats/events';
 import { rt } from '../runtime';
 import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownId } from '../types';
 import { STATE } from '../types';
-import { fin } from '../util';
+import { clamp, fin } from '../util';
 import { quoted, quoteRate, requestLoan } from './bank';
 import { accessCost, builderFor, estimateCost, needCost, roadNeed, startProject, cancelProject, type ProjectSpec } from './construction';
 import { freightPerUnit } from './traders';
@@ -83,6 +93,8 @@ import { daysAlong, freightAfter } from '../world/roadEffect';
 import { roadPlan, routeBetweenTowns, trackPlan } from '../world/paths';
 import { townCentreTile } from '../world/layout';
 import { ventureSite, type VentureSite } from './sites';
+import { temperament } from './temperament';
+import { experienceAdjust, learnFromVentures, noteVenture, type VentureFacts } from './experience';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
 import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
 
@@ -101,7 +113,10 @@ export function investableCash(s: SimState, ref: Ref): number {
   if (isFirm(ref)) {
     const f = s.firms[refId(ref)];
     if (!f || !f.alive || f.status !== 'active') return 0;
-    return Math.max(0, f.cash - CASH_TARGET_DAYS * firmDailyCost(s, f));
+    // (a builders' yard holds its customers' advances: money it owes them, not its own)
+    let owed = 0;
+    if (f.build) for (const p of s.projects) if (p.builder === f.id && p.status !== 'done' && p.status !== 'cancelled') owed += Math.max(0, fin(p.prepaid));
+    return Math.max(0, f.cash - owed - CASH_TARGET_DAYS * firmDailyCost(s, f));
   }
   return 0;
 }
@@ -160,7 +175,7 @@ export function settleFinancing(s: SimState): void {
         continue;
       }
       // Advance everything the owner can spare, at least the loan itself, up to the project's needs.
-      const total = Math.max(worksCost(s, p), fin(p.loanWanted));
+      const total = Math.max(worksCost(s, p) - fin(p.prepaid), fin(p.loanWanted));
       const avail = p.owner === STATE ? cashOf(s, STATE) : Math.max(investableCash(s, p.owner), Math.min(fin(p.loanWanted), cashOf(s, p.owner)));
       const amt = Math.min(total, avail);
       const paid = amt > 0 ? pay(s, p.owner, firmRef(b.id), amt, 'asset') : 0;
@@ -172,7 +187,7 @@ export function settleFinancing(s: SimState): void {
     if ((age >= 1 && !pending.has(p.id)) || age > FINANCING_WAIT_DAYS) {
       // Refused: an owner who can pay for the whole works goes ahead on their own means.
       const b = s.firms[p.builder];
-      const need = worksCost(s, p);
+      const need = worksCost(s, p) - fin(p.prepaid);
       if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner) >= need) {
         p.prepaid = fin(p.prepaid) + pay(s, p.owner, firmRef(b.id), need, 'asset');
         p.loanWanted = 0;
@@ -192,6 +207,10 @@ export function settleFinancing(s: SimState): void {
 
 export interface SectorSignal {
   roc: number; // expected annual return on replacement capital
+  /** What investors learn from (agents/experience.ts): makers now, the price after its own output, a trade new to the town. */
+  makers: number;
+  impact: number;
+  fresh: boolean;
   capFirm: Firm | null; // profitable firm at capacity (expansion candidate)
   vacant: Building | null; // vacant building of the trade (reopening candidate)
 }
@@ -219,16 +238,63 @@ export function typicalAnnualProfit(s: SimState, town: TownId, sector: Sector): 
  * not even cover one hand's wage (a town that buys two sets of tools a day has no room for a
  * second toolworks, however well the first one does).
  */
-function entrantAnnualProfit(s: SimState, town: TownId, sector: Sector, q: number): number {
+function entrantAnnualProfit(s: SimState, town: TownId, sector: Sector, q: number, priceFactor = 1): number {
   const d = SECTORS[sector];
   if (!d || !d.producer || !(q > 0)) return 0;
   const prices: number[] = [];
   for (let g = 0; g < 11; g++) prices.push(fin(expectedGrossFor(s, town, g, sector), 1));
-  const pNet = fin(expectedNetFor(s, town, d.out, sector), 0);
+  const pNet = fin(expectedNetFor(s, town, d.out, sector), 0) * priceFactor;
   const n = Math.max(1, Math.ceil(laborForOutput(sector, q, 1, 1) / 0.95 - 0.05));
   const mc = materialCostPerUnit(sector, prices);
   const tc = toolCostPerUnit(sector, prices[G.tools], q / n, fin(s.bank.baseRate, 0.045));
   return (q * (pNet - mc - tc) - n * employerWageCost(s, town, sector, defaultWage(s, town))) * DAYS_PER_YEAR;
+}
+
+/**
+ * How far the price of `good` would fall with one more maker in a market where `makers` sell `sold`
+ * a day (counting the ventures already being built) while `unmet` a day of buyers go without. The
+ * incumbents cut back as the price falls, so the trade's output grows less than by the newcomer's
+ * own: from n to n + 1 like rivals it grows by 1/(n(n + 2)) (symmetric Cournot competition: +33 %
+ * for a second maker, +12.5 % for a third, +3 % for a sixth). Output beyond what buyers now go
+ * without lowers the price in proportion to the demand's elasticity (ENTRY_DEMAND_ELASTICITY).
+ * A factor ≤ 1.
+ */
+export function priceAfterEntry(good: number, sold: number, unmet: number, makers: number): number {
+  const n = Math.max(1, makers);
+  const base = Math.max(1e-6, Math.max(0, sold) + Math.max(0, unmet));
+  const over = Math.max(0, base / (n * (n + 2)) - Math.max(0, unmet));
+  const eps = ENTRY_DEMAND_ELASTICITY[good] ?? 1;
+  return clamp(1 - over / (base * eps), ENTRY_PRICE_FLOOR_SHARE, 1);
+}
+
+/**
+ * What a new workshop of the trade would pay a day beyond the going wage to staff itself: the
+ * hands the town's jobless (net of its open posts, and of the ventures already being built)
+ * cannot supply cost WAGE_POACH_PREMIUM more each, lured from other employers.
+ */
+export function poachingCost(s: SimState, town: TownId, sector: Sector): number {
+  const d = SECTORS[sector];
+  if (!d || !s.towns[town]) return 0;
+  const short = Math.max(0, handsFor(sector) - freeHands(s, town));
+  return short * employerWageCost(s, town, sector, defaultWage(s, town)) * WAGE_POACH_PREMIUM;
+}
+
+/** Hands a typical new workshop (or a new level) of the trade takes on. */
+function handsFor(sector: Sector): number {
+  const d = SECTORS[sector];
+  return d ? Math.max(1, Math.min(d.capacityPerLevel, d.typicalSize)) : 1;
+}
+
+/** A town's jobless, less the posts already open there and the hands the ventures being built will want. */
+export function freeHands(s: SimState, town: TownId): number {
+  const t = s.towns[town];
+  if (!t) return 0;
+  let coming = 0;
+  for (const p of s.projects) {
+    if (p.town !== town || p.status === 'done' || p.status === 'cancelled' || (p.kind !== 'firm' && p.kind !== 'reopen' && p.kind !== 'expand')) continue;
+    if (p.sector) coming += handsFor(p.sector as Sector);
+  }
+  return Math.max(0, fin(t.unemployed) - fin(t.vacancies) - coming);
 }
 
 export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {
@@ -284,12 +350,24 @@ export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorS
     natShare = (natSold + natUnmet) / (natMakers + 1 + natPipeline);
   }
   let annual: number;
+  let impact = 1;
   if (n > 0) {
-    annual = (sum / (n + 1 + pipeline)) * DAYS_PER_YEAR;
-    // … and it must pay its way at its own share of the trade's sales (see entrantAnnualProfit).
     // (The trade's sales include what buyers went without: unmet demand is what a newcomer could serve.)
     const unmet = Math.max(0, fin(m.shortage));
-    annual = Math.min(annual, entrantAnnualProfit(s, town, sector, Math.min(natShare, (sold + unmet) / (makers + 1 + pipeline))));
+    const q = Math.min(natShare, (sold + unmet) / (makers + 1 + pipeline));
+    // Its own output, and that of the ventures being built, comes on top of what is sold now: the
+    // price falls for everyone (priceAfterEntry) — on the realm's market for a carted good.
+    let natUnmet = unmet;
+    if (tradable) {
+      natUnmet = 0;
+      for (let t = 0; t < s.towns.length; t++) natUnmet += Math.max(0, fin(marketOf(s, t, d.out).shortage));
+    }
+    const factor = tradable && natMakers > 0 ? priceAfterEntry(d.out, natSold, natUnmet, natMakers + natPipeline) : priceAfterEntry(d.out, sold, unmet, makers + pipeline);
+    impact = factor;
+    const pNow = Math.max(0, fin(expectedNetFor(s, town, d.out, sector), 0));
+    annual = ((sum - sold * pNow * (1 - factor)) / (n + 1 + pipeline)) * DAYS_PER_YEAR;
+    // … and it must pay its way at its own share of the trade's sales (see entrantAnnualProfit).
+    annual = Math.min(annual, entrantAnnualProfit(s, town, sector, q, factor));
   } else if (any) return null; // only young firms: wait for evidence
   else {
     // A trade new to (or gone from) the town: there must be buyers here already — trade,
@@ -299,6 +377,9 @@ export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorS
     annual = (typicalAnnualProfit(s, town, sector) * ENTRY_NEW_SECTOR_DISCOUNT) / (1 + pipeline);
     if (natShare < Infinity) annual = Math.min(annual, entrantAnnualProfit(s, town, sector, natShare));
   }
+  // Hands: a venture staffs itself from the town's jobless (net of the posts already open); the
+  // hands it cannot find there it must lure from other employers, at a premium on the wage.
+  annual -= poachingCost(s, town, sector) * DAYS_PER_YEAR;
   let roc = annual / capital;
   if (fin(m.volEma) > 1e-6) roc += ENTRY_SHORTAGE_BONUS * Math.min(1, fin(m.shortage) / m.volEma);
   let vacant: Building | null = null;
@@ -308,7 +389,7 @@ export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorS
       break;
     }
   }
-  return { roc: fin(roc), capFirm, vacant };
+  return { roc: fin(roc), capFirm, vacant, makers, impact, fresh: n === 0 && !any };
 }
 
 /** Rent yield of a new house if the town is short of homes, else null. */
@@ -340,7 +421,7 @@ function houseSignal(s: SimState, town: TownId): number | null {
 // ---------------------------------------------------------------------------
 
 /** A person with at least `minFree` to invest and no project already under way, weighted by wealth (same town counts double). */
-function pickEntrepreneur(s: SimState, town: TownId, minFree: number): Ref | null {
+function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: number): Ref | null {
   // One venture at a time: whoever still has a project under way (or awaiting its loan)
   // keeps their means for it — it may cost more than planned.
   const busy = new Set<number>();
@@ -358,7 +439,7 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number): Ref | nul
     total += w;
   }
   if (!cands.length || !(total > 0)) return null;
-  let r = rand(s) * total;
+  let r = decisionRand(s.seed, s.day, town, key) * total;
   for (let i = 0; i < cands.length; i++) {
     r -= weights[i];
     if (r <= 0) return cands[i];
@@ -371,26 +452,29 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number): Ref | nul
  * a loan request sized so the bank's quote is positive; the expected return must
  * beat the owner's actual borrowing rate + hurdle. Returns true if started.
  */
-function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurdle: number): boolean {
+function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurdle: number, syn: readonly Contribution[] = []): boolean {
   const owner = spec.owner;
   const free = investableCash(s, owner);
   if (!(total > 0)) return false;
+  // co-investors' stakes (a syndicate, pickSyndicate): paid into the works when they start
+  let pooled = 0;
+  for (const c of syn) pooled += Math.max(0, Math.min(c.amount, investableCash(s, c.ref)));
   // Pecking order: an investor finances the bank's share of the works with a loan while the loan
   // is cheap enough for the venture (return ≥ this borrower's rate + hurdle) and keeps their own
   // cash for other ventures; when credit is refused or too dear, one who can pay for the whole
   // works does so. So new capital creates credit while money is cheap, and much less when dear.
   let equity = ENTRY_OWNER_EQUITY * total;
-  if (free < equity) return false;
+  if (free + pooled < equity) return false;
   let loan = total - equity;
-  let q = quoteRate(s, owner, loan);
-  while (!quoted(q) && equity < free - 1e-6) {
-    equity = Math.min(free, equity + 0.1 * total);
+  let q = quoteRate(s, owner, loan, pooled);
+  while (!quoted(q) && equity < free + pooled - 1e-6) {
+    equity = Math.min(free + pooled, equity + 0.1 * total);
     loan = total - equity;
-    q = loan > 1 ? quoteRate(s, owner, loan) : 0;
+    q = loan > 1 ? quoteRate(s, owner, loan, pooled) : 0;
   }
   const debtOk = quoted(q) && (loan <= 1 || roc >= q + hurdle);
   if (!debtOk) {
-    if (free < total) return false; // this borrower's money is too dear (or refused)
+    if (free + pooled < total) return false; // this borrower's money is too dear (or refused)
     loan = 0;
   }
   if (loan <= 1) loan = 0;
@@ -399,15 +483,87 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   const { purpose, term } = financing(spec.kind, owner);
   // the access track to the road is part of the works: the bank's share grows with it
   const track = accessCost(s, r);
+  let inE = 0;
+  if (syn.length) {
+    const got: { ref: Ref; paid: number }[] = [];
+    for (const c of syn) {
+      const paid = pay(s, c.ref, firmRef(r.builder), Math.max(0, Math.min(c.amount, investableCash(s, c.ref))), 'asset');
+      if (paid > 0.01) got.push({ ref: c.ref, paid });
+      inE += paid;
+    }
+    r.prepaid = fin(r.prepaid) + inE;
+    // each holds the share of the firm its stake bought: its part of the equity put in
+    const eq = Math.max(loan > 0 ? equity : total + track, inE + 1e-9);
+    if (got.length) r.partners = got.map((g) => ({ ref: g.ref, share: Math.min(0.95, g.paid / eq), paid: g.paid }));
+  }
   if (loan > 0) {
     loan += track * (loan / total);
     r.loanWanted = loan;
     requestLoan(s, { borrower: owner, amount: loan, term, purpose, project: r.id });
   } else {
-    const paid = pay(s, owner, firmRef(r.builder), Math.min(total + track, free), 'asset');
+    const paid = pay(s, owner, firmRef(r.builder), Math.max(0, Math.min(total + track - inE, free)), 'asset');
     r.prepaid = fin(r.prepaid) + paid;
   }
   return true;
+}
+
+/** A co-investor's stake in a venture: who, and how much it puts in. */
+interface Contribution {
+  ref: Ref;
+  amount: number;
+}
+
+/**
+ * Who puts up the equity of a venture: one investor who can (pickEntrepreneur), or else a
+ * syndicate — a lead with at least SYNDICATE_LEAD_SHARE of it, who will run the firm, and
+ * co-investors (people and profitable firms with money to spare, those of the same town more
+ * likely) each putting in up to SYNDICATE_APPETITE of their spare cash, at most SYNDICATE_MAX of
+ * them, until the equity is covered. Each gets the share of the firm its stake buys. Null if the
+ * realm's savers cannot cover it.
+ */
+function pickSyndicate(s: SimState, town: TownId, equity: number, key: number): { lead: Ref; partners: Contribution[] } | null {
+  const alone = pickEntrepreneur(s, town, equity, key * 16 + 1);
+  if (alone !== null) return { lead: alone, partners: [] };
+  const lead = pickEntrepreneur(s, town, SYNDICATE_LEAD_SHARE * equity, key * 16 + 2);
+  if (lead === null) return null;
+  let need = equity - Math.min(equity, investableCash(s, lead));
+  const cands: Ref[] = [];
+  const weights: number[] = [];
+  for (const p of s.people) {
+    if (!p || !p.alive || p.id === lead) continue;
+    const free = investableCash(s, p.id) * SYNDICATE_APPETITE * 2 * temperament(s, p.id).nerve;
+    if (!(free >= SYNDICATE_MIN_STAKE)) continue;
+    cands.push(p.id);
+    weights.push(free * (p.town === town ? 2 : 1));
+  }
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.status !== 'active' || f.owner === STATE || !(fin(f.profit) > 0) || f.sector === 'stateworks') continue;
+    const ref = firmRef(f.id);
+    const free = investableCash(s, ref) * SYNDICATE_APPETITE * 2 * temperament(s, ref).nerve;
+    if (!(free >= SYNDICATE_MIN_STAKE)) continue;
+    cands.push(ref);
+    weights.push(free * (f.town === town ? 2 : 1));
+  }
+  const partners: Contribution[] = [];
+  for (let draw = 0; need > 1 && partners.length < SYNDICATE_MAX && cands.length; draw++) {
+    let tot = 0;
+    for (const w of weights) tot += w;
+    if (!(tot > 0)) break;
+    let x = decisionRand(s.seed, s.day, town, key * 16 + 3, draw) * tot;
+    let k = 0;
+    for (; k < weights.length - 1; k++) {
+      x -= weights[k];
+      if (x <= 0) break;
+    }
+    const ref = cands[k];
+    cands.splice(k, 1);
+    weights.splice(k, 1);
+    const take = Math.min(need, investableCash(s, ref) * SYNDICATE_APPETITE * 2 * temperament(s, ref).nerve);
+    if (!(take > 1)) continue;
+    partners.push({ ref, amount: take });
+    need -= take;
+  }
+  return need > 1 ? null : { lead, partners };
 }
 
 interface Candidate {
@@ -418,24 +574,76 @@ interface Candidate {
   sig: SectorSignal | null;
 }
 
+/** What an empty workshop fetches from whoever reopens it: VACANT_PRICE_SHARE of its book value, falling to a third of that after two years empty. */
+export function vacantPrice(s: SimState, b: Building): number {
+  const age = Math.max(0, fin(b.vacantDays));
+  return Math.max(0, fin(b.cost)) * VACANT_PRICE_SHARE * Math.max(1 / 3, 1 - age / 1080);
+}
+
+/** What investors know of a venture when they decide it (for agents/experience.ts). */
+function factsFor(s: SimState, town: TownId, sector: Sector, sig: SectorSignal, site = 1): VentureFacts {
+  const d = SECTORS[sector];
+  const prices: number[] = [];
+  for (let g = 0; g < 11; g++) prices.push(fin(expectedGrossFor(s, town, g, sector), 1));
+  const pNet = fin(expectedNetFor(s, town, d.out, sector), 0);
+  const w = employerWageCost(s, town, sector, defaultWage(s, town));
+  const unit = materialCostPerUnit(sector, prices) + toolCostPerUnit(sector, prices[G.tools], d.prodPerWorker, fin(s.bank.baseRate, 0.045)) + w / Math.max(1e-6, d.prodPerWorker);
+  const m = marketOf(s, town, d.out);
+  return {
+    sector,
+    town,
+    margin: Math.max(0, pNet / Math.max(1e-6, unit) - 1),
+    shortage: fin(m.volEma) > 1e-6 ? Math.min(1, fin(m.shortage) / m.volEma) : fin(m.shortage) > 0 ? 1 : 0,
+    makers: sig.makers,
+    rate: screenRate(s),
+    site,
+    impact: sig.impact,
+    fresh: sig.fresh,
+  };
+}
+
+/** A workshop venture has launched: remember what was known and promised, to learn from (experience.ts). */
+function remember(s: SimState, facts: VentureFacts, roc: number, capital: number): void {
+  const p = s.projects[s.projects.length - 1];
+  if (p && (p.kind === 'firm' || p.kind === 'reopen') && p.created === s.day) noteVenture(s, p.id, facts, roc, capital);
+}
+
+/** Which venture a draw is for (decisionRand keys): the trade's place in the list, houses 99. */
+function ventureKey(sector: Sector | null): number {
+  return sector ? PRODUCER_SECTORS.indexOf(sector) + 1 : 99;
+}
+
 function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
   const tn = s.towns[town]?.name ?? '';
   if (!c.sector) {
     const total = estimateCost(s, 'house', town);
-    const owner = pickEntrepreneur(s, town, ENTRY_OWNER_EQUITY * total);
-    if (owner === null) return false;
-    return launch(s, { kind: 'house', town, owner, label: `Houses in ${tn}` }, total, c.roc, HOUSE_HURDLE);
+    const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * total, ventureKey(c.sector));
+    if (syn === null) return miss(s, 'noowner');
+    return launch(s, { kind: 'house', town, owner: syn.lead, label: `Houses in ${tn}` }, total, c.roc, HOUSE_HURDLE) || miss(s, 'finance');
   }
   const sector = c.sector;
   const d = SECTORS[sector];
   const sig = c.sig!;
+  // Nobody sinks money into a workshop they cannot staff: fewer free hands in the town than half
+  // what it needs (the rest would have to be lured from other employers at a premium).
+  if (freeHands(s, town) < ENTRY_MIN_HANDS_SHARE * handsFor(sector)) return miss(s, 'hands');
   if (sig.vacant) {
-    const total = projectTotal(s, 'reopen', town, sector);
-    const owner = pickEntrepreneur(s, town, ENTRY_OWNER_EQUITY * total);
-    if (owner === null) return false;
+    const works = projectTotal(s, 'reopen', town, sector);
+    // the empty building is bought from whoever holds it (vacantPrice), paid from the equity at once
+    const price = Math.min(vacantPrice(s, sig.vacant), 0.8 * ENTRY_OWNER_EQUITY * works);
+    const total = works + price;
+    const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * total, ventureKey(c.sector));
+    if (syn === null) return miss(s, 'noowner');
     // A reopening costs a fraction of a new building: the return on its own cost is higher.
     const roc = c.roc * (projectTotal(s, 'firm', town, sector) / Math.max(1, total));
-    return launch(s, { kind: 'reopen', town, owner, sector, building: sig.vacant.id, label: `Reopening a ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE);
+    const seller = sig.vacant.owner;
+    if (!launch(s, { kind: 'reopen', town, owner: syn.lead, sector, building: sig.vacant.id, label: `Reopening a ${d.name} in ${tn}` }, works, roc, ENTRY_HURDLE, syn.partners)) return miss(s, 'finance');
+    if (price > 1 && seller !== syn.lead) {
+      const to = isPerson(seller) ? (s.people[seller]?.alive ? seller : STATE) : isFirm(seller) && s.firms[refId(seller)]?.alive ? seller : STATE;
+      pay(s, syn.lead, to, Math.min(price, cashOf(s, syn.lead)), 'asset');
+    }
+    remember(s, factsFor(s, town, sector, sig), roc, total);
+    return true;
   }
   if (sig.capFirm) {
     const f = sig.capFirm;
@@ -462,9 +670,11 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
   const total = projectTotal(s, 'firm', town, sector);
   const roc = c.roc * site.rel * (total / Math.max(1, total + site.accessCost));
   if (!(roc > c.req)) return miss(s, 'site');
-  const owner = pickEntrepreneur(s, town, ENTRY_OWNER_EQUITY * (total + site.accessCost));
-  if (owner === null) return miss(s, 'noowner');
-  return launch(s, { kind: 'firm', town, owner, sector, x: site.x, y: site.y, anywhere: true, label: `New ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE) || miss(s, 'finance');
+  const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * (total + site.accessCost), ventureKey(sector));
+  if (syn === null) return miss(s, 'noowner');
+  if (!launch(s, { kind: 'firm', town, owner: syn.lead, sector, x: site.x, y: site.y, anywhere: true, label: `New ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE, syn.partners)) return miss(s, 'finance');
+  remember(s, factsFor(s, town, sector, sig, site.rel), roc, total + site.accessCost);
+  return true;
 }
 
 /**
@@ -504,7 +714,7 @@ function voluntaryExit(s: SimState): void {
     for (const f of list) {
       if (n >= EXIT_MAX_PER_TRADE) break;
       if ((active.get(key) ?? 0) <= 1) break;
-      if (!chance(s, EXIT_PROB)) continue;
+      if (!(decisionRand(s.seed, s.day, f.id, 55) < EXIT_PROB)) continue;
       active.set(key, (active.get(key) ?? 1) - 1);
       n++;
       bump(s, 'exits');
@@ -514,7 +724,7 @@ function voluntaryExit(s: SimState): void {
 }
 
 /** A venture that passed the screen but did not happen, and why (stats: entry_miss_*). */
-function miss(s: SimState, why: 'nosite' | 'site' | 'noowner' | 'finance'): false {
+function miss(s: SimState, why: 'nosite' | 'site' | 'noowner' | 'finance' | 'hands'): false {
   bump(s, 'entry_miss_' + why);
   return false;
 }
@@ -579,7 +789,7 @@ export function roadVentures(s: SimState): void {
     if (!best) continue;
     const req = r0 + ROAD_HURDLE;
     const rel = (best.roc - req) / Math.max(0.01, req);
-    if (!(rel > 0) || !chance(s, Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * rel))) continue;
+    if (!(rel > 0) || !(decisionRand(s.seed, s.day, f.id, 77) < Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * rel))) continue;
     const A = s.towns[a].name;
     const B = s.towns[best.to].name;
     const label = `${best.grade === 1 ? 'Track' : 'Paved road'} ${A}–${B}, for ${f.name}`;
@@ -610,6 +820,7 @@ export function roadVentures(s: SimState): void {
  */
 export function entryStep(s: SimState): void {
   settleFinancing(s);
+  learnFromVentures(s);
   if (dayOfMonth(s.day) !== ENTRY_DAY) return;
   voluntaryExit(s);
   const r = screenRate(s);
@@ -627,6 +838,8 @@ export function entryStep(s: SimState): void {
     for (const k of PRODUCER_SECTORS) {
       const sig = sectorSignal(s, t, k);
       if (!sig) continue;
+      // what experience says of the formula for a venture like this (experience.ts), as far as investors trust it
+      sig.roc += EXP_TRUST * experienceAdjust(s, factsFor(s, t, k, sig));
       const req = r + ENTRY_HURDLE;
       if (sig.roc > req) cands.push({ sector: k, roc: sig.roc, req, rel: (sig.roc - req) / Math.max(0.01, req), sig });
     }
@@ -639,7 +852,7 @@ export function entryStep(s: SimState): void {
     for (const c of cands) {
       if (budget <= 0) break;
       const prob = Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * c.rel);
-      if (!chance(s, prob)) continue;
+      if (!(decisionRand(s.seed, s.day, t, ventureKey(c.sector)) < prob)) continue;
       const ok = tryCandidate(s, t, c);
       const trace = rt(s).bag.entryTrace;
       if (Array.isArray(trace)) trace.push({ day: s.day, town: t, sector: c.sector ?? 'house', roc: c.roc, req: c.req, ok });

@@ -26,6 +26,8 @@
 // (more foreign ship capacity), a larger building, or paved road tiles (paved
 // progressively as the work advances).
 // ============================================================================
+import { ventureOpened } from './experience';
+import { setHoldings } from './ownership';
 import {
   BASE_RENT_SHARE,
   BUILD_MARGIN,
@@ -659,7 +661,14 @@ function complete(s: SimState, b: Firm | undefined, p: Project): void {
       bld.project = -1;
       bld.owner = p.owner;
       bld.cost = p.kind === 'firm' ? p.billed : 0.5 * Math.max(0, fin(bld.cost)) + p.billed;
-      const f = createFirm(s, sector, p.town, bld.id, p.owner);
+      const f = createFirm(s, sector, bld.town >= 0 ? bld.town : p.town, bld.id, p.owner);
+      ventureOpened(s, p.id, f); // its record for the investors' experience follows the firm
+      // a venture with co-investors: each holds the share of the firm their stake bought
+      if (p.partners?.length) {
+        let others = 0;
+        for (const q of p.partners) others += Math.max(0, q.share);
+        setHoldings(s, f, [{ ref: p.owner, share: Math.max(0, 1 - others) }, ...p.partners.map((q) => ({ ref: q.ref, share: q.share }))]);
+      }
       // A reopened building comes with whatever its last occupant left behind.
       if (old && !old.alive && old.id !== f.id) {
         for (let g = 0; g < f.inv.length; g++) {
@@ -1176,10 +1185,16 @@ export function cancelProject(s: SimState, id: number): boolean {
       bld.project = -1;
     }
   }
-  // Refund the unspent advance; it pays down the project's loan first.
+  // Refund the unspent advance: co-investors get back their part of it, the rest pays down the
+  // project's loan first.
   const refund = handOver(s, b, p, p.owner);
-  if (refund > 0 && p.loan >= 0 && p.owner !== STATE) {
-    let left = refund;
+  let back = 0;
+  if (refund > 0 && p.partners?.length) {
+    const advanced = Math.max(refund, fin(p.billed) + refund);
+    for (const q of p.partners) back += pay(s, p.owner, q.ref, (refund * Math.max(0, fin(q.paid))) / advanced, 'asset');
+  }
+  if (refund - back > 0 && p.loan >= 0 && p.owner !== STATE) {
+    let left = refund - back;
     for (const ln of s.loans) {
       if (!(left > EPS)) break;
       if (ln.id !== p.loan || !ln.active || ln.borrower !== p.owner) continue;

@@ -25,6 +25,8 @@ import { beginDayStats, statsStep } from './stats/stats';
 import { beginDayEvents, eventsStep } from './stats/events';
 import { foldFlows } from './stats/flows';
 import { townsStep } from './world/belonging';
+import { companyMarket } from './agents/invest';
+import { sisterSupply } from './agents/integration';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -46,6 +48,7 @@ export function stepDay(s: SimState): void {
 
   // --- market ---
   householdsBeginDay(s); // income EMA, expectations, budgets
+  sisterSupply(s); // firms under one owner: suppliers pass sister firms of their town what they need (agents/integration.ts)
   const books = openBooks(s);
   householdOrders(s, books);
   householdPortfolioOrders(s, books);
@@ -68,6 +71,7 @@ export function stepDay(s: SimState): void {
   bankEndDay(s);
   stockLevies(s);
   entryStep(s);
+  companyMarket(s); // (monthly) firms change hands between those who value them most (agents/invest.ts)
   townsStep(s); // (monthly) settlement radii, which town each building belongs to, districts
   demographyStep(s);
   foreignEndDay(s);

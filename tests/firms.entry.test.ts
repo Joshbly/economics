@@ -56,6 +56,7 @@ function world(seed = 7): SimState {
   b.founded = s.day - 1000;
   const h = newBuilding(s, 'house', '', 0, 4, 4, 1, 1, 'active');
   h.slots = 100;
+  s.towns[0].unemployed = 30; // hands to staff a venture (entry declines what it cannot staff)
   return s;
 }
 
@@ -93,12 +94,15 @@ function newBakeryProjects(s: SimState): number {
 }
 
 describe('entry', () => {
-  /** Two mature bakeries earning a moderate return on the cost of a new one, in a market with room for a third. */
+  /**
+   * Two mature bakeries earning a good return on the cost of a new one — margins wide enough that
+   * the trade still pays once a third maker's output has lowered the price (entry.priceAfterEntry).
+   */
   function profitableTown(rate: number): { s: SimState; owner: Person } {
     const s = world();
     s.bank.baseRate = rate;
-    s.markets[G.bread].ema = 5; // a margin over grain and coal that pays a newcomer's hands at its share of the trade
-    for (let i = 0; i < 2; i++) firm(s, 'bakery', 10 + i, { profit: 25, capacity: 8, target: 4, sales: 100, salesLong: 100 });
+    s.markets[G.bread].ema = 6; // a margin over grain and coal that pays a newcomer's hands at its share of the trade
+    for (let i = 0; i < 2; i++) firm(s, 'bakery', 10 + i, { profit: 150, capacity: 8, target: 4, sales: 100, salesLong: 100 });
     const owner = person(s, 200000); // can pay for a workshop outright
     s.bank.reserves = 1e6;
     reconcileBank(s);

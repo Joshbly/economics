@@ -132,10 +132,24 @@ Each site has limits — a field only grows so much — so each extra worker add
 A workshop raises its wage when it cannot fill its posts, and lowers it only slowly and reluctantly. It prices its goods around what it expects them to fetch, cutting its asks when unsold stock piles up.`,
       },
       {
+        title: 'Investors and the market for companies',
+        body: `Everyone with money to spare is a would-be investor, and no two think alike: some look three years ahead, others fifteen; some want a good deal more than the bank pays before they risk their money; some see every business through rosy spectacles; some risk most of their savings, others a little.
+
+What a business is worth to someone is the profit they expect from it over the years they look ahead, counted at the rate they would want for their money, plus what it holds less what it owes — and never less than it would fetch broken up. Once a month businesses change hands: when a buyer values one well above what its owners would take, it buys it, paying every owner their share. Owners of a business in trouble take less. A business bought by another becomes part of it.
+
+Owning a rival in the same town lets an owner set their prices together — the bigger their share of the town's trade, the higher the price they can keep (a price limit stops that). Owning a supplier in the same town means the goods come straight across each morning at the going price: the workshop never goes short while its sister has stock.
+
+The realm learns from experience. Every new workshop is judged a year after it opens: did it earn what its investors reckoned? A small learning model — a neural network — keeps track of how far their reckoning tends to be out, by trade, town and circumstance, and the next investors correct for it. It knows nothing at first and learns only from this realm.`,
+      },
+      {
         title: 'Profits, owners and failure',
         body: `Workshops pay their owners part of their spare coin each month. A workshop that cannot pay its workers or its loans for weeks goes under: its people are laid off, its stock is sold off cheaply, the bank loses what it lent, and the building stands empty until someone reopens it.
 
-When a trade earns much more than borrowing costs, someone with savings — or a loan — builds a new workshop. Borrowing costs therefore decide how fast the realm grows.`,
+When a trade earns much more than borrowing costs, someone with savings — or a loan — builds a new workshop. Borrowing costs therefore decide how fast the realm grows.
+
+A new workshop needs someone to put up a quarter of its cost (the bank lends the rest). When no one person can, several club together: a lead investor, who will run it, and others — people with savings to spare, and profitable firms — each taking a share of the business in proportion to what they put in. Profits are paid to all of them by share; when an owner dies their shares pass to their heir.
+
+Before anyone builds, they reckon with what their workshop will do to the trade: its output lowers the price for everyone (bread little, since people eat what they must, luxuries more), and it must find hands — nobody builds a workshop in a town with no one to work in it.`,
       },
       {
         title: 'Treasury workers',

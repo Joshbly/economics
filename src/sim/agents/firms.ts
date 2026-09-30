@@ -100,6 +100,7 @@ import {
   LIQUIDATION_DAYS,
   LIQUIDITY_DAYS,
   LIQUIDITY_RESERVE_DAYS,
+  LOSS_RECOVER_GAP,
   OWNER_SUPPORT_MAX_LOSS_DAYS,
   ENTRY_OWNER_RESERVE_DAYS,
   NEW_FIRM_DAYS,
@@ -174,6 +175,8 @@ import {
   unitVariableCost,
 } from './production';
 import { flowIndex, flowTally, FLOW_MADE, FLOW_USED } from '../stats/flows';
+import { payHolders, releaseHolders } from './ownership';
+import { groupMarkup } from './integration';
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -867,7 +870,11 @@ function planTarget(s: SimState, f: Firm, pt: PriceTable, salesByTG: Float64Arra
   // above its price by raising the price (the shade toward pStar, which trims demand); only a
   // firm whose profit has stayed negative (PROFIT_EMA, about a month) sheds workers, and then
   // gradually (the step cap below) — the price mechanism does the short-run work.
-  const losing = !(young && noHistory) && f.profit < 0 && fin(f.lossDays) >= LOSS_SHRINK_DAYS && (!seasonal || f.profitLong < 0);
+  // (Past losses stop binding once today's price pays well for a hand again — LOSS_RECOVER_GAP over
+  // the marginal cost of serving its sales: a firm shed down to nobody during a glut must be able
+  // to hire back when the glut has turned into a shortage, or it never makes a profit again.)
+  const recovered = pNet >= LOSS_RECOVER_GAP * pMc;
+  const losing = !(young && noHistory) && !recovered && f.profit < 0 && fin(f.lossDays) >= LOSS_SHRINK_DAYS && (!seasonal || f.profitLong < 0);
   // A firm that has been losing money at a price that does not even cover materials and tool
   // wear — today, nor at the price it is moving to — makes every unit a loss whatever the
   // workforce: it stops at once. (A day's glut of a perishable, cleared below cost, is not that:
@@ -1207,7 +1214,8 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
   // anchor stays within ASK_ANCHOR_BAND of the expectation (a planning glitch cannot jump it).
   const sh = f.id < sc.n ? sc.shade[f.id] : 0;
   const anchor = sh > 0 ? clamp(sh, pExp * (1 - ASK_ANCHOR_BAND), pExp * (1 + ASK_ANCHOR_BAND)) : pExp;
-  const base = anchor * shift;
+  // (several makers of the good in the town under one owner price together: agents/integration.ts)
+  const base = anchor * shift * (1 + groupMarkup(s, f));
   // Cost floor: a share of unit variable cost at the current wage and output per worker
   // (halved for a distressed firm raising cash; there is no floor for rotting overstock).
   let floor = 0;
@@ -1460,27 +1468,11 @@ function accountDay(s: SimState, f: Firm, sc: FirmScratch): number {
 /** Pay a dividend from a firm to its owner. Returns the amount paid. */
 function payDividend(s: SimState, f: Firm, amount: number): number {
   if (!(amount > 0.01)) return 0;
-  const fref = firmRef(f.id);
-  let to: Ref = f.owner;
-  let person: Person | undefined;
-  if (isPerson(to)) {
-    person = s.people[to];
-    if (!person || !person.alive) {
-      to = STATE;
-      person = undefined;
-    }
-  } else if (isFirm(to)) {
-    const o = s.firms[refId(to)];
-    if (!o || !o.alive || o.id === f.id) to = STATE;
-  } else if (to !== STATE) to = STATE;
-  const paid = pay(s, fref, to, amount, 'dividend');
-  if (person) person.earned += paid;
-  else if (isFirm(to)) {
-    const o = s.firms[refId(to)];
-    if (o) o.otherCosts -= paid;
-  }
+  // every holder by share (agents/ownership.ts)
+  const acc = { state: 0 };
+  const paid = payHolders(s, f, firmRef(f.id), amount, 'dividend', true, acc);
   bump(s, 'dividends', paid);
-  if (to === STATE) bump(s, 'dividends_state', paid);
+  if (acc.state > 0) bump(s, 'dividends_state', acc.state);
   return paid;
 }
 
@@ -1703,6 +1695,7 @@ export function firmsEndDay(s: SimState): void {
     f.profit = fin(ema(fin(f.profit), profit, PROFIT_EMA));
     f.profitLong = fin(ema(fin(f.profitLong), profit, PROFIT_LONG_EMA));
     f.monthProfit = fin(f.monthProfit) + profit;
+    f.profitLife = fin(f.profitLife ?? 0) + profit; // (what investors learn from: agents/experience.ts)
     f.lossDays = f.profit < 0 ? fin(f.lossDays) + 1 : 0;
     if (d.producer) {
       const g = d.out;
@@ -1864,18 +1857,8 @@ function finalizeClosure(s: SimState, f: Firm): void {
     for (let i = 0; i < rq.length; i++) if (rq[i].borrower !== fref) rq[k++] = rq[i];
     rq.length = k;
   }
-  // Remaining cash to the owner (a return of capital, not income).
-  if (f.cash > 0) {
-    let to: Ref = f.owner;
-    if (isPerson(to)) {
-      const p = s.people[to];
-      if (!p || !p.alive) to = STATE;
-    } else if (isFirm(to)) {
-      const o = s.firms[refId(to)];
-      if (!o || !o.alive || o.id === f.id) to = STATE;
-    } else to = STATE;
-    pay(s, fref, to, f.cash, 'transfer');
-  }
+  // Remaining cash to the holders by share (a return of capital, not income).
+  if (f.cash > 0) payHolders(s, f, fref, f.cash, 'transfer', false);
   // Unsold stock stays in the vacant building; a firm that reopens it takes it over.
   const b = f.building >= 0 ? s.buildings[f.building] : undefined;
   if (b && b.firm === f.id) {
@@ -1884,13 +1867,7 @@ function finalizeClosure(s: SimState, f: Firm): void {
     b.vacantDays = 0;
     touchBuildings(s);
   }
-  if (isPerson(f.owner)) {
-    const p = s.people[f.owner];
-    if (p) {
-      const k = p.owns.indexOf(f.id);
-      if (k >= 0) p.owns.splice(k, 1);
-    }
-  }
+  releaseHolders(s, f);
   f.workers.length = 0;
   f.target = 0;
   f.status = 'closed';

@@ -767,12 +767,16 @@ function fuelTarget(s: SimState, f: Firm, tr: TraderState): number {
 }
 
 /**
- * What oil is fundamentally worth at home: the home market price, or — if that has run
- * above it (a town without wells whose price went stale) — the landed cost from the
- * cheapest town where oil actually trades (its price + freight).
+ * What oil is fundamentally worth at home: the home market price, or the landed cost from
+ * the cheapest town where oil actually trades (its price + freight) when that is less. A
+ * home market where nobody offered oil yesterday quotes a stale price, below or above what
+ * oil costs: there it is worth the landed cost, whatever the stale quote says (anchored on a
+ * stale low quote, every house of a town without wells would bid too little to draw oil in,
+ * run dry, and stop carrying — grain to the bakeries included).
  */
 function oilAnchor(s: SimState, home: TownId, who: Ref): number {
-  let best = expectedGrossFor(s, home, G.oil, who);
+  const own = expectedGrossFor(s, home, G.oil, who);
+  let best = marketOf(s, home, G.oil).bestAsk > 0 ? own : Infinity;
   for (let t = 0; t < s.towns.length; t++) {
     if (t === home) continue;
     const m = marketOf(s, t, G.oil);
@@ -782,7 +786,7 @@ function oilAnchor(s: SimState, home: TownId, who: Ref): number {
     const landed = expectedGrossFor(s, t, G.oil, who) + fr;
     if (landed < best) best = landed;
   }
-  return best;
+  return Number.isFinite(best) ? best : own;
 }
 
 /**

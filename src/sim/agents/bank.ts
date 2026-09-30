@@ -30,6 +30,7 @@
 //  * If equity turns negative the bank stops lending; after BANK_FAIL_GRACE_DAYS
 //    without new capital every deposit is cut pro rata to restore it.
 // ============================================================================
+import { stakeOf } from './ownership';
 import * as CFG from '../config';
 import { isMonthEnd } from '../calendar';
 import { newLoan } from '../factory';
@@ -321,7 +322,7 @@ function assetsOfPerson(s: SimState, p: Person): number {
   for (const id of p.owns) {
     const f = s.firms[id];
     if (!f || !f.alive) continue;
-    a += Math.max(0, assetsOfFirm(s, f) - debtOf(s, FIRM_BASE + f.id));
+    a += stakeOf(f, p.id) * Math.max(0, assetsOfFirm(s, f) - debtOf(s, FIRM_BASE + f.id));
   }
   return a;
 }
@@ -363,7 +364,7 @@ const TYPICAL_LEVERAGE = 0.4;
  * `extraDebt` is the size of the loan being considered (assumed to finance assets of the same value).
  * borrower < 0 → the rate for a typical sound borrower (e.g. for sector-wide entry decisions).
  */
-export function quoteRate(s: SimState, borrower: Ref, extraDebt: number): number {
+export function quoteRate(s: SimState, borrower: Ref, extraDebt: number, committed = 0): number {
   const b = s.bank;
   if (b.failed) return NO_QUOTE;
   const extra = Math.max(0, fin(extraDebt));
@@ -375,8 +376,9 @@ export function quoteRate(s: SimState, borrower: Ref, extraDebt: number): number
   let premium = 0;
   if (borrower >= 0) {
     if (!borrowerAlive(s, borrower)) return NO_QUOTE;
+    // (`committed`: equity others have already put into the works the loan would finance)
     const debt = debtOf(s, borrower) + extra;
-    const assets = assetsOf(s, borrower) + extra;
+    const assets = assetsOf(s, borrower) + extra + Math.max(0, fin(committed));
     lev = assets > 0 ? debt / assets : debt > 0 ? 9 : 0;
     const maxLev = BANK_MAX_LEVERAGE * (1 - BANK_STANCE_LEVERAGE * stance);
     if (lev > maxLev) return NO_QUOTE;
@@ -916,7 +918,10 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number, fl
     d.reason = 'overdue';
     return d;
   }
-  const assets0 = assetsOf(s, who);
+  // what is already paid into the works this loan finances (by the borrower or its co-investors) is collateral too
+  let committed = 0;
+  if (req.project >= 0) for (const pr of s.projects) if (pr.id === req.project) committed = Math.max(0, fin(pr.prepaid));
+  const assets0 = assetsOf(s, who) + committed;
   // cash flow available for debt service (¤/day)
   let cf = 0;
   if (f) {

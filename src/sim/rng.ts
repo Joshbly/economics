@@ -84,3 +84,24 @@ export function shuffle<T>(h: RngHolder, arr: T[]): T[] {
   }
   return arr;
 }
+
+/**
+ * A draw for one decision, from the realm's seed and what is being decided (`keys`: the day, the
+ * town, the trade, the firm…) — not from the running stream, so the same decision draws the same
+ * number however the day got there. The investors' discrete choices use it (whether a venture goes
+ * ahead, who joins a syndicate, which firms come up for sale, which loss-maker gives up): two runs
+ * of a realm that differ only in a policy then make the same draws for the same decisions and
+ * differ only where the policy changes the odds (common random numbers). Uniform in [0, 1).
+ */
+export function decisionRand(seed: number, ...keys: number[]): number {
+  let h = (seed ^ 0x2545f491) >>> 0;
+  for (const k of keys) {
+    h = Math.imul(h ^ (k | 0), 0x9e3779b1) >>> 0;
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+  }
+  h = Math.imul(h ^ (h >>> 16), 0xc2b2ae35) >>> 0;
+  h ^= h >>> 16;
+  return h / 4294967296;
+}

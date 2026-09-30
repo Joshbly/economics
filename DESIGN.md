@@ -26,7 +26,13 @@ and this document disagree, fix one of them — never silently diverge.
   state object, and are never serialised.
 * **Determinism**: all randomness goes through `rand(s)` / helpers in
   `src/sim/rng.ts` using the RNG state stored in `SimState.rng`. Never call
-  `Math.random()` in `src/sim`.
+  `Math.random()` in `src/sim`. Investors' discrete choices (whether a venture
+  goes ahead, who leads or joins it, which loss-maker gives up, which firms come
+  up for sale and who bids) draw instead from `decisionRand(seed, …keys)`: a
+  hash of the realm's seed and what is being decided (day, town, trade, firm).
+  The same decision then draws the same number whatever happened earlier in the
+  day, so two runs that differ only in a policy differ only where the policy
+  changes the odds (common random numbers for the experiments).
 * **Money is conserved**: every movement of money goes through
   `pay()` / the ledger helpers in `src/sim/ledger.ts`. Never write
   `x.cash += …` directly outside `ledger.ts` (the single exception is
@@ -78,9 +84,12 @@ workshop trades in and its households shop in — follows a hierarchy of rules:
    (BELONG_W_ROAD × exp(−days/BELONG_ROAD_DAYS), travel days from its door to the
    centre: townReach, a Dijkstra per town over the roads and open country, cached
    until roads change), where its people live (BELONG_W_WORKERS × the share of a
-   workshop's workers living there; for a house, of its residents working there)
-   and where its owner lives (BELONG_W_OWNER); the town it belongs to now keeps
-   BELONG_STICK in hand, so nothing flaps between two towns.
+   workshop's workers living there; for a house, of its residents working there —
+   with nobody there just now, all of it for the town it is in: no evidence it has
+   moved) and where its owner lives (BELONG_W_OWNER); the town it belongs to now
+   keeps BELONG_STICK in hand, so nothing flaps between two towns. (A workshop whose
+   hands had all left once changed town on its owner's address alone — taking the
+   only oil well a town had to another market.)
 Monthly (`townsStep`, after entry) settlement radii are measured again (towns grow
 as they build outward), buildings are reassigned — a workshop that moves trades in
 its new town's market (its price expectation starts half-way to the new market's),
@@ -234,7 +243,10 @@ dividends to their owner, invest, and can go bankrupt.
   slow EMA (SALES_LONG_EMA) of de-seasonalised sales plus a share of the market's
   unmet demand; for its first NEW_FIRM_RAMP_DAYS an entrant plans at least its
   share of the town's sales of its good. A firm whose profit has been negative for LOSS_SHRINK_DAYS sheds
-  hands step by step; one that has been losing money at a price below its
+  hands step by step — until its price is LOSS_RECOVER_GAP × the marginal cost of serving its
+  sales again (a glut turned shortage: a firm shed to nobody must be able to hire back, or it
+  never earns again — in runs, the last oil well of a realm stayed empty with oil at 4× its cost,
+  wagons stopped for want of fuel and famine followed); one that has been losing money at a price below its
   materials cost stops at once; a firm short of cash plans only the payroll its
   takings and cash can pay (keeping LIQUIDITY_RESERVE_DAYS in hand). Targets move
   gradually (TARGET_SMOOTH, capped at TARGET_MAX_STEP a day, with hysteresis).
@@ -282,6 +294,70 @@ dividends to their owner, invest, and can go bankrupt.
   must pay its way — whole hands, materials and tool wear at today's prices — at
   its share of the trade's sales plus unmet demand (so a town that buys two sets
   of tools a day gets no second toolworks, however well the first one does).
+  **Its own output lowers the price** (entry.priceAfterEntry): with one more maker the
+  trade's output grows by 1/(n(n+2)) (symmetric Cournot: incumbents cut back as the
+  price falls — +33 % for a second maker, +12.5 % for a third), and output beyond what
+  buyers now go without lowers the price in proportion to the demand's elasticity
+  (ENTRY_DEMAND_ELASTICITY: necessities little, luxuries more); both the incumbents'
+  profit it shares and its own are taken at that price. **Hands**: a venture staffs
+  itself from the town's jobless less its open posts and the ventures being built
+  (freeHands); with free hands for less than ENTRY_MIN_HANDS_SHARE of what it needs
+  nobody sinks money into it (`entry_miss_hands`), and hands it must lure from other
+  employers cost WAGE_POACH_PREMIUM more (poachingCost) — without this an investment
+  boom at full employment drew hands from the bakeries and farms until the bread ran out.
+  **Who pays** (pickSyndicate): one person who can put up the equity, or else a
+  syndicate — a lead with at least SYNDICATE_LEAD_SHARE of it, who will run the firm,
+  and co-investors (people, and profitable firms) each putting in up to
+  SYNDICATE_APPETITE of their spare cash, at most SYNDICATE_MAX of them, those of the
+  same town likelier. The co-investors pay their stakes into the works at once
+  (`Project.partners`); the equity in the works is the loan's collateral too (bank:
+  quoteRate `committed`, and a project loan's `assets0`); when it is finished each
+  holds the share of the firm its stake bought. Without syndicates entry was held back
+  mostly by nobody holding the equity (248 misses in two years against 6 ventures);
+  with them, 10–20 ventures a year.
+  **Several owners** (`agents/ownership.ts`): `Firm.owner` is the controlling holder
+  (the largest share: it runs the firm, tops up its cash, decides its ventures);
+  `Firm.partners` the other holders and their shares. Dividends, what is left when it
+  winds up, and (later) the price of the firm go to every holder by share; a person's
+  `owns` lists every firm they hold part of; stakes pass with estates (passStakes; a
+  stake in a venture still being built too); wealth statistics and the bank's view of a
+  borrower count their share. A cancelled venture refunds its co-investors their part of
+  the unspent advance before its loan.
+  **Investors** (`agents/temperament.ts`, `agents/invest.ts`): every person and firm has a
+  temperament drawn from the seed and who they are (no state): horizon 3–15 years, a premium
+  over the bank's rate (0–8 points), optimism (±20 %), nerve (the share of spare cash they
+  risk, 0.3–0.9 — a syndicate member puts in its nerve's share). What a firm is worth to
+  someone (firmWorth): its expected profit a year (recent and slow profit blended, × their
+  optimism) over their horizon at the bank's rate + their premium, plus cash, stock and tools
+  less debts — never below its break-up value (cash, 70 % of stock and tools, 30 % of the
+  building, less debts); to a buyer running firms of the same town it is worth more
+  (synergy: INTEGRATION_HORIZONTAL of a rival's sales a year, INTEGRATION_VERTICAL of the trade
+  with a supplier or customer). **The market for companies** (companyMarket, monthly on
+  MARKET_DAY): COMPANY_OFFERS firms are looked at (in distress or long losing money: three times
+  as likely), each offered to COMPANY_BIDDERS would-be buyers who could pay (people and
+  profitable firms, weighted by their spare cash × nerve, the town's own twice as likely); the
+  holders' reservation is its worth to each by share, less COMPANY_DISTRESS_DISCOUNT when it is
+  in trouble; a buyer valuing it COMPANY_DEAL_GAIN above that buys it whole at the reservation +
+  half the gap, every holder paid by share, and runs it (a firm bought by a firm is its
+  subsidiary: its profits flow up). A builders' yard's spare cash excludes the advances it
+  holds for its customers. An empty workshop is bought from its holder by whoever reopens it
+  (vacantPrice: VACANT_PRICE_SHARE of its book value, falling to a third over two years empty).
+  **Firms under one control** (`agents/integration.ts`; the controller is the largest holder,
+  followed up through firms that own firms): makers of one good in one town price together —
+  + INTEGRATION_POWER × (the group's share of the town's sales − its own) / the demand's
+  elasticity, at most INTEGRATION_MARKUP_MAX (a Lerner-style margin; a price Limit answers it);
+  and each morning, before the market, a group's supplier passes a sister firm of its town what
+  it needs for SISTER_DAYS of making (at most half its stock) at the going price
+  (sisterSupply: goods and money move directly, `inhouse_value`).
+  **Experience** (`agents/experience.ts`): a small neural network (15 features → EXP_HIDDEN tanh
+  units → 1, weights in `s.invest.net`) learns how far the investors' formula is off. Each
+  venture decided leaves a record (the trade's kind, the town's kind, margin over unit cost,
+  shortage, makers, rate, site, price impact, a trade new to the town; and the return promised);
+  when its workshop has been open EXP_MIN_AGE days (or closes) it is judged — the profit it
+  earned a year on its capital (a closed one lost about half its capital besides) — and the
+  network takes one gradient step on (actual − promised) at EXP_LEARN_RATE. The monthly
+  screen adds EXP_TRUST × its answer (within ±EXP_MAX_ADJ) to each candidate's expected return:
+  it begins knowing nothing and learns only from this realm.
   Developers build houses when rent yields beat loan rate + hurdle.
   **Where** (`agents/sites.ts`): a workshop on a natural resource looks at every
   free site of the right ground within VENTURE_REACH of its town's centre that
@@ -346,6 +422,13 @@ longer pipeline at the destination (TRADE_PENDING_DAYS_DURABLE). Freight per uni
 (driver wage × round-trip days + oil × tiles × fuel rate + wagon wear) / wagon
 capacity. The published **shipping rate** index is the freight cost per unit
 per 10 tiles. Oil scarcity or oil levies raise freight; paved roads cut it.
+A house keeps a store of fuel (TRADER_FUEL_DAYS of use), bidding for it up to the
+price at which its best trip only breaks even, more urgently the emptier the store,
+anchored on what oil is worth at home: the home price, or the landed cost from the
+cheapest town where oil trades when that is less — and the landed cost whenever
+nobody offered oil at home the day before (a stale home quote below the landed cost
+would keep every house of a town without wells bidding too little to draw oil in:
+its wagons stop, grain stops reaching the bakeries, and famine follows).
 
 *Treasury freight lines* (§5 Build) are a second carrier on a road: for a trip
 between a line's two towns a house compares its own freight with the line's
@@ -719,6 +802,7 @@ firmsProduce        production, tools wear
 constructionProgress
 firmsPayWages       wages (+ wage levies); Treasury workers paid from the Purse
 householdsBeginDay  income EMA, expectations, budgets
+sisterSupply        firms under one owner: suppliers pass sister firms of the town what they need
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
   traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
@@ -741,7 +825,8 @@ housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
 firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy
 bankEndDay          loan decisions, dividends, capital check, failure
 stockLevies         money/goods/head/building levies
-entryStep           (monthly) new firms, expansions, houses
+entryStep           (monthly) new firms, expansions, houses, trading houses' roads; (daily) financing, ventures judged
+companyMarket       (monthly) firms change hands (agents/invest.ts)
 townsStep           (monthly) settlement radii, each building's town by the rules, districts (world/belonging.ts)
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance

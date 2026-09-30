@@ -14,6 +14,7 @@
 // estate but paid from its coin first, then its IOUs and gold (at market prices);
 // buildings and firms are never taken — whatever is still owed then lapses.
 // ============================================================================
+import { passStakes } from './ownership';
 import * as CFG from '../config';
 import * as CAL from '../calendar';
 import { newPerson } from '../factory';
@@ -343,12 +344,9 @@ function passAssets(s: SimState, p: Person, heir: Person | null): void {
     }
     p.pantry[g] = 0;
   }
-  // Firms (scan all: robust even if person.owns is stale).
-  for (const f of s.firms) {
-    if (!f || f.owner !== me) continue;
-    f.owner = to;
-    if (heir && f.alive && heir.owns.indexOf(f.id) < 0) heir.owns.push(f.id);
-  }
+  // Firms: every stake (whole or part) passes to the heir (agents/ownership.ts; scans all firms).
+  passStakes(s, me, to);
+  for (const f of s.firms) if (f && !f.alive && f.owner === me) f.owner = to; // closed firms' records
   // Buildings (houses and any other building the person held).
   for (const b of s.buildings) {
     if (!b || b.owner !== me) continue;
@@ -366,7 +364,10 @@ function passAssets(s: SimState, p: Person, heir: Person | null): void {
       ln.active = false;
     }
   }
-  for (const pr of s.projects) if (pr.owner === me) pr.owner = to;
+  for (const pr of s.projects) {
+    if (pr.owner === me) pr.owner = to;
+    if (pr.partners) for (const q of pr.partners) if (q.ref === me) q.ref = to; // a stake in a venture being built
+  }
   const rq = s.bank.requests;
   if (rq && rq.length) {
     let k = 0;

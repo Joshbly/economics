@@ -376,7 +376,42 @@ function fillLines(s: SimState): void {
 }
 
 /** Fill optional bookkeeping that older or hand-edited saves may lack. */
+/**
+ * Shares of firms and the realm's investment experience: a damaged holding (not a person or firm,
+ * a share not in (0, 1)) is dropped — its share falls back to the controlling owner; damaged
+ * network weights or records reset the experience (it is relearnt).
+ */
+function fillInvest(s: SimState): void {
+  for (const f of s.firms) {
+    if (!f || !f.partners) continue;
+    const ok = Array.isArray(f.partners)
+      ? (f.partners as unknown[]).filter((p): p is { ref: number; share: number } => isObj(p) && isNum((p as Obj).ref) && isNum((p as Obj).share) && ((p as Obj).share as number) > 0 && ((p as Obj).share as number) < 1)
+      : [];
+    let tot = 0;
+    for (const p of ok) tot += p.share;
+    if (!ok.length || tot >= 1) delete f.partners;
+    else f.partners = ok;
+  }
+  for (const p of s.projects) {
+    if (!p || !p.partners) continue;
+    if (!Array.isArray(p.partners)) delete p.partners;
+    else p.partners = (p.partners as unknown[]).filter((q): q is { ref: number; share: number; paid: number } => isObj(q) && isNum((q as Obj).ref) && isNum((q as Obj).share) && isNum((q as Obj).paid));
+  }
+  const inv = s.invest as unknown;
+  if (inv === undefined) return;
+  const n = isObj(inv) && isObj((inv as Obj).net) ? ((inv as Obj).net as Obj) : null;
+  const arr = (x: unknown) => Array.isArray(x) && (x as unknown[]).every(isNum);
+  if (!n || !arr(n.w1) || !arr(n.b1) || !arr(n.w2) || !isNum(n.b2) || !Array.isArray((inv as Obj).pending)) {
+    delete s.invest;
+    return;
+  }
+  if (!isNum(n.trained)) n.trained = 0;
+  if (!isNum(n.err)) n.err = 0;
+  s.invest!.pending = s.invest!.pending.filter((r) => isObj(r) && isNum(r.project) && isNum(r.firm) && isNum(r.day) && arr(r.x) && isNum(r.promised) && isNum(r.capital));
+}
+
 function fillDefaults(s: SimState): void {
+  fillInvest(s);
   const st = s.stats;
   st.acc = isObj(st.acc) ? st.acc : {};
   st.macc = isObj(st.macc) ? st.macc : {};

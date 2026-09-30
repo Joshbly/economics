@@ -63,6 +63,7 @@
 // starved, immigrants, emigrants, hires, fires, quits, evictions, wages, defaults,
 // loans_new, interest_loans, interest_deposits, dividends.
 // ============================================================================
+import { stakeOf } from '../agents/ownership';
 import * as CFG from '../config';
 import * as GOODS_M from '../goods';
 import { deposits, mint } from '../ledger';
@@ -1168,7 +1169,12 @@ export function distributionStats(s: SimState): { gini: number; giniIncome: numb
   }
   const firmValue = (id: number, owner: number): number => {
     const f = s.firms[id];
-    if (!f || !f.alive || f.owner !== owner) return 0;
+    if (!f || !f.alive) return 0;
+    const share = stakeOf(f, owner);
+    if (!(share > 0)) return 0;
+    return share * wholeFirmValue(f, id);
+  };
+  const wholeFirmValue = (f: (typeof s.firms)[number], id: number): number => {
     let v = Math.max(0, fin(f.cash));
     const t = f.town;
     const priceAt = (town: number, g: number): number => {
