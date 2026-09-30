@@ -97,6 +97,28 @@ export const SCEN_CREDIT_RESERVE_RATE = 0.005;
 export const SCEN_CREDIT_LEND_RATE = 0.015;
 export const SCEN_CREDIT_LOAN_SHARE = 0.85;
 export const SCEN_CREDIT_LOAN_TO_CAPITAL = 0.45;
+/** 'golden' (A Golden Age): the realm is founded with this share of homes to spare (newcomers need somewhere to live;
+ *  private builders put up houses only once rents pay the loan rate + HOUSE_HURDLE, which takes years). */
+export const SCEN_GOLDEN_VACANCY = 0.3;
+/** … workshops this many times roomier than usual (room to hire newcomers before they must enlarge) … */
+export const SCEN_GOLDEN_ROOM = 1.5;
+/** … and this many piers already at the harbour (ships' capacity × (1 + piers × PIER_CAP_BONUS)). */
+export const SCEN_GOLDEN_PIERS = 6;
+/** When the player takes charge, the Treasury's stores in every town hold this many days of the town's trade in each
+ *  reserve good (grain, coal, oil, furniture) … */
+export const SCEN_GOLDEN_RESERVE_DAYS = 30;
+/** … a standing order buys up to SCEN_GOLDEN_RESERVE_BUY_QTY × the day's trade when the good falls to this × its
+ *  opening price (a glut: the stores refill and the makers keep a buyer) … */
+export const SCEN_GOLDEN_RESERVE_BUY = 0.85;
+export const SCEN_GOLDEN_RESERVE_BUY_QTY = 0.3;
+/** … and another sells up to SCEN_GOLDEN_RESERVE_SELL_QTY × the day's trade once it reaches this × the opening price
+ *  (a scarcity: a thin trade such as oil can otherwise jump tenfold and stop the wagons and the boats). */
+export const SCEN_GOLDEN_RESERVE_SELL = 1.2;
+export const SCEN_GOLDEN_RESERVE_SELL_QTY = 1;
+/** Per-head payments it starts with: ¤ a day to every person (money grows with the realm), … */
+export const SCEN_GOLDEN_HEAD_ALL = 0.04;
+/** … and ¤ a day to anyone who went hungry (it does not depend on having work, so it does not keep anyone from a job). */
+export const SCEN_GOLDEN_HEAD_HUNGRY = 5;
 
 // ---- Prices, wages (calibration anchors used by world/init & production) ----
 export const BASE_WAGE = 10; // ¤ per worker-day at founding

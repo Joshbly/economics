@@ -5,7 +5,8 @@
 // Algorithm:
 //  1. generateMap(seed); the 4 towns (names from names.ts), market halls with a
 //     market-square ring, inter-town dirt tracks (capital to every town + shortcuts
-//     that save ≥ 25 %), the Palace and the Bank (capital), the Port (harbor).
+//     that save ≥ 25 %; paved when the scenario says so), the Palace and the Bank
+//     (capital), the Port (harbor).
 //  2. Prices start from production.basePrices(); rent0 = BASE_RENT_SHARE × BASE_WAGE.
 //  3. Calibration fixed point (`calibrate`, two passes):
 //       * local prices: a host town sells a good at its own unit cost (materials at
@@ -34,10 +35,10 @@
 //     entry may add capital farms if grain freight makes them pay).
 //  4. Buildings: resource firms on the calibrated sites (their tracks laid only after
 //     all are placed, so no track cuts across a chosen site), town workshops, levels so
-//     capacity ≈ INIT_CAPACITY_HEADROOM × workers; per town one builder (with a nearly
+//     capacity ≈ INIT_CAPACITY_HEADROOM (× the scenario's `room`) × workers; per town one builder (with a nearly
 //     finished house as its founding project), one trader, one stateworks (building -1,
 //     owner STATE, target 0). Firms are founded years before day 0.
-//  5. Houses for pop × (1 + INIT_HOUSING_VACANCY), all private; OWNER_SHARE of people own
+//  5. Houses for pop × (1 + INIT_HOUSING_VACANCY, or the scenario's own), all private; OWNER_SHARE of people own
 //     the firms and houses (weighted by rank); owners live in their own houses, everyone
 //     else in the free slot nearest their work.
 //  6. Jobs: exactly the calibrated workforce per firm; owners work in their own shops;
@@ -57,8 +58,9 @@
 //  9. Markets: every town × good at its calibrated price, volEma = expected purchases,
 //     and a founding order-book snapshot (traders read destination demand from
 //     yesterday's book); IOU at par; gold at INIT_GOLD_PRICE.
-// 10. Foreign: world prices = harbour price / gold price × a seeded factor (a few goods
-//     cheap abroad, a few dear), shipCap = SHIP_CAP_SHARE × national use, world0, tradeEma.
+// 10. Foreign: the scenario's piers at the harbour; world prices = harbour price / gold price ×
+//     a seeded factor (a few goods cheap abroad, a few dear), shipCap = SHIP_CAP_SHARE × national
+//     use, world0, tradeEma.
 // 11. stats.initStats(s); scenarios.applyScenario; a founding news item.
 // ============================================================================
 import {
@@ -147,7 +149,7 @@ import {
 } from '../config';
 import { farmSeason, heatNeed, seasonFactor } from '../calendar';
 import { newFirm, newLoan, newMarket, newPerson, newProject, newShipment, newSimState, newTown, newTreasury } from '../factory';
-import { CONSUMER_GOODS, G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
+import { CONSUMER_GOODS, G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PIER_COST, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
 import { blankCouncil, deposits, firmRef, loansOutstanding, personRef, reconcileBank } from '../ledger';
 import { bufferTarget, foodIndex, goodsBudget, steadyStateDemand } from '../agents/demandModel';
 import { basePrices, materialCostPerUnit, materialsValue, tfp, toolCostPerUnit, unitVariableCost } from '../agents/production';
@@ -181,7 +183,7 @@ import {
 } from './layout';
 import { planTrack, routeBetweenTowns } from './paths';
 import { firmName, personName, realmName, townName } from './names';
-import { applyScenario, scenarioDef } from './scenarios';
+import { applyScenario, paveTownRoads, scenarioDef } from './scenarios';
 
 export interface WorldOptions {
   seed: number;
@@ -1121,6 +1123,7 @@ export function createWorld(opts: WorldOptions): SimState {
   const R: RngHolder = s; // world init draws from the state's own RNG (deterministic per seed)
   const projectFunds = new Map<number, number>(); // owner id → deposits set aside for a founding project
   const scen = scenarioDef(opts.scenario ?? 'founding');
+  const vacancy = scen.found?.housingVacancy ?? INIT_HOUSING_VACANCY;
   s.settings.scenario = scen.id;
   s.settings.realmName = opts.realmName && opts.realmName.trim() ? opts.realmName.trim() : realmName(R);
 
@@ -1137,6 +1140,7 @@ export function createWorld(opts: WorldOptions): SimState {
   const capital = s.towns.find((t) => t.kind === 'capital') ?? s.towns[0];
   const harbor = s.towns.find((t) => t.hasPort) ?? null;
   buildTownRoads(s);
+  if (scen.found?.paved) paveTownRoads(s);
   const special: Building[] = [];
   {
     const p = findCoreSite(s, capital.id, 2, 2, false, 3);
@@ -1163,7 +1167,7 @@ export function createWorld(opts: WorldOptions): SimState {
 
   // ---- 2–3. calibration --------------------------------------------------------------------
   // Core radius from the expected number of town buildings (farms keep outside it).
-  const coreRadius = (pop: number, firms: number) => Math.sqrt(((pop * (1 + INIT_HOUSING_VACANCY)) / HOUSE_SLOTS + 2.5 * firms + 16) * 2.1 / Math.PI) + 1;
+  const coreRadius = (pop: number, firms: number) => Math.sqrt(((pop * (1 + vacancy)) / HOUSE_SLOTS + 2.5 * firms + 16) * 2.1 / Math.PI) + 1;
   for (const t of s.towns) t.radius = Math.round(coreRadius(TOWN_POP[t.kind] ?? 100, 6) * 10) / 10;
   const withForeign = scen.id !== 'isolated';
   const candFor = (): Map<string, Site[]> => {
@@ -1239,7 +1243,7 @@ export function createWorld(opts: WorldOptions): SimState {
   const makeFirm = (sec: Sector, town: TownId, x: number, y: number, workers: number, q: number, leff: number, connect = true): Firm => {
     const d = SECTORS[sec];
     const b = placeBuilding(s, 'firm', sec, town, x, y, 'active', { connect });
-    const head = sec === 'farm' ? INIT_FARM_CAPACITY_HEADROOM : INIT_CAPACITY_HEADROOM;
+    const head = (sec === 'farm' ? INIT_FARM_CAPACITY_HEADROOM : INIT_CAPACITY_HEADROOM) * (scen.found?.room ?? 1);
     b.level = clamp(Math.ceil((workers * head) / d.capacityPerLevel), 1, INIT_MAX_LEVEL);
     const f = newFirm(s, sec, town, b.id, STATE, firmName(R, d.name, s.towns[town].name));
     f.founded = -Math.round(randRange(R, 400, 3600)); // established long before the founding of the Treasury
@@ -1325,7 +1329,7 @@ export function createWorld(opts: WorldOptions): SimState {
   // Houses near each centre.
   const houses: Building[][] = s.towns.map(() => []);
   for (const t of s.towns) {
-    const need = Math.ceil((townPop[t.id] * (1 + INIT_HOUSING_VACANCY)) / HOUSE_SLOTS);
+    const need = Math.ceil((townPop[t.id] * (1 + vacancy)) / HOUSE_SLOTS);
     for (let k = 0; k < need; k++) {
       // Houses fill the town outward from the market: look just beyond the built-up area first.
       const site = findSite(s, 'house', t.id, t.radius + 4) ?? findSite(s, 'house', t.id);
@@ -1717,6 +1721,17 @@ export function createWorld(opts: WorldOptions): SimState {
 
   // ---- foreign ---------------------------------------------------------------------------------------------
   const fo = s.foreign;
+  // Piers the scenario founds the harbour with (the ships' capacity follows them from the first month).
+  if (harbor && withForeign) {
+    for (let k = 0; k < (scen.found?.piers ?? 0); k++) {
+      const xy = findSite(s, 'pier', harbor.id);
+      if (!xy) break;
+      const b = placeBuilding(s, 'port', '', harbor.id, xy.x, xy.y, 'active'); // a pier is a port building
+      b.owner = STATE;
+      b.cost = round2(materialsValue(PIER_COST, P[harbor.id], W, BUILD_MARGIN));
+      fo.piers = Math.max(0, fin(fo.piers)) + 1;
+    }
+  }
   for (let g = 0; g < N_GOODS; g++) {
     fo.world[g] = withForeign ? cal.world[g] : 0;
     fo.world0[g] = fo.world[g];

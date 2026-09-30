@@ -24,7 +24,7 @@ import { stepDay } from '../sim/engine';
 import { Game } from '../sim/game';
 import { rebaseStats } from '../sim/stats/stats';
 import { createWorld } from '../sim/world/init';
-import { SCENARIOS } from '../sim/world/scenarios';
+import { SCENARIOS, startScenario } from '../sim/world/scenarios';
 import type { Panel } from './panel';
 import { PANELS } from './panels/index';
 import { createMapView, type MapView } from './map/renderer';
@@ -201,6 +201,7 @@ export async function foundRealm(opts: FoundOptions, onProgress: (f: number, lab
   onProgress(0.98, 'Taking stock', s.day);
   await nextFrame();
   rebaseStats(s);
+  startScenario(s);
   return new Game(s);
 }
 

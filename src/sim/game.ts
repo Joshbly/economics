@@ -8,6 +8,7 @@ import { deserialize, serialize } from './save';
 import { rebaseStats } from './stats/stats';
 import type { ActionResult, PlayerAction, SimState } from './types';
 import { createWorld, type WorldOptions } from './world/init';
+import { startScenario } from './world/scenarios';
 
 export interface NewGameOptions extends Partial<WorldOptions> {
   /** Simulate WARMUP_DAYS silently first (default true). */
@@ -34,6 +35,7 @@ export class Game {
       }
       rebaseStats(s);
     }
+    startScenario(s);
     return g;
   }
 

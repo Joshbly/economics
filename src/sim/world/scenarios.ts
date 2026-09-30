@@ -11,21 +11,48 @@ import {
   SCEN_CREDIT_LOAN_SHARE,
   SCEN_CREDIT_LOAN_TO_CAPITAL,
   SCEN_CREDIT_RESERVE_RATE,
+  SCEN_GOLDEN_HEAD_ALL,
+  SCEN_GOLDEN_HEAD_HUNGRY,
+  SCEN_GOLDEN_PIERS,
+  SCEN_GOLDEN_RESERVE_BUY,
+  SCEN_GOLDEN_RESERVE_BUY_QTY,
+  SCEN_GOLDEN_RESERVE_DAYS,
+  SCEN_GOLDEN_RESERVE_SELL,
+  SCEN_GOLDEN_RESERVE_SELL_QTY,
+  SCEN_GOLDEN_ROOM,
+  SCEN_GOLDEN_VACANCY,
   SCEN_WINTER_DROUGHT_DAYS,
   SCEN_WINTER_GRAIN_FACTOR,
   SCEN_WINTER_SHOCK_DAYS,
   STARTUP_LOAN_TERM,
 } from '../config';
 import { newLoan } from '../factory';
-import { G, N_GOODS, SECTORS } from '../goods';
+import { G, GOODS, N_GOODS, SECTORS } from '../goods';
 import { firmRef, reconcileBank } from '../ledger';
+import { dispatch } from '../policy/player';
+import { invalidateRoutes } from '../runtime';
 import { news } from '../stats/events';
-import type { SimState } from '../types';
+import type { GoodId, LevyInput, SimState } from '../types';
+import { fin } from '../util';
+import { roadPlan } from './paths';
+
+/** How the world is founded under a scenario (read by world/init.ts while it builds the realm). */
+export interface ScenarioFounding {
+  /** Spare homes at founding, as a share of the people (default INIT_HOUSING_VACANCY). */
+  housingVacancy?: number;
+  /** Every town-to-town road paved before the realm's prices are worked out (default false). */
+  paved?: boolean;
+  /** Workshops are built this many times roomier than usual (room to hire before they must enlarge; default 1). */
+  room?: number;
+  /** Piers already standing at the harbour (each lets more foreign ships call; default 0). */
+  piers?: number;
+}
 
 export interface ScenarioDef {
   id: string;
   name: string;
   description: string;
+  found?: ScenarioFounding;
 }
 
 export const SCENARIOS: ScenarioDef[] = [
@@ -41,11 +68,33 @@ export const SCENARIOS: ScenarioDef[] = [
     description: 'The bank lends freely and the Treasury window charges almost nothing. Most workshops start with fresh loans and full coffers.',
   },
   {
+    id: 'golden',
+    name: 'A Golden Age',
+    description:
+      'Everything set up for a realm that thrives: paved roads between the towns, homes to spare for newcomers, roomy workshops and a busy harbour, with no droughts, fires or fevers in store. The Treasury starts with a month of grain, coal, oil and furniture in its stores (bought when cheap, sold when dear), pays a little coin to every household and more to anyone who goes hungry, and can always create the money it pays.',
+    found: { housingVacancy: SCEN_GOLDEN_VACANCY, paved: true, room: SCEN_GOLDEN_ROOM, piers: SCEN_GOLDEN_PIERS },
+  },
+  {
     id: 'isolated',
     name: 'Closed Seas',
     description: 'No foreign ships call at the harbour. The realm must make everything it uses, and its gold cannot buy grain abroad.',
   },
 ];
+
+/** Pave every town-to-town road (world init, before the realm's prices are worked out). */
+export function paveTownRoads(s: SimState): void {
+  for (let a = 0; a < s.towns.length; a++) {
+    for (let b = a + 1; b < s.towns.length; b++) {
+      let laid = 0;
+      for (const i of roadPlan(s, a, b)) {
+        if (s.map.occ[i] >= 0 || s.map.road[i] >= 2) continue;
+        s.map.road[i] = 2;
+        laid++;
+      }
+      if (laid > 0) invalidateRoutes(s);
+    }
+  }
+}
 
 /** Look up a scenario (falls back to the founding preset). */
 export function scenarioDef(id: string): ScenarioDef {
@@ -96,6 +145,11 @@ export function applyScenario(s: SimState, id: string): void {
       news(s, 'Credit is cheap and plentiful: the Treasury window asks only ' + (SCEN_CREDIT_LEND_RATE * 100).toFixed(1) + '% a year.', 'info', -1);
       break;
     }
+    case 'golden': {
+      s.settings.events = false; // no droughts, fires, fevers or storms (nor bumper seasons)
+      news(s, 'Paved roads join every town, there are homes to spare for newcomers and the harbour has room for many ships.', 'good', -1);
+      break;
+    }
     case 'isolated': {
       for (let g = 0; g < N_GOODS; g++) {
         s.foreign.shipCap[g] = 0;
@@ -108,4 +162,47 @@ export function applyScenario(s: SimState, id: string): void {
     default:
       break;
   }
+}
+
+/** Goods the 'golden' Treasury keeps a reserve of: storable, and what bread, ale, warmth, freight and furnished homes rest on. */
+const GOLDEN_RESERVE: GoodId[] = [G.grain, G.coal, G.oil, G.furniture];
+
+/**
+ * When the player takes charge (after the warm-up and stats.rebaseStats; Game.create and the UI's foundRealm): the
+ * standing arrangements a scenario starts the Treasury with. They are ordinary orders and rules, listed in force and
+ * changed or cancelled like any other. The policy news of setting them up is folded into one item.
+ */
+export function startScenario(s: SimState): void {
+  if (s.settings.scenario !== 'golden') return;
+  const t = s.treasury;
+  const before = new Set(s.news);
+  t.autoMint = true;
+  t.givesSuspended = false;
+  for (const g of GOLDEN_RESERVE) {
+    const name = GOODS[g].name;
+    for (let town = 0; town < s.towns.length; town++) {
+      const m = s.markets[town * N_GOODS + g];
+      if (!m) continue;
+      const trade = Math.max(1, fin(m.volEma));
+      const p = m.ema > 0 ? m.ema : m.price;
+      if (!(p > 0)) continue;
+      t.goods[town][g] = Math.max(0, fin(t.goods[town][g])) + SCEN_GOLDEN_RESERVE_DAYS * trade; // the founding reserve
+      const qty = (share: number) => Math.max(1, Math.round(trade * share));
+      dispatch(s, { type: 'placeOrder', market: { kind: 'good', town, good: g }, side: 'buy', price: +(p * SCEN_GOLDEN_RESERVE_BUY).toFixed(2), qty: qty(SCEN_GOLDEN_RESERVE_BUY_QTY), label: `${name} reserve: buy when cheap` });
+      dispatch(s, { type: 'placeOrder', market: { kind: 'good', town, good: g }, side: 'sell', price: +(p * SCEN_GOLDEN_RESERVE_SELL).toFixed(2), qty: qty(SCEN_GOLDEN_RESERVE_SELL_QTY), label: `${name} reserve: sell when dear` });
+    }
+  }
+  const head = (label: string, group: LevyInput['group'], rate: number): void => {
+    const levy: LevyInput = { label, enabled: true, dir: -1, base: 'head', unit: 'flat', rate, payer: 'receiver', threshold: 0, good: -1, town: -1, toTown: -1, sector: 'any', group, buildingKind: 'any', until: -1 };
+    dispatch(s, { type: 'addLevy', levy });
+  };
+  head('Coin for every household', 'all', SCEN_GOLDEN_HEAD_ALL);
+  head('Coin for the hungry', 'hungry', SCEN_GOLDEN_HEAD_HUNGRY);
+  s.news = s.news.filter((n) => before.has(n));
+  news(
+    s,
+    `The Treasury's stores hold a month of grain, coal, oil and furniture in every town: standing orders buy more when a good falls to ${Math.round(100 * SCEN_GOLDEN_RESERVE_BUY)} % of today's price and sell when it reaches ${Math.round(100 * SCEN_GOLDEN_RESERVE_SELL)} %. Every household receives ${SCEN_GOLDEN_HEAD_ALL} ¤ a day and anyone who went hungry ${SCEN_GOLDEN_HEAD_HUNGRY} ¤ a day; auto-mint is on, so the Purse never runs dry.`,
+    'policy',
+    -1,
+  );
 }

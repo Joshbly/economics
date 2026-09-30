@@ -1,6 +1,7 @@
 // World generation, layout, pathfinding and founding calibration.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { INIT_UNEMPLOYMENT, OWNER_SHARE, SPEED_DIRT } from '../src/sim/config';
+import { INIT_UNEMPLOYMENT, OWNER_SHARE, SCEN_GOLDEN_PIERS, SCEN_GOLDEN_VACANCY, SPEED_DIRT } from '../src/sim/config';
+import { Game } from '../src/sim/game';
 import { G, N_GOODS, PRODUCER_SECTORS, SECTORS } from '../src/sim/goods';
 import { checkLedger, deposits, loansOutstanding } from '../src/sim/ledger';
 import { rt } from '../src/sim/runtime';
@@ -513,7 +514,7 @@ describe('names', () => {
 
 describe('scenarios', () => {
   it('lists presets with neutral wording and applies them', () => {
-    expect(SCENARIOS.map((x) => x.id)).toEqual(['founding', 'longwinter', 'creditboom', 'isolated']);
+    expect(SCENARIOS.map((x) => x.id)).toEqual(['founding', 'longwinter', 'creditboom', 'golden', 'isolated']);
     const banned = /subsid|tax|tariff|stimul|bailout|quota|minimum wage|\bqe\b|\bubi\b/i;
     for (const sc of SCENARIOS) expect(banned.test(sc.name + ' ' + sc.description)).toBe(false);
 
@@ -534,6 +535,68 @@ describe('scenarios', () => {
     expect(cb.treasury.lendRate).toBeLessThan(base.treasury.lendRate);
     expect(Math.abs(checkLedger(cb))).toBeLessThan(1e-6);
     for (const w of [iso, lw, cb]) for (const n of w.news) expect(banned.test(n.text)).toBe(false);
+  });
+
+  it('founds A Golden Age with paved roads, spare homes, roomy workshops and piers', () => {
+    const base = createWorld({ seed: 4 });
+    const w = createWorld({ seed: 4, scenario: 'golden' });
+    expect(w.settings.events).toBe(false);
+    expect(Math.abs(checkLedger(w))).toBeLessThan(1e-6);
+    // every town-to-town road paved (nothing left for a paving project)
+    for (let a = 0; a < w.towns.length; a++) for (let b = a + 1; b < w.towns.length; b++) expect(roadPlan(w, a, b)).toEqual([]);
+    expect(base.towns.some((_, a) => base.towns.some((__, b) => b > a && roadPlan(base, a, b).length > 0))).toBe(true);
+    // spare homes: slots beyond the people ≈ SCEN_GOLDEN_VACANCY of them
+    const spare = (x: SimState) => x.buildings.filter((b) => b.kind === 'house' && b.status === 'active').reduce((n, b) => n + b.slots, 0) / x.people.length - 1;
+    expect(spare(w)).toBeGreaterThan(SCEN_GOLDEN_VACANCY - 0.05);
+    expect(spare(base)).toBeLessThan(0.15);
+    // roomier workshops: more capacity per worker than the usual founding
+    const room = (x: SimState) => {
+      let cap = 0;
+      let n = 0;
+      for (const f of x.firms) if (f.alive && SECTORS[f.sector].producer) (cap += f.capacity), (n += f.workers.length);
+      return cap / Math.max(1, n);
+    };
+    expect(room(w)).toBeGreaterThan(1.3 * room(base));
+    // piers at the harbour (port buildings) and the ships' count of them
+    expect(w.foreign.piers).toBe(SCEN_GOLDEN_PIERS);
+    expect(w.buildings.filter((b) => b.kind === 'port').length).toBe(base.buildings.filter((b) => b.kind === 'port').length + SCEN_GOLDEN_PIERS);
+  });
+
+  it('starts the golden Treasury with reserves, standing orders and per-head payments when the player takes charge', () => {
+    const banned = /subsid|tax|tariff|stimul|bailout|quota|minimum wage|\bqe\b|\bubi\b|welfare|dividend/i;
+    const g = Game.create({ seed: 4, scenario: 'golden', warmup: false });
+    const w = g.s;
+    const nT = w.towns.length;
+    expect(w.treasury.autoMint).toBe(true);
+    expect(w.policy.orders.length).toBe(4 * 2 * nT);
+    for (const good of [G.grain, G.coal, G.oil, G.furniture]) {
+      for (let t = 0; t < nT; t++) {
+        const m = w.markets[t * N_GOODS + good];
+        const os = w.policy.orders.filter((o) => o.market.kind === 'good' && o.market.town === t && o.market.good === good);
+        expect(os.map((o) => o.side).sort()).toEqual(['buy', 'sell']);
+        expect(os.find((o) => o.side === 'buy')!.price).toBeLessThan(m.ema);
+        expect(os.find((o) => o.side === 'sell')!.price).toBeGreaterThan(m.ema);
+        expect(w.treasury.goods[t][good]).toBeGreaterThan(10 * Math.max(1, m.volEma));
+      }
+    }
+    expect(w.policy.levies.map((l) => [l.base, l.dir, l.group])).toEqual([
+      ['head', -1, 'all'],
+      ['head', -1, 'hungry'],
+    ]);
+    // one news item for the whole arrangement, in plain words
+    const pol = w.news.filter((n) => n.kind === 'policy');
+    expect(pol.length).toBe(1);
+    for (const n of w.news) expect(banned.test(n.text)).toBe(false);
+    for (const o of w.policy.orders) expect(banned.test(o.label)).toBe(false);
+    for (const l of w.policy.levies) expect(banned.test(l.label)).toBe(false);
+    // other scenarios start with nothing in force
+    const f = Game.create({ seed: 4, warmup: false });
+    expect(f.s.policy.orders.length + f.s.policy.levies.length).toBe(0);
+    expect(f.s.treasury.autoMint).toBe(false);
+    // it runs: the books balance and the stores hold what they held less what was sold
+    g.step(40);
+    expect(Math.abs(checkLedger(w))).toBeLessThan(1e-6 * Math.max(1, w.bank.reserves) + 1e-3);
+    for (let t = 0; t < nT; t++) for (const q of w.treasury.goods[t]) expect(q).toBeGreaterThanOrEqual(-1e-6);
   });
 });
 

@@ -105,6 +105,54 @@ along roads; wagons carry goods between towns along roads.
 Speeds (tiles/day, config): off-road 6, dirt 20, paved 45. Paths are computed by
 `world/paths.ts` (A*, road-preferring) and cached in the runtime.
 
+### 1.4 Scenarios (`world/scenarios.ts`)
+A scenario changes how the realm is founded, never the rules it runs by. It acts at up to three moments:
+* **While the world is built** (`ScenarioDef.found`, read by `world/init.ts`): spare homes
+  (`housingVacancy`, default INIT_HOUSING_VACANCY), every town-to-town road paved before the
+  prices are worked out (`paved`), workshops `room` times roomier than usual, and `piers` already
+  standing at the harbour.
+* **Before the warm-up** (`applyScenario`): drought, price shocks abroad, window rates and loans,
+  closed seas, random events off.
+* **When the player takes charge** (`startScenario`, after the warm-up and `rebaseStats`; called by
+  `Game.create` and the UI's `foundRealm`): standing orders, rules and Treasury stores, set up through
+  `dispatch` like the player's own (listed in force, changed or cancelled the same way; one news item).
+
+| id | What is different |
+|---|---|
+| `founding` | nothing: a balanced young realm |
+| `longwinter` | a drought in the farm town, grain dear abroad |
+| `creditboom` | window rates near zero, most workshops with fresh loans |
+| `golden` | *A Golden Age*: see below |
+| `isolated` | no foreign ships |
+
+**A Golden Age** is the best start found for a thriving realm over five years (seeds 1–8 against
+`founding`, 1,800 days after the warm-up). Each piece answers a failure seen
+in the plain founding:
+* **Homes to spare** (SCEN_GOLDEN_VACANCY = 30 %). Newcomers come only where there is both work and
+  a free home; private builders put up houses only once rents pay the loan rate + HOUSE_HURDLE,
+  which at founding rents takes years. With few spare homes the realm stops growing, labour runs
+  short and wages (then prices) ratchet up.
+* **Roomy workshops** (SCEN_GOLDEN_ROOM = 1.5 × the usual headroom): firms hire newcomers without
+  first enlarging, which the idle builders are slow to do.
+* **Paved roads and six piers**: cheaper, quicker freight between the towns, and ships enough to
+  keep tradable goods near their world prices.
+* **No random events** (droughts, fires, fevers; bumper seasons too).
+* **Reserves of grain, coal, oil and furniture** (a month of each town's trade in the Treasury's
+  stores; standing orders buy at 85 % of the opening price and sell at 120 %). Oil is a thin trade:
+  when a well or two falls idle its price can jump tenfold within weeks, the wagons and the boats
+  stop, and bread and fish run out everywhere — a famine from a fuel shortage. The reserve caps it.
+* **Auto-mint on**: reserve interest comes from the Purse; when a Purse runs dry the bank's
+  deposit and loan rates fall by the reserve rate at once, credit jumps and prices with it.
+* **Per-head payments**: 0.04 ¤ a day to everyone (money grows with the realm) and 5 ¤ a day to
+  anyone who went hungry (the destitute: jobless, penniless, often homeless; it does not depend on
+  having work, so it does not keep anyone from a job — a payment only the jobless receive raises
+  what they will work for and, at 3 ¤ a day, sank the realm).
+
+What was tried and left out: tighter reserve bands on more goods (the Treasury bought far more
+than it sold and prices rose), Treasury hiring of the jobless at 85 % of the going wage (no
+hunger, but idle crews cost a third of the money stock), higher window rates, and a monthly
+rate rule on inflation (it lags and overshoots).
+
 ---------------------------------------------------------------------------
 
 ## 2. Goods and production
