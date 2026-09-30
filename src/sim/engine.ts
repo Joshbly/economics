@@ -28,6 +28,8 @@ import { townsStep } from './world/belonging';
 import { companyMarket } from './agents/invest';
 import { sisterSupply } from './agents/integration';
 import { councilStep } from './agents/council';
+import { bondsAfterMarket, bondsBeginDay } from './agents/bonds';
+import { goldBeginDay } from './agents/gold';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -36,6 +38,8 @@ export function stepDay(s: SimState): void {
   beginDayEvents(s); // random events, droughts, strikes countdown, world shocks
   policyBeginDay(s); // expire levies/limits/orders, Treasury workforce targets
   bankBeginDay(s); // rates, interest, amortisation, window
+  bondsBeginDay(s); // what IOUs are worth to holders today: expected rates, premia (agents/bonds.ts)
+  goldBeginDay(s); // why households want gold today: fear for the bank, the coin's fall (agents/gold.ts)
   tradersBeginDay(s); // arrivals, wagons return
 
   // --- work ---
@@ -64,6 +68,7 @@ export function stepDay(s: SimState): void {
   clearAll(s, books, { before: (k) => playerBeforeSession(s, books, k), after: (k) => playerAfterSession(s, k) });
   tradersDispatch(s, books);
   playerAfterClear(s, books);
+  bondsAfterMarket(s, books.iou); // no IOUs in anyone's hands: the quote is what a few would fetch
 
   // --- evening ---
   householdsConsume(s);

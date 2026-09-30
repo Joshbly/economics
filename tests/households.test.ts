@@ -35,6 +35,7 @@ import {
   rungSets,
 } from '../src/sim/agents/households';
 import { bidLadder, foodIndex, planDemand } from '../src/sim/agents/demandModel';
+import { householdIouWorth } from '../src/sim/agents/bonds';
 import { BID_RUNGS, ELASTICITY, FURNITURE_SHOP_DAYS } from '../src/sim/config';
 import { rand, seedRng } from '../src/sim/rng';
 import { heatNeed } from '../src/sim/calendar';
@@ -204,11 +205,17 @@ describe('portfolio orders', () => {
     let books = fakeBooks(s);
     householdOrders(s, books as any);
     householdPortfolioOrders(s, books as any);
-    const iouBids = books.iou.bids.filter((o) => o.ref === saver.id);
-    expect(iouBids.length).toBe(1);
-    expect(iouBids[0].limit * iouBids[0].qty).toBeLessThan(0.1 * saver.cash); // modest
+    // a ladder of bids below what an IOU is worth to the saver, bigger the lower the price
+    const iouBids = books.iou.bids.filter((o) => o.ref === saver.id).sort((a, b) => b.limit - a.limit);
+    expect(iouBids.length).toBeGreaterThan(1);
+    const worth = householdIouWorth(s, saver.id);
+    for (const o of iouBids) expect(o.limit).toBeLessThan(worth);
+    const cost = iouBids.reduce((a, o) => a + o.limit * o.qty, 0);
+    expect(cost).toBeLessThan(0.1 * saver.cash); // modest: a step of the way a day
     expect(books.iou.bids.some((o) => o.ref === worker.id)).toBe(false);
-    expect(books.gold.bids.length).toBe(0);
+    const goldBid = (bk: typeof books) => bk.gold.bids.filter((o) => o.ref === saver.id).reduce((a, o) => a + o.limit * o.qty, 0);
+    const baseGold = goldBid(books);
+    expect(baseGold).toBeLessThan(0.01 * saver.cash); // at most a small store
 
     saver.expInfl = 0.2;
     s.stats.latest.infl30 = 0.2;
@@ -216,7 +223,25 @@ describe('portfolio orders', () => {
     books = fakeBooks(s);
     householdOrders(s, books as any);
     householdPortfolioOrders(s, books as any);
-    expect(books.gold.bids.some((o) => o.ref === saver.id)).toBe(true);
+    expect(goldBid(books)).toBeGreaterThan(baseGold + 0.005 * saver.cash);
+  });
+
+  it('a holder offered well over what an IOU is worth to it offers them all', () => {
+    const s = tinyWorld();
+    s.bank.depositRate = 0.01;
+    const p = addPerson(s, 0, 20000, { iou: 10 });
+    householdsBeginDay(s);
+    s.iouMarket.ema = 80;
+    let books = fakeBooks(s);
+    householdOrders(s, books as any);
+    householdPortfolioOrders(s, books as any);
+    // cheap IOUs: it keeps its own; asks only far above
+    const worth = householdIouWorth(s, p.id);
+    const asks = books.iou.asks.filter((o) => o.ref === p.id);
+    const total = asks.reduce((a, o) => a + o.qty, 0);
+    expect(total).toBeCloseTo(10, 6);
+    for (const o of asks) expect(o.limit).toBeGreaterThanOrEqual(worth - 1e-9);
+    expect(Math.max(...asks.map((o) => o.limit))).toBeCloseTo(worth * 1.1, 6);
   });
 
   it('people short of cash offer their gold and IOUs for sale', () => {

@@ -194,9 +194,22 @@ households outbid comfortable ones.
 ale, furniture stock wears. Satisfaction drives `health`
 (→ labour productivity, mortality) and `contentment` (→ strikes, emigration).
 
-**Portfolio**: households with savings well above their buffer may buy IOUs
-(when IOU yield > deposit rate + margin) and gold (when expected inflation
-exceeds the deposit rate). They sell them when they need liquidity.
+**Portfolio** (`households.householdPortfolioOrders`; §3.5 for what IOUs are worth, §3.6 for
+gold): a household's savings are its wealth beyond PORTFOLIO_SURPLUS_MULT × its buffer.
+* **IOUs** — the share of its savings it wants in IOUs grows with how far their yield beats
+  the yield it asks (none at its worth; PORTFOLIO_MAX_IOU_SHARE at IOU_FULL_SPREAD more), and
+  each day it moves IOU_BUY_SPEED / IOU_SELL_SPEED of the way toward it at each price of a
+  ladder around the going price (`bonds.postIouSchedule`) — so its demand and its supply are
+  curves, not triggers. Offered more than an IOU is worth to it, a holder sells faster, and
+  all at once at IOU_TENDER_GAP over its worth: a buyer paying well over the market buys.
+* **Gold** — a target share of its wealth (`agents/gold.ts`): GOLD_BASE_SHARE × its taste (the
+  cautious more: 2 × (1 − nerve); households are founded holding it) + GOLD_HEDGE_SLOPE ×
+  (expected inflation − the deposit rate − GOLD_HEDGE_FREE) + GOLD_FEAR_SHARE × fear for the
+  bank (its capital, IOUs at the market's price, below GOLD_FEAR_HEADROOM × the rule; all of
+  it once failed) + GOLD_FALL_SLOPE × (the gold price's rise on a year ago − GOLD_FALL_FREE),
+  at most PORTFOLIO_MAX_GOLD_SHARE. More than GOLD_BAND off it, it moves GOLD_REBAL_SPEED of
+  the gap a day, buying with cash to spare and selling what it holds beyond.
+* Short of cash (below half the buffer), it sells gold or IOUs just under the market.
 
 **Labour**: unemployed people search every day (sample of vacancies, mostly in
 their own town, some in towns within commuting range), accept the best offer
@@ -492,8 +505,32 @@ One commercial bank (owned by a wealthy person). Balance sheet:
   line must also cover the firm's running losses.
 * Lending creates deposits (money creation); repayment destroys them.
 * Reserves below requirement (a Limit) or negative → borrows at the window.
-* Buys IOUs with excess reserves when yield > reserve rate + margin; sells for
-  liquidity. IOUs are held at book value; unrealised losses are reported.
+* **IOUs** (`bank.bankOrders`, `agents/bonds.ts`): what it would put in them is its IOUs and
+  its reserves to spare (at most BANK_IOU_MAX_SHARE of deposits); it wants more of that in
+  IOUs the further they yield over what it asks — all of it at BANK_IOU_FULL_SPREAD more — and
+  moves BANK_IOU_SPEED of the way a day (bids below its worth, asks above what it wants). Short
+  of reserves, or borrowing at the window above the IOU yield, it sells at the market. IOUs are
+  held at book value; unrealised losses are reported (and depositors see them: §3.6 gold).
+
+**What an IOU is worth** (`agents/bonds.ts`, computed each morning after the bank sets its
+rates). An IOU pays IOU_COUPON a year for ever; to a holder asking yield `y` it is worth
+IOU_COUPON / max(y, IOU_MIN_YIELD). The yield asked is built like a real long rate:
+* the reserve rate expected over the years ahead: (1 − IOU_TAYLOR_WEIGHT) × [IOU_NOW_WEIGHT ×
+  today's rate + (1 − IOU_NOW_WEIGHT) × its average over IOU_RATE_MEMORY_DAYS] + IOU_TAYLOR_WEIGHT
+  × (IOU_NEUTRAL_REAL + households' mean expected inflation) — a hike moves prices a little at
+  once and more the longer it lasts; rates held below inflation are expected to rise;
+* a term premium, and the **sovereign premium**: IOU_DEBT_SLOPE × (debt at par ÷ a year's output
+  − IOU_DEBT_FREE), + the memory of coupons cut (every day coupons are cut adds IOU_CUT_STRESS ×
+  the share withheld, at most IOU_STRESS_MAX, fading IOU_STRESS_FADE a day), + with auto-mint
+  off up to IOU_CASH_PREMIUM while the Purse holds less than IOU_CASH_DAYS of coupons;
+* an inflation-risk premium: IOU_INFL_RISK × (expected inflation − IOU_INFL_COMFORT).
+The bank measures the expected rate against reserves (+ BANK_IOU_MARGIN + BANK_IOU_TERM_PREMIUM
+− BANK_IOU_LIQUIDITY); households against the deposit rate it would bring (+ IOU_MARGIN +
+IOU_TERM_PREMIUM + their temperament's premium × IOU_TASTE_SHARE). The market's price is where
+the holdings everyone wants add up to the IOUs there are: issuing more lowers it until savers
+want them (the bank first — households keep most of their money as a buffer), buying them back
+raises it until holders let them go. With none in anyone's hands the quote is what IOU_QUOTE_LOT
+would fetch from the day's bids (`bondsAfterMarket`; the founding quote is the bank's worth).
 * Equity < 0 → the bank stops lending; after 30 days without recapitalisation,
   depositors are bailed in (all deposits cut pro-rata to restore equity).
 * Dividends: a share of the month's profit while capital is comfortable, the
@@ -513,8 +550,11 @@ needs coin. Foreign dealers provide liquidity around a valuation that drifts
 toward purchasing-power parity, marked up while the desk holds more coin than
 its working balance — DESK_COIN_DAYS of its *two-way* trade (min of imports and
 exports): coin earned on a one-sided import surplus weakens the coin rather than
-raising the desk's appetite for it, so the realm's money does not drain abroad. Households hoard gold when inflation erodes
-deposits; the Treasury can trade gold (hold reserves, defend a price…).
+raising the desk's appetite for it, so the realm's money does not drain abroad. Households hold
+a share of their wealth in gold (§3.1) and buy it from the dealers, so a flight into gold —
+inflation outrunning deposit rates, a bank short of capital, a coin falling for a year — sends
+coin abroad and weakens the coin, which feeds the fear of its fall. The Treasury can trade gold
+(hold reserves, defend a price…).
 
 ### 3.7 Town councils and the town's land (`agents/council.ts`)
 Every town has a **council**: a purse — a deposit at the bank like anyone's (ledger ref
@@ -611,6 +651,10 @@ day by a **uniform-price call auction** (`market/auction.ts`):
    rate is negative) the difference. Goods move between inventories.
 6. Record price, volume, unfilled demand (shortage), unsold supply (surplus),
    and an aggregated curve snapshot for the UI.
+A **market order** (`Order.market`: the Treasury's "at any price") takes the other side's
+prices and never sets the price: it stands at the price bound for the auction's scan, a level
+where only market orders stand is never a candidate price, and with market orders on both sides
+and no limits between they trade at the reference price.
 If bids and asks do not cross, the market records an indicative price
 (mid of best bid/ask) and zero volume. A one-sided book moves the indicative
 price toward its best order (at most INDICATIVE_STEP a day): buyers with nobody
@@ -865,6 +909,8 @@ beginDay            calendar, season, random events, reset daily accumulators
 policyBeginDay      expire orders/levies/limits/carry rules (carry allowances); freight lines' morning (wagons home, wear, fare,
                     drivers wanted) and the Treasury crews (labour orders + line drivers)
 bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisation, window
+bondsBeginDay       what IOUs are worth today: the rate memory, the stress of coupons cut, premia (agents/bonds.ts)
+goldBeginDay        why households want gold today: fear for the bank, the gold price on a year ago (agents/gold.ts)
 tradersBeginDay     shipments arrive (the Treasury's cargo due by the opening lands in its stores), wagons return
 firmsPlan           employment targets, wage adjustments, vacancies
 constructionPlan    builders' workforce targets
@@ -892,6 +938,7 @@ clearAll            three market sessions (MARKET_SESSIONS; SESSION_TIMES 0.3 / 
 tradersDispatch     filled purchases → shipments (loads on a freight line pay its fare)
 playerAfterClear    Treasury order bookkeeping (patient steps, Treasury workers, once-orders);
                     freight lines: purchases into their stores, today's loads leave, accounts
+bondsAfterMarket    no IOUs in anyone's hands: the quote is what IOU_QUOTE_LOT would fetch from the bids
 householdsConsume   eating, heating, ale, furniture wear, health, contentment
 housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
 firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy

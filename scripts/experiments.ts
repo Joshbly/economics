@@ -248,6 +248,13 @@ const METRICS: Record<string, { label: string; fn: MetricFn }> = {
   carters: { label: 'carters employed by trading houses', fn: (s) => sumFirms(s, 'trader', -1, (f) => f.workers.length) },
   capitalGrain: { label: 'grain price in the capital', fn: (s, c) => mkt(s, c.capital, G.grain)?.ema ?? 0 },
   farmGrain: { label: 'grain price in the farm town', fn: (s, c) => mkt(s, c.farm, G.grain)?.ema ?? 0 },
+  iouPrice: { label: 'IOU price', fn: (s) => s.iouMarket.ema },
+  iouOut: { label: 'IOUs outstanding', fn: (s) => s.treasury.iouOutstanding },
+  bankIou: { label: 'IOUs held by the bank', fn: (s) => s.bank.iou },
+  bankReserves: { label: 'bank reserves', fn: (s) => s.bank.reserves },
+  purse: { label: 'the Purse', fn: (s) => s.treasury.purse },
+  hhGold: { label: 'gold held by households (oz)', fn: (s) => s.people.reduce((a, p) => a + (p && p.alive ? p.gold : 0), 0) },
+  goldPrice: { label: 'gold price (¤ an ounce)', fn: (s) => s.goldMarket.ema },
 };
 
 /** What a household pays for bread in each town (smoothed auction price with every rule that reaches its purchases). */
@@ -397,6 +404,11 @@ type LimitDraft = Omit<Limit, 'id' | 'created' | 'binding'>;
 function limit(p: Partial<LimitDraft>): LimitDraft {
   return { label: '', enabled: true, kind: 'priceMax', good: -1, town: -1, toTown: -1, value: 0, until: -1, ...p };
 }
+/** The Treasury sells 20 new IOUs a day for 30 days, asking as much as it can (experiments 19–21). */
+function issueIous(g: Game): void {
+  act(g, { type: 'placeOrder', market: { kind: 'iou' }, side: 'sell', price: 0, qty: 20, priceMode: 'follow', band: 0.05, days: 30 } as PlayerAction, 'sell IOUs');
+}
+
 /** Take 60 % of the bank's own capital into the Purse (experiment 16, both arms). */
 function thinBank(g: Game): void {
   const take = Math.round(0.6 * Math.max(0, g.s.bank.equity));
@@ -784,6 +796,75 @@ const EXPERIMENTS: Experiment[] = [
       { label: 'the Purse pays its running costs', metric: 'lineGap', kind: 'positive' },
     ],
     show: ['capitalGrain', 'farmGrain', 'lineCost', 'carters', 'unemp', 'freight'],
+  },
+  {
+    id: '19',
+    name: 'Treasury sells IOUs (20 a day for 30 days)',
+    // Savers take them only as their price falls far enough to beat what they ask (the bank first:
+    // households keep most of their coin for spending). The bank pays with its reserves; the coin
+    // sits in the Purse.
+    arms: [{ name: 'sell IOUs', setup: (g) => issueIous(g) }],
+    checks: [
+      { label: 'IOUs sold', metric: 'iouOut', kind: 'positive' },
+      { label: 'IOU price lower', metric: 'iouPrice', kind: 'down', tol: 0.03 },
+      { label: 'the Purse holds the proceeds', metric: 'purse', kind: 'up', tol: 0.1 },
+      { label: 'bank reserves lower', metric: 'bankReserves', kind: 'down', tol: 0.02 },
+    ],
+    show: ['bankIou', 'credit', 'cpi'],
+  },
+  {
+    id: '20',
+    name: 'Window rates to 6 % with IOUs outstanding',
+    // Both arms sell the same IOUs; one also raises the rates on day 0. IOUs pay the same coupon
+    // for ever, so what holders ask of them rises with the rate they expect — a little at once,
+    // more the longer it lasts — and their price falls.
+    arms: [
+      { name: 'IOUs sold', setup: (g) => issueIous(g) },
+      {
+        name: 'IOUs sold, rates up',
+        setup: (g) => {
+          issueIous(g);
+          act(g, { type: 'setWindow', reserveRate: 0.06, lendRate: 0.07 }, 'window');
+        },
+      },
+    ],
+    checks: [{ label: 'IOU price lower', metric: 'iouPrice', kind: 'down', tol: 0.05, arm: 'IOUs sold, rates up', vs: 'IOUs sold' }],
+    show: ['iouOut', 'bankIou', 'credit'],
+  },
+  {
+    id: '21',
+    name: 'Buy the IOUs back paying 30 % over the market (from day 60)',
+    // A holder offered well over what an IOU is worth to it sells: the bank at once, households
+    // (who value them more) more slowly. The bank's IOUs turn into reserves.
+    arms: [
+      { name: 'IOUs sold', setup: (g) => issueIous(g) },
+      {
+        name: 'sold, then bought back',
+        setup: (g) => issueIous(g),
+        hook: (g, _c, d) => {
+          if (d === 60) act(g, { type: 'placeOrder', market: { kind: 'iou' }, side: 'buy', price: Math.round(1.3 * g.s.iouMarket.ema), qty: 20 } as PlayerAction, 'buy back');
+        },
+      },
+    ],
+    checks: [
+      { label: 'IOUs outstanding lower', metric: 'iouOut', kind: 'down', tol: 0.5, arm: 'sold, then bought back', vs: 'IOUs sold' },
+      { label: 'IOU price higher while buying (days 60–120)', metric: 'iouPrice', kind: 'up', tol: 0.05, arm: 'sold, then bought back', vs: 'IOUs sold', window: () => [60, 120] },
+      { label: 'bank reserves higher', metric: 'bankReserves', kind: 'up', tol: 0.02, arm: 'sold, then bought back', vs: 'IOUs sold' },
+    ],
+    show: ['bankIou', 'purse', 'money'],
+  },
+  {
+    id: '22',
+    name: 'The bank’s capital thinned → a flight into gold',
+    // Depositors watch the bank's capital (its IOUs at the market's price): short of its rule, they
+    // move part of their wealth into gold, bought from the foreign dealers — coin goes abroad and
+    // the gold price rises. As retained profit rebuilds the bank's capital the fear fades.
+    arms: [{ name: 'capital thinned', setup: (g) => thinBank(g) }],
+    checks: [
+      { label: 'households hold more gold (days 0–120)', metric: 'hhGold', kind: 'up', tol: 0.2, window: () => [0, 120] },
+      { label: 'gold price higher (days 0–120)', metric: 'goldPrice', kind: 'up', tol: 0.01, window: () => [0, 120] },
+    ],
+    show: ['capRatio', 'money', 'cpi'],
   },
 ];
 

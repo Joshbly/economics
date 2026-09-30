@@ -449,6 +449,9 @@ function fillDefaults(s: SimState): void {
   fillInvest(s);
   fillCouncils(s);
   if (s.drawSalt !== undefined && !isNum(s.drawSalt)) delete s.drawSalt;
+  // the IOU market's memory (agents/bonds.ts): rebuilt from today's rate if damaged
+  const dm = s.treasury.debt as unknown;
+  if (dm !== undefined && !(isObj(dm) && isNum((dm as Obj).rateEma) && isNum((dm as Obj).stress) && isNum((dm as Obj).lastCut))) delete s.treasury.debt;
   const st = s.stats;
   st.acc = isObj(st.acc) ? st.acc : {};
   st.macc = isObj(st.macc) ? st.macc : {};

@@ -7,6 +7,7 @@ import { newFirm, newLoan, newMarket, newPerson, newSimState, newTown, newTreasu
 import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, deposits, disburse, mint, pay, reconcileBank, writeOff } from '../src/sim/ledger';
 import { bookFor, openBooks } from '../src/sim/market/markets';
+import { bankIouWorth, bondsBeginDay } from '../src/sim/agents/bonds';
 import { BANK, FIRM_BASE, STATE, type Levy, type Limit, type MapData, type SimState } from '../src/sim/types';
 
 const BANNED = /tax|subsid|bailout|bail-out|stimulus|QE|quantitative|tariff|UBI|minimum wage/i;
@@ -364,21 +365,51 @@ describe('bank: failure and bail-in', () => {
 });
 
 describe('bank: IOU portfolio', () => {
-  it('bids for IOUs with excess reserves when their yield beats the reserve rate', () => {
+  it('bids for IOUs with excess reserves when their yield beats what it asks, more the cheaper they are', () => {
     const s = world();
     person(s, 10_000);
     settle(s, 20_000);
     s.iouMarket.ema = 100; // 5 % yield vs 2 % reserve rate
     const books = openBooks(s);
     bankOrders(s, books);
-    const bids = bookFor(books, -1, 100).bids.filter((o) => o.ref === BANK);
-    expect(bids.length).toBe(1);
-    expect(bids[0].limit).toBeLessThanOrEqual(102 + 1e-9);
+    const bids = bookFor(books, -1, 100).bids.filter((o) => o.ref === BANK).sort((a, b) => b.limit - a.limit);
+    expect(bids.length).toBeGreaterThan(1);
+    const worth = bankIouWorth(s);
+    for (const o of bids) {
+      expect(o.limit).toBeLessThan(worth);
+      expect(o.limit).toBeLessThanOrEqual(108 + 1e-9); // the ladder around the going price
+    }
     // yield below the hurdle → no bid
     s.iouMarket.ema = 400;
     const books2 = openBooks(s);
     bankOrders(s, books2);
     expect(bookFor(books2, -1, 100).bids.filter((o) => o.ref === BANK).length).toBe(0);
+  });
+
+  it('sells its IOUs when rates rise above what they yield, and all of them to a buyer paying over their worth', () => {
+    const s = world();
+    person(s, 10_000);
+    settle(s, 20_000);
+    s.bank.iou = 20;
+    s.bank.iouBook = 2000;
+    s.treasury.iouOutstanding = 20;
+    s.iouMarket.ema = 100;
+    const asksAt = () => {
+      const books = openBooks(s);
+      bankOrders(s, books);
+      return bookFor(books, -1, 100).asks.filter((o) => o.ref === BANK);
+    };
+    // at 5 % the bank wants them: it offers them only above their worth to it
+    let asks = asksAt();
+    const worth = bankIouWorth(s);
+    expect(asks.reduce((a, o) => a + o.qty, 0)).toBeCloseTo(20, 6);
+    for (const o of asks) expect(o.limit).toBeGreaterThanOrEqual(worth - 1e-9);
+    // rates up to 20 %: even expecting them to come down in time, an IOU yielding 5 % is worth less than 100 to it — it sells at the going price
+    s.treasury.reserveRate = 0.2;
+    bondsBeginDay(s);
+    asks = asksAt();
+    expect(bankIouWorth(s)).toBeLessThan(100);
+    expect(asks.filter((o) => o.limit <= 100).reduce((a, o) => a + o.qty, 0)).toBeGreaterThan(0);
   });
 });
 

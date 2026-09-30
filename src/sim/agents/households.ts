@@ -33,13 +33,15 @@ import * as UTIL from '../util';
 import { bufferTarget, foodIndex, goodsBudget } from './demandModel';
 import { hasLevyBase, netWage, wageCtx } from './labor';
 import { flowIndex, flowTally, FLOW_USED } from '../stats/flows';
+import { householdIouYield, postIouSchedule } from './bonds';
+import { goldTarget } from './gold';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
 // live import bindings (which cost a getter call per read under tsx/vitest).
 const { personRef } = LEDGER;
 const { INFL_EXP_MIN, INFL_EXP_MAX } = CFG;
-const { ALE_JOY_SCALE, ALE_MAX_PER_DAY, BASE_WAGE, BID_RUNGS, COAL_COMFORT_DAYS, COAL_SHOP_DAYS, COLD_BELOW, COMFORT_HALF, CONTENT_EMA, CONTENT_W_COMFORT, CONTENT_W_FOOD, CONTENT_W_HEALTH, CONTENT_W_HOME, CONTENT_W_INCOME, CONTENT_W_JOY, CONTENT_W_WORK, ELASTICITY, FOOD_FLEX, FOOD_MAX, FOOD_NEED, FURNITURE_SHOP_DAYS, FURNITURE_WEAR_DAY, GOLD_HEDGE_TRIGGER, HEALTH_EMA, HEALTH_FOOD_POW, HEALTH_W_HEAT, HEAT_AHEAD_DAYS, HEAT_AMP, HEAT_MEAN, HEAT_RESERVE_DAYS, HH_RUNGS, HOMELESS_HEALTH, HUNGRY_BELOW, INCOME_EMA, INFL_EXP_EMA, INFL_PAIN_SPAN, INFL_PAIN_START, INFL_PAIN_W, IOU_COUPON, IOU_MARGIN, JOY_EMA, MIN_BID_SPEND, OLD_AGE_MAX_LOSS, OLD_AGE_SPAN, OLD_AGE_START, PANTRY_DAYS_BREAD, PANTRY_DAYS_COAL, PANTRY_DAYS_FISH, PORTFOLIO_DAILY_FRACTION, PORTFOLIO_MAX_GOLD_SHARE, PORTFOLIO_MAX_IOU_SHARE, PORTFOLIO_MIN_ORDER, PORTFOLIO_SURPLUS_MULT, SHARE_ALE, SHARE_COAL, SHARE_FOOD, SHARE_FURNITURE } = CFG;
+const { ALE_JOY_SCALE, ALE_MAX_PER_DAY, BASE_WAGE, BID_RUNGS, COAL_COMFORT_DAYS, COAL_SHOP_DAYS, COLD_BELOW, COMFORT_HALF, CONTENT_EMA, CONTENT_W_COMFORT, CONTENT_W_FOOD, CONTENT_W_HEALTH, CONTENT_W_HOME, CONTENT_W_INCOME, CONTENT_W_JOY, CONTENT_W_WORK, ELASTICITY, FOOD_FLEX, FOOD_MAX, FOOD_NEED, FURNITURE_SHOP_DAYS, FURNITURE_WEAR_DAY, GOLD_BAND, GOLD_REBAL_SPEED, HEALTH_EMA, HEALTH_FOOD_POW, HEALTH_W_HEAT, HEAT_AHEAD_DAYS, HEAT_AMP, HEAT_MEAN, HEAT_RESERVE_DAYS, HH_RUNGS, HOMELESS_HEALTH, HUNGRY_BELOW, INCOME_EMA, INFL_EXP_EMA, INFL_PAIN_SPAN, INFL_PAIN_START, INFL_PAIN_W, IOU_BUY_SPEED, IOU_FULL_SPREAD, IOU_SELL_SPEED, JOY_EMA, MIN_BID_SPEND, OLD_AGE_MAX_LOSS, OLD_AGE_SPAN, OLD_AGE_START, PANTRY_DAYS_BREAD, PANTRY_DAYS_COAL, PANTRY_DAYS_FISH, PORTFOLIO_MAX_GOLD_SHARE, PORTFOLIO_MAX_IOU_SHARE, PORTFOLIO_MIN_ORDER, PORTFOLIO_SURPLUS_MULT, SHARE_ALE, SHARE_COAL, SHARE_FOOD, SHARE_FURNITURE } = CFG;
 const { CONSUMER_GOODS, G, N_GOODS } = GOODS_M;
 const { clamp, ema, fin } = UTIL;
 const { heatNeed } = CAL;
@@ -568,13 +570,16 @@ export function householdOrders(s: SimState, books: Books): void {
 }
 
 /**
- * Savers with cash > PORTFOLIO_SURPLUS_MULT × buffer: bid for IOUs when
- * yield (IOU_COUPON / price) > deposit rate + IOU_MARGIN; bid for gold when
- * expected inflation − deposit rate > GOLD_HEDGE_TRIGGER. People short of
- * liquidity (cash < buffer/2) offer IOUs / gold for sale slightly below market.
- * Holders also unwind: gold when the inflation hedge is no longer needed, IOUs
- * when their yield has fallen below the deposit rate. Orders are modest
- * (PORTFOLIO_DAILY_FRACTION of the surplus per day) and concentration-capped.
+ * The portfolio: IOUs and gold, out of savings (wealth beyond PORTFOLIO_SURPLUS_MULT × the buffer).
+ *  · People short of liquidity (cash < buffer/2) offer IOUs / gold slightly below the market.
+ *  · IOUs (agents/bonds.ts): the share of its savings a household wants in IOUs grows with how
+ *    far their yield beats what it asks (its worth: none; PORTFOLIO_MAX_IOU_SHARE at
+ *    IOU_FULL_SPREAD more); it moves IOU_BUY_SPEED / IOU_SELL_SPEED of the way there a day, as a
+ *    ladder of bids and asks — and sells at once to a buyer paying well over its worth.
+ *  · Gold (agents/gold.ts): each household wants a share of its wealth in gold (a base taste,
+ *    an inflation hedge, fear for the bank, fear of the coin's fall); more than GOLD_BAND off
+ *    it, it moves GOLD_REBAL_SPEED of the gap a day — buying with cash to spare, selling what
+ *    it holds beyond.
  */
 export function householdPortfolioOrders(s: SimState, books: Books): void {
   const c = householdCache(s);
@@ -582,11 +587,6 @@ export function householdPortfolioOrders(s: SimState, books: Books): void {
   const goldBook = books.gold ?? bookFor(books, -1, GOLD_GOOD);
   const pIou = Math.max(1, fin(s.iouMarket?.ema, 100));
   const pGold = Math.max(0.01, fin(s.goldMarket?.ema, 100));
-  const dep = fin(s.bank.depositRate);
-  const iouYield = IOU_COUPON / pIou;
-  const iouAttr = clamp((iouYield - dep - IOU_MARGIN) / 0.02, 0, 1);
-  // Highest price at which the IOU still beats deposits by the margin.
-  const pIouMax = IOU_COUPON / Math.max(0.002, dep + IOU_MARGIN);
   const plan = c.ordersDay === s.day;
 
   for (let i = 0; i < s.people.length; i++) {
@@ -613,38 +613,35 @@ export function householdPortfolioOrders(s: SimState, books: Books): void {
       continue;
     }
 
-    // ---- rebalancing sells ----
-    const hedgeGap = p.expInfl - dep - GOLD_HEDGE_TRIGGER;
+    // Cash to spare: beyond the buffer, and not already committed to today's goods bids or tonight's rent.
+    const savings = Math.max(0, wealth - PORTFOLIO_SURPLUS_MULT * m);
+    let free = m > 0 ? Math.min(p.cash - PORTFOLIO_SURPLUS_MULT * m, p.cash - (plan ? c.committed[p.id] : p.budget) - 3 * rentOf(s, p)) : 0;
+    if (!(free > 0)) free = 0;
+
+    // ---- gold: a share of wealth (agents/gold.ts); beyond it, sell ----
+    const gShare = wealth > 0 ? goldVal / wealth : 0;
+    const gTarget = goldBook ? goldTarget(s, p) : 0;
     let soldGold = false;
-    let soldIou = false;
-    if (p.gold > 0 && goldBook && hedgeGap < -0.02) {
-      const q = goldVal < 5 ? p.gold : p.gold * PORTFOLIO_DAILY_FRACTION;
-      addAsk(goldBook, ref, pGold * 0.99, q);
+    if (p.gold > 0 && goldBook && gShare > gTarget + GOLD_BAND) {
+      const q = goldVal < 5 ? p.gold : Math.min(p.gold, ((gShare - gTarget) * wealth * GOLD_REBAL_SPEED) / pGold);
+      if (q > 1e-9) addAsk(goldBook, ref, pGold * 0.99, q);
       soldGold = true;
     }
-    if (p.iou > 0 && iouBook && iouYield < dep) {
-      const q = iouVal < 5 ? p.iou : p.iou * PORTFOLIO_DAILY_FRACTION;
-      addAsk(iouBook, ref, pIou * 0.99, q);
-      soldIou = true;
+
+    // ---- IOUs: toward the holding it wants at each price (agents/bonds.ts) ----
+    if (iouBook && (p.iou > 0 || free > PORTFOLIO_MIN_ORDER)) {
+      const spent = postIouSchedule(
+        iouBook,
+        ref,
+        { held: p.iou, funds: PORTFOLIO_MAX_IOU_SHARE * savings, cash: free, ask: householdIouYield(s, p.id), full: IOU_FULL_SPREAD, buySpeed: IOU_BUY_SPEED, sellSpeed: IOU_SELL_SPEED },
+        pIou,
+      );
+      free -= spent;
     }
 
-    // ---- purchases from surplus savings ----
-    const surplus = p.cash - PORTFOLIO_SURPLUS_MULT * m;
-    if (!(surplus > 0) || m <= 0) continue;
-    // Cash not already committed to today's goods bids or tonight's rent.
-    let free = p.cash - (plan ? c.committed[p.id] : p.budget) - 3 * rentOf(s, p);
-    if (!(free > PORTFOLIO_MIN_ORDER)) continue;
-    if (!soldIou && iouBook && iouAttr > 0 && iouVal < PORTFOLIO_MAX_IOU_SHARE * wealth) {
-      const amt = Math.min(free, PORTFOLIO_DAILY_FRACTION * surplus * iouAttr);
-      const lim = Math.min(pIouMax, pIou * 1.02);
-      if (amt >= PORTFOLIO_MIN_ORDER && lim > 0) {
-        addBid(iouBook, ref, lim, amt / lim);
-        free -= amt;
-      }
-    }
-    if (!soldGold && goldBook && hedgeGap > 0 && goldVal < PORTFOLIO_MAX_GOLD_SHARE * wealth) {
-      const attr = clamp(hedgeGap / 0.05, 0, 1);
-      const amt = Math.min(free, PORTFOLIO_DAILY_FRACTION * surplus * attr);
+    // ---- gold: buy up to the share it wants with what cash is left ----
+    if (!soldGold && goldBook && free > PORTFOLIO_MIN_ORDER && gShare < gTarget - GOLD_BAND) {
+      const amt = Math.min(free, (gTarget - gShare) * wealth * GOLD_REBAL_SPEED);
       const lim = pGold * 1.03;
       if (amt >= PORTFOLIO_MIN_ORDER) addBid(goldBook, ref, lim, amt / lim);
     }

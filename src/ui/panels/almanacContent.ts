@@ -232,7 +232,11 @@ Nothing stops at zero. If reserves earn less than nothing, the bank passes it on
       },
       {
         title: 'IOUs',
-        body: `The Treasury can sell IOUs: each one pays its holder ¤5 a year, forever. Selling them brings coin into the Purse from whoever buys them; buying them back puts coin into the hands of whoever sells. Their price moves with what savers can earn elsewhere: when rates rise, existing IOUs are worth less — and the bank, if it holds many, loses capital.`,
+        body: `The Treasury can sell IOUs: each one pays its holder ¤5 a year, forever. Selling them brings coin into the Purse from whoever buys them; buying them back puts coin into the hands of whoever sells.
+
+What an IOU is worth to a holder is ¤5 over the yield it asks of it. That yield is what it expects to earn on its money elsewhere over the years ahead — the reserve rate for the bank, the deposit rate for households — plus a little for tying money up for good, plus more when the realm owes a great deal against what it makes in a year, when coupons have been cut (remembered for years), when the Purse runs short with no new money to fill it, or when prices rise fast. A rate raised for a season moves IOU prices a little; one held for years moves them a lot. Rates held below inflation are expected to rise.
+
+Each holder wants more of its savings in IOUs the further their yield beats what it asks, and moves a step toward that each day. So selling more IOUs lowers their price until savers want them — the bank takes most, since households keep most of their coin for spending — and buying them back raises it until holders let them go. Bid well over what they are worth to holders and they sell at once; bid "at any price" and you pay whatever each asks. When rates rise, the IOUs already held lose value — and the bank, if it holds many, loses capital. The IOU market page shows what holders ask today, part by part.`,
       },
       {
         title: 'When the bank fails',
@@ -298,7 +302,9 @@ Goods handed out are goods nobody has to buy that day, so the market for them is
         title: 'The port and gold',
         body: `Foreign ships call at the harbour town every day. They sell goods at world prices plus their costs, and buy at world prices less theirs. World prices are quoted in gold, so the gold price in ¤ decides whether foreign goods look cheap or dear.
 
-Foreigners who earn ¤ at the harbour want gold for it; foreigners who want the realm's goods need ¤ first. Those needs meet in the gold market. When the realm buys more abroad than it sells, gold grows dearer. When the realm's savings pay well, foreigners are happier to keep ¤. You can hold gold, buy it and sell it like anyone else.`,
+Foreigners who earn ¤ at the harbour want gold for it; foreigners who want the realm's goods need ¤ first. Those needs meet in the gold market. When the realm buys more abroad than it sells, gold grows dearer. When the realm's savings pay well, foreigners are happier to keep ¤. You can hold gold, buy it and sell it like anyone else.
+
+Households keep a share of their wealth in gold too: a small store always (the cautious more), and more when prices rise faster than the bank pays on deposits, when the bank looks short of capital, or when gold has been climbing for a year and the coin is expected to keep falling. Their gold comes from the foreign dealers, so a rush into gold sends coin abroad and makes gold dearer still — a run on the coin — until deposit rates, a sounder bank or a steadier gold price calm it.`,
       },
     ],
   },

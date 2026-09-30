@@ -31,6 +31,7 @@
 //    without new capital every deposit is cut pro rata to restore it.
 // ============================================================================
 import { stakeOf } from './ownership';
+import { bankIouWorth, noteCouponCut, postIouSchedule } from './bonds';
 import * as CFG from '../config';
 import { isMonthEnd } from '../calendar';
 import { newLoan } from '../factory';
@@ -50,7 +51,7 @@ import {
   windowRepay,
   writeOff,
 } from '../ledger';
-import { addAsk, addBid, bookFor, marketOf, type Books } from '../market/markets';
+import { addAsk, bookFor, marketOf, type Books } from '../market/markets';
 import { chargeLevy, type LevyCtx } from '../policy/levies';
 import { capitalMin, maxLoanRate, minLoanRate, noteBinding, reserveRatio } from '../policy/limits';
 import { rt } from '../runtime';
@@ -104,9 +105,9 @@ const {
   BANK_DIVIDEND_BOOK_SHARE,
   BANK_DIVIDEND_CAPITAL,
   BANK_BAILIN_TARGET,
-  BANK_IOU_TERM_PREMIUM,
   BANK_IOU_MAX_SHARE,
-  BANK_IOU_BUY_FRACTION,
+  BANK_IOU_SPEED,
+  BANK_IOU_FULL_SPREAD,
   BANK_NEWS_GAP_DAYS,
   BANK_LATE_REFUSE_DAYS,
   BANK_MAX_TERM,
@@ -553,6 +554,7 @@ function payHolders(s: SimState): void {
     const avail = Math.max(0, t.purse);
     if (due > 0 && avail < due) {
       couponFrac = avail / due;
+      noteCouponCut(s, couponFrac); // holders remember (agents/bonds.ts)
       newsOnce(s, 'coupon', `The Purse could not cover today's IOU coupons: holders received ${pctText(couponFrac)} of what they are owed.`, 'crisis');
     }
   }
@@ -786,11 +788,15 @@ export function requestLoan(s: SimState, req: LoanRequest): void {
 // ---------------------------------------------------------------------------
 
 /**
- * IOU portfolio: buy with excess reserves when yield > reserveRate + BANK_IOU_MARGIN
- * (+ BANK_IOU_TERM_PREMIUM: IOUs are perpetual, so the bank wants a term premium);
- * sell when reserves are short of requirement or it is borrowing at the window at a
- * rate above the IOU yield (cheaper to sell than to borrow), or when the yield has
- * fallen below the reserve rate (take the gain). Adds orders to books.iou.
+ * IOU portfolio. What an IOU is worth to the bank is its coupon over the yield it asks
+ * (agents/bonds.ts: the reserve rate it expects over the years ahead + BANK_IOU_MARGIN +
+ * BANK_IOU_TERM_PREMIUM − BANK_IOU_LIQUIDITY + the sovereign and inflation-risk premia). What it
+ * would put in IOUs is its IOUs and its reserves to spare (at most BANK_IOU_MAX_SHARE of deposits);
+ * it wants more of that in IOUs the more they yield over what it asks — all of it at
+ * BANK_IOU_FULL_SPREAD more — and moves BANK_IOU_SPEED of the way there a day (bonds.ts
+ * postIouSchedule: bids below its worth, asks above what it wants, everything to a buyer paying
+ * well over its worth). Short of reserves, or borrowing at the window at a rate above the IOU
+ * yield, it sells at the market instead (cheaper to sell than to borrow). Adds orders to books.iou.
  */
 export function bankOrders(s: SimState, books: Books): void {
   const b = s.bank;
@@ -798,43 +804,23 @@ export function bankOrders(s: SimState, books: Books): void {
   if (!book) return;
   const p = Math.max(1, fin(s.iouMarket.ema, CFG.IOU_PAR));
   const y = IOU_COUPON / p;
-  const rr = fin(s.treasury.reserveRate);
   const lr = fin(s.treasury.lendRate);
   const dep = Math.max(0, deposits(s));
   const target = reserveTarget(s, dep);
   const shortfall = Math.max(0, b.windowDebt) + Math.max(0, target - b.reserves);
 
-  // ---- sells ----
-  let sold = false;
-  if (b.iou > 1e-9) {
-    let q = 0;
-    let lim = p;
-    if (shortfall > 0 && y < lr + BANK_IOU_MARGIN) {
-      // Raise reserves by selling IOUs rather than paying the window rate on them.
-      q = Math.min(b.iou, (0.5 * shortfall) / p);
-      lim = p * 0.98;
-    } else if (y < rr) {
-      q = b.iou * 0.05;
-      lim = p * 0.99;
-    }
+  // Short of reserves: raise them by selling IOUs rather than paying the window rate on them.
+  let held = Math.max(0, b.iou);
+  if (held > 1e-9 && shortfall > 0 && y < lr + BANK_IOU_MARGIN) {
+    const q = Math.min(held, (0.5 * shortfall) / p);
     if (q > 1e-6) {
-      addAsk(book, BANK, lim, q);
-      sold = true;
+      addAsk(book, BANK, p * 0.98, q);
+      held -= q;
     }
   }
-
-  // ---- buys ----
-  if (sold || b.failed) return;
-  const excess = b.reserves - target - Math.max(0, b.windowDebt);
-  if (!(excess > 0)) return;
-  const hurdle = rr + BANK_IOU_MARGIN + BANK_IOU_TERM_PREMIUM;
-  if (!(y > hurdle)) return;
-  const room = BANK_IOU_MAX_SHARE * dep - Math.max(0, b.iouBook);
-  const amount = Math.min(excess * BANK_IOU_BUY_FRACTION, room);
-  if (!(amount > 1)) return;
-  const pMax = IOU_COUPON / Math.max(0.005, hurdle);
-  const lim = Math.min(pMax, p * 1.02);
-  if (lim > 0) addBid(book, BANK, lim, amount / lim);
+  const excess = b.failed || shortfall > 0 ? 0 : Math.max(0, b.reserves - target);
+  const funds = Math.min(BANK_IOU_MAX_SHARE * dep, held * p + excess);
+  postIouSchedule(book, BANK, { held, funds, cash: excess, ask: IOU_COUPON / bankIouWorth(s), full: BANK_IOU_FULL_SPREAD, buySpeed: BANK_IOU_SPEED, sellSpeed: BANK_IOU_SPEED }, p);
 }
 
 // ---------------------------------------------------------------------------

@@ -394,8 +394,9 @@ function priceSwings(s: SimState): void {
   const gold = monthlyChange(s.goldMarket?.hist ?? []);
   if (Math.abs(gold) >= EVENT_SWING * 0.8)
     news(s, `Gold now fetches ¤${Math.round(s.goldMarket.price)} an ounce, ${pct(gold)} ${gold > 0 ? 'more' : 'less'} than a month ago.`, 'market');
+  // (with none in anyone's hands the IOU quote only says what a few would fetch: no news)
   const iou = monthlyChange(s.iouMarket?.hist ?? []);
-  if (Math.abs(iou) >= EVENT_SWING * 0.6)
+  if (s.treasury.iouOutstanding > 1e-6 && Math.abs(iou) >= EVENT_SWING * 0.6)
     news(s, `Treasury IOUs now change hands at ¤${s.iouMarket.price.toFixed(1)}, ${pct(iou)} ${iou > 0 ? 'above' : 'below'} last month's price.`, 'market');
 }
 

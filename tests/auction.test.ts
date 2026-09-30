@@ -278,3 +278,69 @@ describe('clearBook — scale', () => {
     expect(ms).toBeLessThan(25); // generous: wall-clock under load; typical ~1.5 ms
   });
 });
+
+describe('clearBook — market orders (at any price)', () => {
+  it('a market buy meets the asks and pays what they ask, never its own formal limit', () => {
+    const b = mkBook();
+    const m = addBid(b, 1, 1e6, 20, { market: true });
+    const a1 = addAsk(b, 2, 100, 5);
+    const a2 = addAsk(b, 3, 110, 5);
+    const r = clearBook(b, 100);
+    expect(r.volume).toBeCloseTo(10); // all the supply
+    expect(r.price).toBeCloseTo(110); // the dearest ask it needed
+    expect(m.filled).toBeCloseTo(10);
+    expect(a1.filled).toBeCloseTo(5);
+    expect(a2.filled).toBeCloseTo(5);
+    expect(r.bestBid).toBe(-1); // a market order is no best bid
+  });
+
+  it('with limit bids beside it, the price still comes from the book, and the market order is served first', () => {
+    const b = mkBook();
+    const m = addBid(b, 1, 1e6, 4, { market: true });
+    const lb = addBid(b, 2, 105, 10);
+    addAsk(b, 3, 100, 8);
+    const r = clearBook(b, 100);
+    expect(r.volume).toBeCloseTo(8);
+    expect(r.price).toBeLessThanOrEqual(105 + 1e-9);
+    expect(r.price).toBeGreaterThanOrEqual(100 - 1e-9);
+    expect(m.filled).toBeCloseTo(4);
+    expect(lb.filled).toBeCloseTo(4);
+  });
+
+  it('a market sell takes the bids and gets what they pay, never a token floor', () => {
+    const b = mkBook();
+    const m = addAsk(b, 1, 0.001, 20, { market: true });
+    addBid(b, 2, 90, 5);
+    addBid(b, 3, 80, 5);
+    const r = clearBook(b, 90);
+    expect(r.volume).toBeCloseTo(10);
+    expect(r.price).toBeCloseTo(80); // the lowest bid it needed
+    expect(m.filled).toBeCloseTo(10);
+  });
+
+  it('market orders alone on both sides trade at the reference price; alone on one side they only move the quote', () => {
+    const both = mkBook();
+    addBid(both, 1, 1e6, 5, { market: true });
+    addAsk(both, 2, 0.001, 3, { market: true });
+    const r = clearBook(both, 50);
+    expect(r.volume).toBeCloseTo(3);
+    expect(r.price).toBeCloseTo(50);
+    const up = mkBook();
+    addBid(up, 1, 1e6, 5, { market: true });
+    const ru = clearBook(up, 50);
+    expect(ru.volume).toBe(0);
+    expect(ru.price).toBeCloseTo(50 * (1 + INDICATIVE_STEP));
+  });
+
+  it('draws no price point for market bids on the demand curve (their quantity still counts)', () => {
+    const b = mkBook();
+    addBid(b, 1, 1e6, 5, { market: true });
+    addBid(b, 2, 10, 3);
+    addAsk(b, 3, 9, 20);
+    clearBook(b, 9.5);
+    const c = aggregateCurve(b, 10);
+    expect(c.bids.length).toBe(2); // one point: (10, 8)
+    expect(c.bids[0]).toBeCloseTo(10);
+    expect(c.bids[1]).toBeCloseTo(8);
+  });
+});

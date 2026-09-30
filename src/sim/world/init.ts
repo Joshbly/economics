@@ -143,6 +143,7 @@ import {
   WAGON_CAPACITY,
   WAGON_WEAR_DAY,
   COUNCIL_START_PER_HEAD,
+  GOLD_BASE_SHARE,
 } from '../config';
 import { farmSeason, heatNeed, seasonFactor } from '../calendar';
 import { newFirm, newLoan, newMarket, newPerson, newProject, newShipment, newSimState, newTown, newTreasury } from '../factory';
@@ -154,6 +155,8 @@ import { heatAheadMean, healthTarget, ladderInto, newPlanScratch, planInto, rung
 import { commuteTiles } from '../agents/labor';
 import { desiredHouseDebt } from '../agents/housing';
 import { desiredFirmDebt } from '../agents/firms';
+import { goldTaste } from '../agents/gold';
+import { fairIouPrice } from '../agents/bonds';
 import { invalidateRoutes, rt } from '../runtime';
 import { lognormal, rand, randRange, shuffle, type RngHolder } from '../rng';
 import { news } from '../stats/events';
@@ -1656,6 +1659,9 @@ export function createWorld(opts: WorldOptions): SimState {
     if (owner) cash = Math.min(cash, bufferTarget(income, depRate, INIT_UNEMPLOYMENT) + INIT_OWNER_CASH_DAYS * W);
     cash += projectFunds.get(p.id) ?? 0;
     p.cash = round2(Math.max(0, cash));
+    // the gold a household keeps anyway (agents/gold.ts: its base share of its wealth), held from the start
+    const gShare = GOLD_BASE_SHARE * goldTaste(s, p.id);
+    if (p.cash > 0 && gShare > 0 && gShare < 1) p.gold = round4((gShare * p.cash) / (1 - gShare) / INIT_GOLD_PRICE);
     const pan = sim.pantry[phase] ?? new Array(N_GOODS).fill(0);
     for (const g of CONSUMER_GOODS) p.pantry[g] = round3(Math.max(0, pan[g] * (g === G.furniture ? scale : 1)));
     p.joy = round3(clamp(sim.joy, 0, 1));
@@ -1789,6 +1795,12 @@ export function createWorld(opts: WorldOptions): SimState {
   initStats(s);
   rt(s).bag.worldCalibration = { ...summarizeCalibration(cal), unplaced };
   applyScenario(s, scen.id);
+  // no IOUs yet: the quote starts at what one is worth to the bank (agents/bonds.ts)
+  if (!(s.treasury.iouOutstanding > 0)) {
+    const q = round2(fairIouPrice(s));
+    s.iouMarket.price = q;
+    s.iouMarket.ema = q;
+  }
   const names = s.towns.map((t) => t.name);
   news(
     s,

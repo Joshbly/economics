@@ -153,8 +153,6 @@ export const INFL_EXP_MAX = 0.3;
 /** Portfolio (IOUs, gold) */
 export const PORTFOLIO_SURPLUS_MULT = 2.0; // only savings above m* × this are invested
 export const IOU_MARGIN = 0.005; // IOU yield must beat deposit rate by this
-export const GOLD_HEDGE_TRIGGER = 0.03; // expected inflation − deposit rate above this → buy gold
-export const PORTFOLIO_DAILY_FRACTION = 0.03;
 
 // ---- Households: health & contentment ---------------------------------------
 export const HEALTH_EMA = 0.03;
@@ -703,9 +701,11 @@ export const BANK_BAILIN_TARGET = 0.02;
 export const BANK_TERM_CAPITAL_EXTRA = 0.02;
 /** IOUs must yield more than the reserve rate + BANK_IOU_MARGIN + this term premium (they are perpetual). */
 export const BANK_IOU_TERM_PREMIUM = 0.01;
-/** IOU book capped at this share of deposits; this share of excess reserves bid per day. */
+/** IOU book capped at this share of deposits; the bank moves BANK_IOU_SPEED of the way a day to the holding it wants,
+ *  which is all it can hold once IOUs yield BANK_IOU_FULL_SPREAD more than it asks (agents/bonds.ts). */
 export const BANK_IOU_MAX_SHARE = 0.3;
-export const BANK_IOU_BUY_FRACTION = 0.2;
+export const BANK_IOU_SPEED = 0.2;
+export const BANK_IOU_FULL_SPREAD = 0.01;
 /** Days of news silence between repeated warnings of the same kind. */
 export const BANK_NEWS_GAP_DAYS = 30;
 /** A borrower more than this many days behind on any loan is refused new credit. */
@@ -1112,3 +1112,68 @@ export const LAND_MUL_MAX = 2;
  */
 export const COUNCIL_HOUSE_HOMELESS = 3;
 export const COUNCIL_HOUSE_CIVIC = 0.5;
+
+// ---- the IOU market: what an IOU is worth to those who might hold it (agents/bonds.ts) ----
+/** Days over which holders average the reserve rate to judge where short rates will be over the years ahead. */
+export const IOU_RATE_MEMORY_DAYS = 360;
+/** Weight of today's reserve rate against that average in the short rate holders expect. */
+export const IOU_NOW_WEIGHT = 0.3;
+/** Weight holders give to where rates ought to go with inflation (IOU_NEUTRAL_REAL + expected inflation) against where they have been. */
+export const IOU_TAYLOR_WEIGHT = 0.3;
+export const IOU_NEUTRAL_REAL = 0.02;
+/** Term premium households ask of a perpetual (its price swings with every change in rates); the bank asks BANK_IOU_TERM_PREMIUM less BANK_IOU_LIQUIDITY (IOUs are its liquid asset). */
+export const IOU_TERM_PREMIUM = 0.005;
+export const BANK_IOU_LIQUIDITY = 0.005;
+/** Sovereign premium: IOU_DEBT_SLOPE per year's output of debt (at par) above IOU_DEBT_FREE of a year's output. */
+export const IOU_DEBT_FREE = 0.5;
+export const IOU_DEBT_SLOPE = 0.02;
+/** Each day coupons are cut adds IOU_CUT_STRESS × the share withheld to the premium (at most IOU_STRESS_MAX); it fades by IOU_STRESS_FADE a day. */
+export const IOU_CUT_STRESS = 0.004;
+export const IOU_STRESS_MAX = 0.25;
+export const IOU_STRESS_FADE = 0.002;
+/** With auto-mint off, a Purse short of IOU_CASH_DAYS of coupons adds up to IOU_CASH_PREMIUM. */
+export const IOU_CASH_PREMIUM = 0.01;
+export const IOU_CASH_DAYS = 90;
+/** Inflation-risk premium: IOU_INFL_RISK × (expected inflation − IOU_INFL_COMFORT). */
+export const IOU_INFL_RISK = 0.25;
+export const IOU_INFL_COMFORT = 0.03;
+/** A household's own premium on IOUs: its temperament's premium × this. */
+export const IOU_TASTE_SHARE = 0.15;
+/** The least yield anyone asks of an IOU (a perpetual yielding nothing would be worth without limit). */
+export const IOU_MIN_YIELD = 0.005;
+/**
+ * A household's IOU holding (agents/bonds.ts): the share of its savings it wants in IOUs grows with
+ * what they yield over what it asks — PORTFOLIO_MAX_IOU_SHARE once they yield IOU_FULL_SPREAD more.
+ * Each day it moves IOU_BUY_SPEED / IOU_SELL_SPEED of the way to that holding; offered IOU_TENDER_GAP
+ * more than an IOU is worth to it, a holder sells at once. Its orders are a ladder of prices
+ * IOU_LADDER_STEP apart, IOU_LADDER_RUNGS each side of the going price.
+ */
+export const IOU_FULL_SPREAD = 0.03;
+export const IOU_BUY_SPEED = 0.05;
+export const IOU_SELL_SPEED = 0.05;
+export const IOU_TENDER_GAP = 0.1;
+export const IOU_LADDER_STEP = 0.02;
+export const IOU_LADDER_RUNGS = 4;
+/** With no IOUs in anyone's hands, the quote is what this many would fetch from the day's bids. */
+export const IOU_QUOTE_LOT = 5;
+
+// ---- gold as a store of wealth (agents/gold.ts) ----
+/**
+ * A household holds gold as a share of its wealth: GOLD_BASE_SHARE × its taste (2 × (1 − its
+ * temperament's nerve): the cautious hold more) + GOLD_HEDGE_SLOPE × (expected inflation − the
+ * deposit rate − GOLD_HEDGE_FREE) + GOLD_FEAR_SHARE × fear for the bank + GOLD_FALL_SLOPE ×
+ * (the coin's expected fall a year − GOLD_FALL_FREE), at most PORTFOLIO_MAX_GOLD_SHARE. It moves
+ * GOLD_REBAL_SPEED of the gap a day once it is more than GOLD_BAND off.
+ */
+export const GOLD_BASE_SHARE = 0.02;
+export const GOLD_HEDGE_SLOPE = 1;
+export const GOLD_HEDGE_FREE = 0.02;
+export const GOLD_FEAR_SHARE = 0.15;
+/** Fear for the bank: none while its capital (with its IOUs at market) is GOLD_FEAR_HEADROOM × the rule or more; full at the rule, or once it has failed. */
+export const GOLD_FEAR_HEADROOM = 1.2;
+export const GOLD_FALL_SLOPE = 0.3;
+export const GOLD_FALL_FREE = 0.1;
+/** The coin's expected fall: the gold price's rise over the last GOLD_FALL_DAYS (a year, so the seasons cancel out), a year's worth. */
+export const GOLD_FALL_DAYS = 360;
+export const GOLD_REBAL_SPEED = 0.05;
+export const GOLD_BAND = 0.005;

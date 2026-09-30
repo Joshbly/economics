@@ -253,6 +253,11 @@ function clampPrice(p: number): number {
  *      bid:  base = (limit − bUnit − xUnit) / (1 + bPct + xPct)
  *      ask:  base = (limit + sUnit + xUnit) / (1 − sPct − xPct)   (denominator floored at 0.05)
  *    Orders with qty ≤ 0 or non-finite base are ignored (their base is set to −1).
+ *    Market orders (order.market: "at any price") join the far end of their side (bids at
+ *    PRICE_MAX, asks at PRICE_MIN) for priority and quantity, but never set the price: they are
+ *    not candidate prices and not the best bid / ask. A market buy meets the asks and pays the
+ *    uniform price the asks set (the dearest ask it needs, at most), never its own formal limit;
+ *    market orders on both sides and nothing else trade at the reference price.
  * 2. Clearing price: maximise executable volume; tie-break by minimum
  *    |D − S| imbalance; then market pressure (excess demand → highest candidate,
  *    excess supply → lowest); then closest to `refPrice` (anywhere inside the
@@ -284,11 +289,22 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
   const wbU = w.bUnit;
   const wsP = w.sPct;
   const wsU = w.sUnit;
+  let mktB = 0; // market orders' quantity (see the header)
+  let mktA = 0;
   for (let k = 0; k < bids.length; k++) {
     const o = bids[k];
     o.filled = 0;
     o.paid = 0;
     const q = o.qty;
+    if (o.market) {
+      if (q > 0 && q < 1e15) {
+        o.base = PRICE_MAX;
+        sideAdd(SB, o, PRICE_MAX);
+        totalBid += q;
+        mktB += q;
+      } else o.base = -1;
+      continue;
+    }
     let b = NaN;
     if (q > 0 && q < 1e15 && o.limit > 0) {
       let pct = (o.exempt ? 0 : wbP) + (o.xPct || 0);
@@ -310,6 +326,15 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     o.filled = 0;
     o.paid = 0;
     const q = o.qty;
+    if (o.market) {
+      if (q > 0 && q < 1e15) {
+        o.base = PRICE_MIN;
+        sideAdd(SA, o, PRICE_MIN);
+        totalAsk += q;
+        mktA += q;
+      } else o.base = -1;
+      continue;
+    }
     let b = NaN;
     if (q > 0 && q < 1e15 && o.limit === o.limit && o.limit < Infinity) {
       let pct = (o.exempt ? 0 : wsP) + (o.xPct || 0);
@@ -346,16 +371,21 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
   const heldBy = (p: number, x: number): ClearResult['bound'] => (x < p ? 'ceiling' : x > p ? 'floor' : 'none');
 
   // ---- no cross: indicative price ----
-  if (ndB === 0 || ndA === 0 || bestBid < bestAsk) {
+  const limB = bestBid >= 0;
+  const limA = bestAsk >= 0;
+  const cross = (limB && limA && bestBid >= bestAsk) || (mktB > 0 && ndA > 0) || (mktA > 0 && ndB > 0);
+  if (!cross) {
     // One-sided books signal scarcity or glut: buyers with nobody selling quote the price up
     // toward their best bid, sellers with nobody buying down toward their best ask (at most
     // INDICATIVE_STEP a day each way, before the reference's own smoothing). A frozen reference
     // would hide an unserved town from every carter and maker that could serve it.
     const ref0 = validRef(refPrice, bestBid > 0 ? bestBid : bestAsk);
     let ind = ref0;
-    if (ndB > 0 && ndA > 0) ind = (bestBid + bestAsk) / 2;
-    else if (ndB > 0 && bestBid > ref0) ind = Math.min(bestBid, ref0 * (1 + INDICATIVE_STEP));
-    else if (ndA > 0 && bestAsk > 0 && bestAsk < ref0) ind = Math.max(bestAsk, ref0 * (1 - INDICATIVE_STEP));
+    if (limB && limA) ind = (bestBid + bestAsk) / 2;
+    else if (mktB > 0) ind = ref0 * (1 + INDICATIVE_STEP); // buyers at any price, nobody selling
+    else if (mktA > 0) ind = ref0 * (1 - INDICATIVE_STEP); // sellers at any price, nobody buying
+    else if (limB && bestBid > ref0) ind = Math.min(bestBid, ref0 * (1 + INDICATIVE_STEP));
+    else if (limA && bestAsk > 0 && bestAsk < ref0) ind = Math.max(bestAsk, ref0 * (1 - INDICATIVE_STEP));
     const held = clampLimits(ind);
     return finish(book, held, heldBy(ind, held), false, bestBid, bestAsk);
   }
@@ -380,6 +410,8 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     const la = da >= 0 ? SA.dLevel[da] : Infinity;
     const L = lb < la ? lb : la;
     const price = lb <= la ? SB.dPrice[db] : SA.dPrice[da];
+    // a level of market orders alone is no candidate price (see the header)
+    const mktLevel = (mktB > 0 && price >= PRICE_MAX) || (mktA > 0 && price <= PRICE_MIN && la === L && SA.dQty[da] <= mktA + epsQ && !(lb === L));
     if (la === L) {
       askUpTo += SA.dQty[da];
       j++;
@@ -387,7 +419,7 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
     const D = totalBid - bidBelow;
     const S = askUpTo;
     const V = D < S ? D : S;
-    if (V > epsQ) {
+    if (V > epsQ && !mktLevel) {
       const imb = D - S;
       const a = imb < 0 ? -imb : imb;
       const sign = imb > epsQ ? 1 : imb < -epsQ ? -1 : 0;
@@ -413,6 +445,12 @@ export function clearBook(book: Book, refPrice: number): ClearResult {
   }
 
   if (!(bestV > 0) || tLo < 0) {
+    // market orders on both sides and nothing else: they trade at the reference price
+    if (mktB > 0 && mktA > 0) {
+      const r = validRef(refPrice, 1);
+      const held = clampLimits(r);
+      return finish(book, held, heldBy(r, held), true, bestBid, bestAsk);
+    }
     const mid = (bestBid + bestAsk) / 2;
     const held = clampLimits(mid);
     return finish(book, held, heldBy(mid, held), false, bestBid, bestAsk);
@@ -524,19 +562,24 @@ function curveSide(sd: Side, descending: boolean, maxPoints: number, out: number
   if (px.length < 2 * m) sd.keys = new Float64Array(2 * m);
   const buf = sd.keys;
   let cum = 0;
+  let k = 0;
   for (let x = 0; x < m; x++) {
     const d = sd.rank[descending ? m - 1 - x : x];
     cum += sd.dQty[d];
-    buf[x] = sd.dPrice[d];
-    buf[m + x] = cum;
+    if (descending && sd.dPrice[d] >= PRICE_MAX) continue; // market bids: quantity only, no price point
+    buf[k] = sd.dPrice[d];
+    buf[m + k] = cum;
+    k++;
   }
-  if (m <= maxPoints) {
-    for (let x = 0; x < m; x++) out.push(r4(buf[x]), r4(buf[m + x]));
+  const mOut = k;
+  if (mOut === 0) return;
+  if (mOut <= maxPoints) {
+    for (let x = 0; x < mOut; x++) out.push(r4(buf[x]), r4(buf[m + x]));
     return;
   }
   let last = -1;
   for (let x = 0; x < maxPoints; x++) {
-    const idx = maxPoints === 1 ? m - 1 : Math.round((x * (m - 1)) / (maxPoints - 1));
+    const idx = maxPoints === 1 ? mOut - 1 : Math.round((x * (mOut - 1)) / (maxPoints - 1));
     if (idx === last) continue;
     last = idx;
     out.push(r4(buf[idx]), r4(buf[m + idx]));

@@ -429,6 +429,18 @@ export interface Treasury {
   flowsMonth: Record<string, number>;
   /** Previous full month's flows. */
   flowsLastMonth: Record<string, number>;
+  /** What holders remember of the Treasury as a debtor (agents/bonds.ts); absent until first needed. */
+  debt?: DebtMemory;
+}
+
+/** The IOU market's memory (agents/bonds.ts). */
+export interface DebtMemory {
+  /** Slow average of the reserve rate (IOU_RATE_MEMORY_DAYS): where holders think short rates run. */
+  rateEma: number;
+  /** Premium left by coupons cut (0 none): fades day by day. */
+  stress: number;
+  /** Day coupons were last cut (−1 never). */
+  lastCut: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +569,8 @@ export interface Order {
   paidDay?: number;
   /** Trade only in this session (0 opening, 1 midday, 2 close); absent/−1 = spread over the day. */
   session?: number;
+  /** A market order ("at any price"): it takes the other side's prices and never sets the price (market/auction.ts). */
+  market?: boolean;
 }
 
 export interface Book {

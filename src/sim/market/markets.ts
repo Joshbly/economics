@@ -76,6 +76,8 @@ export interface Books {
 export interface OrderOpts {
   /** Trade only in this session (0 opening, 1 midday, 2 close); default: spread over the day. */
   session?: number;
+  /** A market order: at any price, never setting the price (market/auction.ts). */
+  market?: boolean;
   exempt?: boolean; // Treasury orders
   xPct?: number; // per-order extra levy (fraction of base) — e.g. port duties
   xUnit?: number; // per-order extra levy (¤/unit)
@@ -317,6 +319,7 @@ function addOrder(book: Book, side: 0 | 1, ref: Ref, limit: number, qty: number,
   o.xUnit = !national && opts?.xUnit && Number.isFinite(opts.xUnit) ? opts.xUnit : 0;
   o.tag = opts?.tag ?? -1;
   o.session = opts?.session !== undefined && opts.session >= 0 ? opts.session : -1;
+  o.market = !!opts?.market;
   o.base = 0;
   o.filled = 0;
   o.price = 0;
@@ -762,10 +765,10 @@ function snapshot(m: MarketState, book: Book, p: number, vol: number, hasOrders:
   st.length = 0;
   const pb = book as PooledBook;
   if (pb.stateOrders) {
-    for (const o of pb.stateOrders) if (o.qty > 0) st.push(o.side, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+    for (const o of pb.stateOrders) if (o.qty > 0) st.push(o.side, r4(o.market ? p : o.base > 0 ? o.base : o.limit), r4(o.qty));
   } else {
-    for (const o of book.bids) if (o.ref === STATE_REF && o.qty > 0) st.push(0, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
-    for (const o of book.asks) if (o.ref === STATE_REF && o.qty > 0) st.push(1, r4(o.base > 0 ? o.base : o.limit), r4(o.qty));
+    for (const o of book.bids) if (o.ref === STATE_REF && o.qty > 0) st.push(0, r4(o.market ? p : o.base > 0 ? o.base : o.limit), r4(o.qty));
+    for (const o of book.asks) if (o.ref === STATE_REF && o.qty > 0) st.push(1, r4(o.market ? p : o.base > 0 ? o.base : o.limit), r4(o.qty));
   }
   c.price = p;
   c.volume = vol;

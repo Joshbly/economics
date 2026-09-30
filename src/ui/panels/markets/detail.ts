@@ -16,6 +16,8 @@
 import { DAYS_PER_YEAR, IOU_COUPON } from '../../../sim/config';
 import { GOODS, N_GOODS } from '../../../sim/goods';
 import { freightPerUnit } from '../../../sim/agents/traders';
+import { bankIouWorth, bondView, householdIouYield, iouWorth } from '../../../sim/agents/bonds';
+import { goldMotives, goldView } from '../../../sim/agents/gold';
 import { describeLimit, describeOrder, levyShortLabel } from '../../../sim/policy/player';
 import type { CurveSnapshot, Levy, Limit, MarketState, PlayerOrder, SimState } from '../../../sim/types';
 import { h, replace, setText, toggleClass } from '../../dom';
@@ -32,6 +34,7 @@ import {
   icon,
   kpi,
   kpiGrid,
+  kvList,
   lineChart,
   netOf,
   segmented,
@@ -255,7 +258,12 @@ export function createDetail(hooks: DetailHooks): Detail {
 
   const instrNote = h('div', { class: 'mk-instr' });
 
-  const el = h('div', { class: 'mk-detail' }, nav, title, actions, tileWrap, instrNote, flowCard, histCard, auctionCard, realmCard, holdCard, rulesCard);
+  // ---- what an IOU is worth / why gold is held (agents/bonds.ts, agents/gold.ts) ----------------------
+  const worthBody = h('div', null);
+  const worthSub = h('div', { class: 'card-sub' });
+  const worthCard = card('Why this price', worthSub, null, worthBody);
+
+  const el = h('div', { class: 'mk-detail' }, nav, title, actions, tileWrap, instrNote, worthCard, flowCard, histCard, auctionCard, realmCard, holdCard, rulesCard);
 
   // ---- actions ------------------------------------------------------------------------------------
   function doTrade(): void {
@@ -309,6 +317,7 @@ export function createDetail(hooks: DetailHooks): Detail {
     paintHolders(s);
     paintRules(s);
     paintInstrument(s, m);
+    paintWorth(s, m);
   }
 
   /** Where the good comes from and goes: this town's made / used / in / out, and every town's. */
@@ -586,12 +595,12 @@ export function createDetail(hooks: DetailHooks): Detail {
       const rows =
         good === IOU_GOOD
           ? [
-              { key: 'bank', label: 'The Bank', value: fin(s.bank?.iou), hint: 'Bought with its spare reserves when the yield beats what reserves earn' },
-              { key: 'people', label: 'Households', value: people, hint: 'Savers buy IOUs when the yield beats the deposit rate' },
+              { key: 'bank', label: 'The Bank', value: fin(s.bank?.iou), hint: 'Bought with the reserves it can spare, more the further the yield beats what it asks' },
+              { key: 'people', label: 'Households', value: people, hint: 'Savers put more of their savings in IOUs the further the yield beats deposits' },
             ]
           : [
               { key: 'state', label: 'Treasury', value: fin(s.treasury?.gold), hint: 'The Treasury’s own reserve of gold' },
-              { key: 'people', label: 'Households', value: people, hint: 'People hoard gold when they expect prices to rise faster than deposits pay' },
+              { key: 'people', label: 'Households', value: people, hint: 'A share of their wealth — more when prices outrun deposit rates, the Bank looks weak or the coin is falling' },
             ];
       holdBars.set(
         rows.filter((r) => r.value > 1e-6).map((r) => ({ ...r, color: good === GOLD_GOOD ? T.goldHi : '#b9c4d0', text: fmtNum(r.value) + (good === GOLD_GOOD ? ' oz' : '') })),
@@ -678,6 +687,74 @@ export function createDetail(hooks: DetailHooks): Detail {
         p > 0 ? `Today one ounce costs ${fmtPrice(p)}.` : '',
       );
     } else instrNote.hidden = true;
+  }
+
+  function paintWorth(s: SimState, m: MarketState | null): void {
+    if (good === IOU_GOOD) {
+      worthCard.hidden = false;
+      const v = bondView(s);
+      const p = fin(m?.ema);
+      const y = p > 0 ? IOU_COUPON / p : NaN;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const q of s.people ?? []) {
+        if (!q || !q.alive) continue;
+        const a = householdIouYield(s, q.id);
+        if (a < lo) lo = a;
+        if (a > hi) hi = a;
+      }
+      const plus = (x: number) => (x >= 0 ? '+' : '−') + fmtPct(Math.abs(x), 2);
+      const bankW = bankIouWorth(s);
+      setText(worthSub, 'the yield holders ask of an IOU, and what that makes it worth');
+      const rows: [string, string, ('good' | 'bad')?][] = [
+        ['Reserve rate holders expect over the years ahead', fmtPct(v.expRate, 2)],
+        ['…the rate today', fmtPct(fin(s.treasury?.reserveRate), 2)],
+        ['…prices, expected to change (rates follow them)', `${fmtPctSigned(v.inflation, 1)} a year`],
+        [`Debt: ${fmtNum(v.debtRatio * 100)}% of a year’s output`, plus(v.debtPremium), v.debtPremium > 0.001 ? 'bad' : undefined],
+        ['Coupons cut (remembered for years)', plus(v.cutPremium), v.cutPremium > 0.001 ? 'bad' : undefined],
+        ['A Purse short of the coupons due', plus(v.cashPremium), v.cashPremium > 0.001 ? 'bad' : undefined],
+        ['Prices rising faster than holders are easy with', plus(v.inflationRisk), v.inflationRisk > 0.001 ? 'bad' : undefined],
+        ['The Bank asks', `${fmtPct(v.bankYield, 2)} → worth ${fmtMoneyShort(bankW)}`],
+        ['Households ask', Number.isFinite(lo) ? `${fmtPct(lo, 2)}–${fmtPct(hi, 2)} → worth ${fmtMoneyShort(iouWorth(hi))}–${fmtMoneyShort(iouWorth(lo))}` : DASH],
+        ['Today an IOU yields', Number.isFinite(y) ? `${fmtPct(y, 2)} at ${fmtMoneyShort(p)}` : DASH],
+      ];
+      const b = (x: string) => h('b', null, x);
+      const parts: (Node | string)[] = [];
+      if (Number.isFinite(y)) {
+        if (!(fin(s.treasury?.iouOutstanding) > 1e-6)) parts.push('No IOUs are in anyone’s hands: the price is what a few would fetch from those bidding. ');
+        if (p < bankW * 0.99) parts.push('Below their worth to the Bank, so it buys with the reserves it can spare — ', b('selling more pushes the price down'), ' until it has all it wants. ');
+        else parts.push('At or above their worth to the Bank: it buys no more, and sells some as the price rises. ');
+      }
+      parts.push(
+        'Each holder wants more of its savings in IOUs the more they yield over what it asks, and trades a step toward that each day. Offered well over what they are worth to it, a holder sells at once — so ',
+        b('the more you bid, the more you buy back'),
+        '. Rates held low for long, a small debt and coupons always paid make IOUs dear; rates raised, debts piled up and coupons cut make them cheap.',
+      );
+      replace(worthBody, kvList(rows), h('p', { class: 'note' }, ...parts));
+    } else if (good === GOLD_GOOD) {
+      worthCard.hidden = false;
+      const g = goldMotives(s);
+      const gv = goldView(s);
+      setText(worthSub, 'the share of their wealth households want in gold, and why');
+      const rows: [string, string, ('good' | 'bad')?][] = [
+        ['A store kept anyway (the cautious more)', fmtPct(g.base, 1)],
+        ['Prices rising faster than the Bank pays on deposits', fmtPct(g.hedge, 1), g.hedge > 0.001 ? 'bad' : undefined],
+        [`Fear for the Bank (${fmtNum(gv.fear * 100)}%)`, fmtPct(g.fear, 1), g.fear > 0.001 ? 'bad' : undefined],
+        [`Gold ${fmtPctSigned(gv.fall, 0)} on a year ago: the coin expected to keep falling`, fmtPct(g.run, 1), g.run > 0.001 ? 'bad' : undefined],
+        ['Share of wealth wanted in gold', fmtPct(g.target, 1)],
+      ];
+      replace(
+        worthBody,
+        kvList(rows),
+        h(
+          'p',
+          { class: 'note' },
+          'Gold earns nothing: households hold it for safety, and move a little of the way to the share they want each day. Their gold comes from the foreign dealers, so ',
+          h('b', null, 'a rush into gold sends coin abroad and weakens the coin'),
+          ' — which, if the gold price keeps climbing, feeds the fear of its fall. Deposit rates above inflation, and a well-capitalised Bank, calm it.',
+        ),
+      );
+    } else worthCard.hidden = true;
   }
 
   // ---- rule matching ------------------------------------------------------------------------------------------

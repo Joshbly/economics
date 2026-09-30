@@ -2219,7 +2219,7 @@ export function playerOrders(s: SimState, books: Books): void {
     } else continue;
     if (!book || !(q > 1e-9)) continue;
     if (buy) budget -= q * perUnit;
-    const opt = { exempt: true, tag: po.id, session: po.session };
+    const opt = { exempt: true, tag: po.id, session: po.session, market: mode === 'any' };
     const ord = buy ? addBid(book, STATE, po.price, q, opt) : addAsk(book, STATE, po.price, q, opt);
     sub.push({ po, ord, open: isPatient(po) ? (po.offset ?? 0) : undefined });
   }
