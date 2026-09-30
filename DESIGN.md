@@ -205,8 +205,8 @@ gold): a household's savings are its wealth beyond PORTFOLIO_SURPLUS_MULT × its
 * **Gold** — a target share of its wealth (`agents/gold.ts`): GOLD_BASE_SHARE × its taste (the
   cautious more: 2 × (1 − nerve); households are founded holding it) + GOLD_HEDGE_SLOPE ×
   (expected inflation − the deposit rate − GOLD_HEDGE_FREE) + GOLD_FEAR_SHARE × fear for the
-  bank (its capital, IOUs at the market's price, below GOLD_FEAR_HEADROOM × the rule; all of
-  it once failed) + GOLD_FALL_SLOPE × (the gold price's rise on a year ago − GOLD_FALL_FREE),
+  bank (its capital, IOUs at the market's price, below GOLD_FEAR_SOUND of its loans, all of it
+  at GOLD_FEAR_WEAK or once failed — depositors judge the bank, not the rule in force) + GOLD_FALL_SLOPE × (the gold price's rise on a year ago − GOLD_FALL_FREE),
   at most PORTFOLIO_MAX_GOLD_SHARE. More than GOLD_BAND off it, it moves GOLD_REBAL_SPEED of
   the gap a day, buying with cash to spare and selling what it holds beyond.
 * Short of cash (below half the buffer), it sells gold or IOUs just under the market.

@@ -525,7 +525,9 @@ const EXPERIMENTS: Experiment[] = [
       // so the direct mechanism is the standards check below; the stock only has to be higher.
       { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.01, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
       { label: 'lending standards looser', metric: 'bankStance', kind: 'down', tol: 0.1, arm: 'thinned, 3 % rule', vs: 'capital thinned' },
-      { label: 'credit not below the untouched bank’s', metric: 'credit', kind: 'notDown', tol: 0.02, arm: 'thinned, 3 % rule' },
+      // Within 5 %: depositors judge the bank itself, not the rule, and a bank thinned to about 7 % of
+      // its loans worries them — some of their savings go into gold, bought abroad (agents/gold.ts).
+      { label: 'credit not far below the untouched bank’s', metric: 'credit', kind: 'notDown', tol: 0.05, arm: 'thinned, 3 % rule' },
     ],
     show: ['capRatio', 'inv', 'unemp'],
   },

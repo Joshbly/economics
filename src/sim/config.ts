@@ -1169,8 +1169,10 @@ export const GOLD_BASE_SHARE = 0.02;
 export const GOLD_HEDGE_SLOPE = 1;
 export const GOLD_HEDGE_FREE = 0.02;
 export const GOLD_FEAR_SHARE = 0.15;
-/** Fear for the bank: none while its capital (with its IOUs at market) is GOLD_FEAR_HEADROOM × the rule or more; full at the rule, or once it has failed. */
-export const GOLD_FEAR_HEADROOM = 1.2;
+/** Fear for the bank: none while its capital (with its IOUs at market) is GOLD_FEAR_SOUND of its loans or more, full at
+ *  GOLD_FEAR_WEAK or once it has failed. Depositors judge the bank itself, whatever capital rule is in force. */
+export const GOLD_FEAR_SOUND = 0.1;
+export const GOLD_FEAR_WEAK = 0.04;
 export const GOLD_FALL_SLOPE = 0.3;
 export const GOLD_FALL_FREE = 0.1;
 /** The coin's expected fall: the gold price's rise over the last GOLD_FALL_DAYS (a year, so the seasons cancel out), a year's worth. */

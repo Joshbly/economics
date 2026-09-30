@@ -29,7 +29,8 @@ import {
   GOLD_FALL_DAYS,
   GOLD_FALL_FREE,
   GOLD_FALL_SLOPE,
-  GOLD_FEAR_HEADROOM,
+  GOLD_FEAR_SOUND,
+  GOLD_FEAR_WEAK,
   GOLD_FEAR_SHARE,
   GOLD_HEDGE_FREE,
   GOLD_HEDGE_SLOPE,
@@ -39,7 +40,6 @@ import { loansOutstanding } from '../ledger';
 import { rt } from '../runtime';
 import type { Person, SimState } from '../types';
 import { clamp, fin } from '../util';
-import { minCapital } from './bank';
 import { temperament } from './temperament';
 
 export interface GoldView {
@@ -61,9 +61,9 @@ function compute(s: SimState): GoldView {
   let fear = 0;
   if (s.bank.failed) fear = 1;
   else {
-    const rule = Math.max(1e-6, minCapital(s));
+    // the bank itself, not the rule in force: a lowered rule does not make a thin bank safer
     const ratio = bankMarketCapital(s);
-    fear = clamp((rule * GOLD_FEAR_HEADROOM - ratio) / (rule * (GOLD_FEAR_HEADROOM - 1)), 0, 1);
+    fear = clamp((GOLD_FEAR_SOUND - ratio) / (GOLD_FEAR_SOUND - GOLD_FEAR_WEAK), 0, 1);
   }
   // the gold price against a year before (seasons cancel out), a year's worth
   const h = s.goldMarket.hist ?? [];
