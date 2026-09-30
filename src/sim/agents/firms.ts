@@ -78,6 +78,7 @@ import {
   DISTRESS_RECOVER,
   DIVIDEND_SHARE,
   DROUGHT_FACTOR,
+  EVENT_BUMPER_BOOST,
   FIRE_SALE,
   HEAT_MEAN,
   INPUT_BID_RUNGS,
@@ -1094,6 +1095,7 @@ export function firmsProduce(s: SimState): void {
     if (leff > 0) {
       let season = seasonFactor(d.season, s.day);
       if (d.season === 'farm' && (s.towns[t]?.droughtDays ?? 0) > 0) season *= DROUGHT_FACTOR;
+      else if (d.season === 'farm' && (s.towns[t]?.bumperDays ?? 0) > 0) season *= 1 + EVENT_BUMPER_BOOST;
       const site = siteMultiplier(s, f);
       const qPot = potentialOutput(k, leff, tools, season, site);
       const cap = materialCap(k, f.inv);

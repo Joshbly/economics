@@ -466,6 +466,7 @@ function fillCouncils(s: SimState): void {
   for (const t of s.towns) {
     if (!t) continue;
     if (t.evictions !== undefined && !isNum(t.evictions)) delete t.evictions;
+    if (t.bumperDays !== undefined && !(isNum(t.bumperDays) && t.bumperDays > 0)) delete t.bumperDays;
     const c = t.council as unknown;
     if (!isObj(c)) {
       t.council = blankCouncil();

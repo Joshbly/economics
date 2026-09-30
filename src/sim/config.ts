@@ -895,10 +895,15 @@ export const EVENT_WORLD_SHOCK_PER_YEAR = 1.0;
 export const EVENT_DROUGHT_FROM_DOY = 30;
 export const EVENT_DROUGHT_TO_DOY = 210;
 export const EVENT_DROUGHT_DAYS = 60;
-/** Bumper harvests come in the harvest window and add this many days of each farm's usual output. */
+/**
+ * Bumper harvests come in the harvest window: for EVENT_BUMPER_SPAN days the town's farms bring in
+ * EVENT_BUMPER_BOOST more grain (town.bumperDays; firms.ts) — a good season, not a heap of grain
+ * found overnight (about 8 days' output in all).
+ */
 export const EVENT_BUMPER_FROM_DOY = 150;
 export const EVENT_BUMPER_TO_DOY = 270;
-export const EVENT_BUMPER_DAYS = 8;
+export const EVENT_BUMPER_SPAN = 40;
+export const EVENT_BUMPER_BOOST = 0.2;
 /** A storm wrecks this share of every fishery's boats and nets (tools) in the stricken town. */
 export const EVENT_STORM_TOOL_LOSS = 0.5;
 /** A mine collapse buries this share of the mine's tools and costs each of its workers this much health. */

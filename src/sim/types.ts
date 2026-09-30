@@ -93,6 +93,8 @@ export interface Town {
   strikeDays: number; // > 0 while a strike is on (production reduced)
   unrestDays: number; // consecutive days contentment < threshold
   droughtDays: number; // > 0 while a drought hits farms here
+  /** > 0 while farms here enjoy a bumper season (EVENT_BUMPER_BOOST more grain). Absent in old saves. */
+  bumperDays?: number;
   evictions?: number; // households turned out for unpaid rent so far this month (for the month's news)
   /** The town's council (agents/council.ts): absent only in saves from before councils. */
   council?: Council;

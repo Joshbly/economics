@@ -5,8 +5,8 @@
 // in the first EVENT_GRACE_DAYS of play) act through ordinary state, so their
 // consequences emerge from the agents:
 //   drought       town.droughtDays = EVENT_DROUGHT_DAYS (firms.ts halves farm output)
-//   bumper crop   farms of a town find EVENT_BUMPER_DAYS of extra grain in their barns
-//                 (booked as production: acc.prod_0 and acc.event_va)
+//   bumper crop   town.bumperDays = EVENT_BUMPER_SPAN (firms.ts: its farms bring in
+//                 EVENT_BUMPER_BOOST more grain while it lasts)
 //   storm at sea  fisheries of a town lose EVENT_STORM_TOOL_LOSS of their boats (tools)
 //   mine collapse a mine loses EVENT_MINE_TOOL_LOSS of its tools, its miners are hurt
 //   world shock   foreign.shocks gets {good, factor, until} (foreign.ts applies it)
@@ -27,7 +27,8 @@ import {
   EVENT_ALARM_HUNGER,
   EVENT_ALARM_INFLATION,
   EVENT_ALARM_UNEMP,
-  EVENT_BUMPER_DAYS,
+  EVENT_BUMPER_BOOST,
+  EVENT_BUMPER_SPAN,
   EVENT_BUMPER_FROM_DOY,
   EVENT_BUMPER_PER_YEAR,
   EVENT_BUMPER_TO_DOY,
@@ -176,22 +177,12 @@ function drought(s: SimState): void {
 
 function bumperHarvest(s: SimState): void {
   const farms = activeFirms(s, (f) => f.sector === 'farm');
-  const t = townByFirms(s, farms, (x) => s.towns[x].droughtDays > 0);
+  const t = townByFirms(s, farms, (x) => s.towns[x].droughtDays > 0 || (s.towns[x].bumperDays ?? 0) > 0);
   if (t < 0) return;
-  let extra = 0;
-  for (const f of farms) {
-    if (f.town !== t) continue;
-    const q = Math.max(0, fin(f.output)) * EVENT_BUMPER_DAYS;
-    if (!(q > 0)) continue;
-    f.inv[G.grain] += q;
-    extra += q;
-  }
-  if (!(extra > 0)) return;
-  // A windfall of output: counted as today's production (and value added at base prices).
-  const acc = s.stats.acc;
-  acc['prod_' + G.grain] = (acc['prod_' + G.grain] || 0) + extra;
-  acc.event_va = (acc.event_va || 0) + extra * fin(s.stats.basePrices[G.grain]);
-  news(s, `A bumper harvest around ${townName(s, t)}: the barns are full to the rafters, with some ${Math.round(extra)} extra sacks of grain to sell.`, 'good', t);
+  // a good season: its farms bring in more grain every day while it lasts (firms.ts), counted as they do
+  s.towns[t].bumperDays = EVENT_BUMPER_SPAN;
+  const weeks = Math.max(1, Math.round(EVENT_BUMPER_SPAN / 7));
+  news(s, `A bumper season around ${townName(s, t)}: for the next ${weeks} weeks or so its farms bring in about ${Math.round(100 * EVENT_BUMPER_BOOST)} % more grain than usual.`, 'good', t);
 }
 
 function stormAtSea(s: SimState): void {
@@ -260,6 +251,10 @@ export function beginDayEvents(s: SimState): void {
     if (town.droughtDays > 0) {
       town.droughtDays -= 1;
       if (town.droughtDays === 0) news(s, `Rain has returned to ${town.name}; the fields are green again.`, 'good', town.id);
+    }
+    if ((town.bumperDays ?? 0) > 0) {
+      town.bumperDays = Math.max(0, (town.bumperDays ?? 0) - 1);
+      if (!town.bumperDays) delete town.bumperDays;
     }
   }
   if (!s.settings.events) return;
