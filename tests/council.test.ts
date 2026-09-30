@@ -2,10 +2,11 @@
 // whoever builds on it; empty buildings bought for their plots by a bargain; houses and roads.
 import { describe, expect, it } from 'vitest';
 import { chooseMayor, councilHousePlan, councilRoadPlan, councilStep, landTilePrice, plotDeal, plotPrice } from '../src/sim/agents/council';
+import { cancelProject, startProject } from '../src/sim/agents/construction';
 import { COUNCIL_DAY, LAND_MUL_MAX, LAND_MUL_MIN, MAYOR_MIN_AGE, MAYOR_TERM_DAYS } from '../src/sim/config';
 import { stepDay } from '../src/sim/engine';
 import { Game } from '../src/sim/game';
-import { cashOf, checkLedger, councilRef, deposits, mint, pay } from '../src/sim/ledger';
+import { burn, cashOf, checkLedger, councilRef, deposits, mint, pay } from '../src/sim/ledger';
 import { dispatch } from '../src/sim/policy/player';
 import { deserialize, serialize } from '../src/sim/save';
 import { STATE, type Building, type SimState } from '../src/sim/types';
@@ -92,6 +93,49 @@ describe('the town’s land', () => {
       expect(c.purse - p0).toBeGreaterThan(0.5 * price);
       expect(c.year.plots).toBe(1);
     }
+    balanced(s);
+  });
+
+  it('the Treasury cannot have a plot for less than its price: with the Purse empty, no work starts until it is paid', () => {
+    const s = world();
+    s.treasury.autoMint = false;
+    burn(s, s.treasury.purse);
+    const k0 = s.towns[0].council!.purse;
+    const r = dispatch(s, { type: 'build', kind: 'house', town: 0 });
+    expect(r.ok, r.message).toBe(true);
+    const pr = s.projects.find((p) => p.id === r.id)!;
+    const b = s.buildings[pr.building];
+    const { town, price } = plotPrice(s, b.x, b.y, b.w, b.h);
+    expect(town).toBe(0); // (the builders chose a site in the town itself)
+    expect(pr.landDue).toBeCloseTo(price, 6); // nothing paid yet: all of it owed
+    expect(r.message).toMatch(/still owed/);
+    expect(s.towns[0].council!.purse).toBeCloseTo(k0, 6);
+    for (let d = 0; d < 5; d++) stepDay(s);
+    expect(pr.done.labor).toBe(0); // no work on land not paid for
+    expect(pr.landDue ?? 0).toBeGreaterThan(0);
+    // the Purse fills: the plot is paid first, in full, and the works start
+    mint(s, 1e5);
+    for (let d = 0; d < 40; d++) stepDay(s); // (in a new realm the builders take some three weeks to gather materials and hands)
+    expect(pr.landDue).toBeUndefined();
+    expect(pr.landPaid).toBeCloseTo(price, 6);
+    expect(s.towns[0].council!.purse - k0).toBeGreaterThan(0.99 * price);
+    expect(pr.done.labor).toBeGreaterThan(0);
+    balanced(s);
+  });
+
+  it('abandoned works give the plot back: the council refunds what was paid for it', () => {
+    const s = world();
+    const owner = s.people.filter((p) => p.alive && p.town === 0).sort((a, c) => c.cash - a.cash)[0];
+    const r = startProject(s, { kind: 'house', town: 0, owner: owner.id });
+    expect(typeof r).not.toBe('string');
+    const pr = r as Exclude<typeof r, string>;
+    const paid = pr.landPaid ?? 0;
+    expect(paid).toBeGreaterThan(0);
+    const cash0 = owner.cash;
+    const b = s.buildings[pr.building];
+    expect(cancelProject(s, pr.id)).toBe(true);
+    expect(owner.cash - cash0).toBeCloseTo(paid, 6);
+    expect(b.status).toBe('ruin');
     balanced(s);
   });
 

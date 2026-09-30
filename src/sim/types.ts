@@ -326,6 +326,13 @@ export interface Project {
   /** Treasury projects: labour-days its Treasury workers put in today, and about how many of them that was. */
   crewToday?: number;
   crewHeads?: number;
+  /**
+   * The plot of a new building within a town's core (agents/council.ts): the council it is bought
+   * from, what has been paid for it, and what is still owed — no work starts until that is paid.
+   */
+  landTo?: Ref;
+  landPaid?: number;
+  landDue?: number;
 }
 
 // ---------------------------------------------------------------------------

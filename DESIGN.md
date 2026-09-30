@@ -532,7 +532,12 @@ bargains. It starts with COUNCIL_START_PER_HEAD a household and never borrows.
 council's; beyond every core it is nobody's, free to whoever clears it. Whoever puts up
 a new building in the core — a venture, a developer, the Treasury — buys the plot from
 the council when the works start (`construction.startProject` → `buyPlot`; a pier stands
-in the water and pays nothing). A tile at the very centre costs LAND_TILE_SHARE of what
+in the water and pays nothing). What the owner cannot pay at once is owed (`Project.landDue`):
+it is paid first from whatever the owner can pay — for the Treasury its Purse, or new money
+with auto-mint on — and no work starts until it is paid in full (`construction.settlePlot`;
+the project waits as stalled, and is abandoned after STALL_CANCEL_DAYS like any). When a new
+building's works are abandoned its plot goes back to the council, which refunds what was paid
+for it (`refundPlot`, as far as its purse allows). A tile at the very centre costs LAND_TILE_SHARE of what
 a house costs to build in the town today × (LAND_CROWD_BASE + the share of the core
 already built on) × the council's land policy (`landMul`), falling to LAND_EDGE_SHARE
 of that at the core's edge. Ventures weigh the plot like any capital: in a site's value

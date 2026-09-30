@@ -10,7 +10,7 @@
 // ============================================================================
 import { LAND_MUL_MAX, LAND_MUL_MIN, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { G, GOODS, N_GOODS } from './goods';
-import { blankCouncil, checkLedger, deposits, reconcileBank } from './ledger';
+import { blankCouncil, checkLedger, councilTown, deposits, isCouncil, reconcileBank } from './ledger';
 import type { SimState } from './types';
 
 /** Serialise the whole state to JSON (compact). */
@@ -418,6 +418,18 @@ function fillCouncils(s: SimState): void {
     for (const k of Object.keys(b) as (keyof typeof b)[]) if (isNum((y as Obj)[k])) b[k] = (y as Obj)[k] as number;
     return b;
   };
+  // a new building's plot: the council it is bought from, what was paid and what is owed
+  for (const p of s.projects) {
+    if (!p) continue;
+    if (p.landTo !== undefined && !(isNum(p.landTo) && isCouncil(p.landTo as number) && s.towns[councilTown(p.landTo as number)])) {
+      delete p.landTo;
+      delete p.landDue;
+      delete p.landPaid;
+      continue;
+    }
+    if (p.landPaid !== undefined && !(isNum(p.landPaid) && (p.landPaid as number) >= 0)) p.landPaid = 0;
+    if (p.landDue !== undefined && !(isNum(p.landDue) && (p.landDue as number) > 0)) delete p.landDue;
+  }
   for (const t of s.towns) {
     if (!t) continue;
     if (t.evictions !== undefined && !isNum(t.evictions)) delete t.evictions;

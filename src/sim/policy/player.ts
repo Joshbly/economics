@@ -44,7 +44,7 @@ import {
 import { dateLabel } from '../calendar';
 import { fin } from '../util';
 import { GOODS, N_GOODS, SECTORS } from '../goods';
-import { burn, cashOf, councilOf, councilRef, mint, pay } from '../ledger';
+import { burn, cashOf, councilOf, councilRef, councilTown, mint, pay } from '../ledger';
 import { rt } from '../runtime';
 import { BANK, FIRM_BASE, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
 import type {
@@ -1624,7 +1624,11 @@ function projectResult(s: SimState, r: ReturnType<typeof startProject>, label: s
   const costText = cost > 0 ? ` Estimated cost ${moneyText(cost)}, billed as the work proceeds.` : ' Billed as the work proceeds.';
   policyNews(s, `The Treasury commissioned: ${label} (${what}).`, town);
   let warn = '';
-  if (!s.treasury.autoMint && cost > 0 && s.treasury.purse < cost) warn = ' The Purse does not yet hold enough to pay for all of it; work stalls whenever the bills cannot be paid.';
+  const land = fin(r.landPaid ?? 0) + fin(r.landDue ?? 0);
+  const plot = land > 0.005 && r.landTo !== undefined ? ` The plot is ${townName(s, councilTown(r.landTo))}’s land: ${moneyText(land)}, paid to its council` : '';
+  if (plot && fin(r.landDue ?? 0) > 0.005) warn = `${plot} — ${moneyText(fin(r.landDue ?? 0))} of it is still owed, and no work starts until the Purse can pay it.`;
+  else if (plot) warn = `${plot}.`;
+  if (!s.treasury.autoMint && cost > 0 && s.treasury.purse < cost) warn += ' The Purse does not yet hold enough to pay for all of it; work stalls whenever the bills cannot be paid.';
   return { ok: true, message: `${label} queued with the builders.${costText}${warn}`, id: r.id };
 }
 

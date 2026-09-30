@@ -61,7 +61,7 @@ import {
 import { newProject as newProjectRecord } from '../factory';
 import { BRIDGE_TILE_COST, G, HOUSE_COST, HOUSE_SLOTS, PIER_COST, ROAD_TILE_COST, SECTORS, TRACK_TILE_COST } from '../goods';
 import { cashOf, councilTown, firmRef, isCouncil, isFirm, isPerson, pay, refId, refName, repayPrincipal, writeOff } from '../ledger';
-import { buyPlot } from './council';
+import { buyPlot, payForPlot, refundPlot } from './council';
 import { addBid, bookFor, type Books } from '../market/markets';
 import { wageLevyRates } from '../policy/levies';
 import { lineCrewIn } from '../policy/lines';
@@ -510,12 +510,42 @@ function pave(s: SimState, p: Project, frac: number): void {
   } else pend[p.id] = c;
 }
 
+/**
+ * What is still owed for a new building's plot is paid first, from what the owner can pay (the
+ * Treasury: its Purse, or new money with auto-mint on). True once the plot is paid for.
+ */
+function settlePlot(s: SimState, p: Project): boolean {
+  const due = fin(p.landDue ?? 0);
+  if (!(due > EPS)) return true;
+  const to = p.landTo;
+  if (to === undefined) {
+    delete p.landDue;
+    return true;
+  }
+  const can = Math.max(0, billingCapacity(s, p) - Math.max(0, fin(p.prepaid)));
+  const paid = payForPlot(s, p.owner, to, Math.min(due, can));
+  p.landPaid = fin(p.landPaid ?? 0) + paid;
+  const left = due - paid;
+  if (left > EPS) {
+    p.landDue = left;
+    return false;
+  }
+  delete p.landDue;
+  return true;
+}
+
 /** Advance one project with the labour on offer; bill the owner. */
 function advance(s: SimState, b: Firm, p: Project, labor: number, swAvail: number, costLD: number, prices: number[]): Step {
   const st = STEP;
   st.builderLabor = 0;
   st.stateLabor = 0;
   st.matValue = 0;
+  // no work on land not yet paid for: the project waits (and after STALL_CANCEL_DAYS is abandoned)
+  if (!settlePlot(s, p)) {
+    p.stalledDays += 1;
+    p.status = 'stalled';
+    return st;
+  }
   const need = p.need;
   const done = p.done;
   const remL = Math.max(0, need.labor - done.labor);
@@ -1021,6 +1051,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
   let building = -1;
   let tiles: number[] = [];
   let sector: Sector | '' = '';
+  let plot: ReturnType<typeof buyPlot> = null;
   const kind = spec.kind;
   switch (kind) {
     case 'firm': {
@@ -1038,7 +1069,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
       tiles = safeAccess(s, bld);
-      buyPlot(s, spec.owner, bld); // within a town's core the plot is the council's (agents/council.ts)
+      plot = buyPlot(s, spec.owner, bld); // within a town's core the plot is the council's (agents/council.ts)
       break;
     }
     case 'house':
@@ -1054,7 +1085,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
       tiles = safeAccess(s, bld);
-      if (kind === 'house') buyPlot(s, spec.owner, bld); // (a pier stands in the water: no plot)
+      if (kind === 'house') plot = buyPlot(s, spec.owner, bld); // (a pier stands in the water: no plot)
       break;
     }
     case 'expand': {
@@ -1099,6 +1130,11 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
   p.tiles = tiles;
   p.need = need;
   p.loan = spec.loan !== undefined && spec.loan >= 0 ? spec.loan : -1;
+  if (plot) {
+    p.landTo = plot.to;
+    p.landPaid = plot.paid;
+    if (plot.due > EPS) p.landDue = plot.due; // no work starts until it is paid (advance)
+  }
   const bld = building >= 0 ? s.buildings[building] : undefined;
   if (bld) {
     bld.project = p.id;
@@ -1185,6 +1221,9 @@ export function cancelProject(s: SimState, id: number): boolean {
         const still = s.buildings[bld.id];
         if (still && still.status === 'construction') still.status = 'ruin';
         if (still) still.project = -1;
+        // the plot goes back to its council, which refunds what was paid for it
+        if (p.landTo !== undefined) refundPlot(s, p.owner, p.landTo, fin(p.landPaid ?? 0));
+        delete p.landDue;
       }
     } else {
       if (p.kind === 'reopen' && bld.status === 'construction') bld.status = 'vacant';

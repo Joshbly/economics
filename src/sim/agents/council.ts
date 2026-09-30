@@ -15,7 +15,10 @@
 // start (plotPrice): a tile at the very centre costs LAND_TILE_SHARE of what a
 // house costs to build there today, times (LAND_CROWD_BASE + the share of the core
 // already built on) — land grows dear as the town fills — falling to
-// LAND_EDGE_SHARE of that at the core's edge. Ventures weigh it like any other
+// LAND_EDGE_SHARE of that at the core's edge. What the owner cannot pay at once is
+// owed: no work starts until the plot is paid for in full (construction.advance);
+// if the works are abandoned the plot goes back to the council, which refunds what
+// was paid for it. Ventures weigh it like any other
 // capital (agents/sites.ts, entry.ts), so a crowded centre sends workshops to the
 // edge of town and beyond, and the town grows outward.
 //
@@ -81,7 +84,7 @@ import {
 } from '../config';
 import { dayOfMonth, dayOfYear } from '../calendar';
 import { HOUSE_SLOTS } from '../goods';
-import { blankCouncil, cashOf, councilOf, councilRef, firmRef, isCouncil, isFirm, isPerson, pay, refId, refName } from '../ledger';
+import { blankCouncil, cashOf, councilOf, councilRef, councilTown, firmRef, isCouncil, isFirm, isPerson, pay, refId, refName } from '../ledger';
 import { decisionRand, decisionSeed } from '../rng';
 import { rt } from '../runtime';
 import { news } from '../stats/events';
@@ -178,20 +181,40 @@ export function plotPrice(s: SimState, x: number, y: number, w: number, h: numbe
   return { town, price: landTilePrice(s, town, cx, cy) * w * h };
 }
 
-/** A new building's plot is bought from the council when its works start (construction.startProject). Returns what was paid. */
-export function buyPlot(s: SimState, owner: Ref, b: Building): number {
-  const { town, price } = plotPrice(s, b.x, b.y, b.w, b.h);
-  if (town < 0 || !(price > 0.01)) return 0;
-  const to = councilRef(town);
-  if (owner === to) return 0;
-  const paid = pay(s, owner, to, price, 'asset');
+/** Pay (part of) a plot's price to the council `to`; its accounts count it. Returns ¤ paid. */
+export function payForPlot(s: SimState, from: Ref, to: Ref, amount: number): number {
+  if (!(amount > 0.005) || !isCouncil(to) || from === to) return 0;
+  const paid = pay(s, from, to, amount, 'asset');
   if (paid > 0) {
-    const c = councilOf(s, town)!;
-    c.year.landSold += paid;
-    c.year.plots += 1;
+    const c = councilOf(s, councilTown(to));
+    if (c) c.year.landSold += paid;
     bump(s, 'land_sold', paid);
   }
   return paid;
+}
+
+/**
+ * A new building's plot is bought from the council when its works start (construction.startProject):
+ * the owner pays what it can now and owes the rest (the works wait for it). Null when the land is
+ * nobody's (beyond every core) or the council's own.
+ */
+export function buyPlot(s: SimState, owner: Ref, b: Building): { to: Ref; paid: number; due: number } | null {
+  const { town, price } = plotPrice(s, b.x, b.y, b.w, b.h);
+  if (town < 0 || !(price > 0.01)) return null;
+  const to = councilRef(town);
+  if (owner === to) return null;
+  const paid = payForPlot(s, owner, to, price);
+  councilOf(s, town)!.year.plots += 1;
+  return { to, paid, due: Math.max(0, price - paid) };
+}
+
+/** A new building's works were abandoned: its plot goes back to the council, which refunds what was paid for it (as far as its purse allows). Returns ¤ refunded. */
+export function refundPlot(s: SimState, owner: Ref, to: Ref, paid: number): number {
+  if (!(paid > 0.005) || !isCouncil(to) || !(owner === STATE || payee(s, owner))) return 0;
+  const back = pay(s, to, owner, Math.min(paid, cashOf(s, to)), 'asset');
+  const c = councilOf(s, councilTown(to));
+  if (c && back > 0) c.year.landBought += back; // (bought back)
+  return back;
 }
 
 // ---------------------------------------------------------------------------

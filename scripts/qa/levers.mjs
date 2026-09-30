@@ -259,8 +259,20 @@ const topPurse = () => page.locator('.ind[aria-label="The Purse"] .ind-val').tex
   await q.lever('build');
   const n0 = await q.s('s.projects?.length ?? -1');
   await submit(T);
+  // a road already paved or under way (trading houses and councils build them too) is rightly
+  // refused: try the other destinations before judging
+  let why = await msg(T);
+  const tos = page.locator(`${T} select:visible`).nth(1);
+  const nTo = await tos.locator('option').count();
+  for (let k = 0; k < nTo && (await q.s('s.projects?.length ?? -1')) <= n0 && /under way|already paved/.test(why); k++) {
+    await tos.selectOption({ index: k });
+    await page.waitForTimeout(150);
+    await submit(T);
+    why = await msg(T);
+  }
   const pr = await q.s('JSON.stringify((s.projects||[]).slice(-1))');
-  check('build road', (await q.s('s.projects?.length ?? -1')) > n0, pr.slice(0, 200) + ' ' + (await msg(T)));
+  const built = (await q.s('s.projects?.length ?? -1')) > n0;
+  check('build road', built || /under way|already paved/.test(why), pr.slice(0, 200) + ' ' + why);
   for (const kind of ['Houses', 'Workshop', 'Pier', 'Enlarge']) {
     await seg(T, kind);
     await page.waitForTimeout(200);

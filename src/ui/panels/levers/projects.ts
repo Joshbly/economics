@@ -134,7 +134,8 @@ export function projectList(opts: { compact?: boolean; empty?: string } = {}): {
       setTone(v.status, TONES, tone);
       const f = projectFraction(p);
       v.main.set(f);
-      const waiting = p.loanWanted > 0 ? ' · waiting for funds' : p.stalledDays > 0 ? ` · stalled ${p.stalledDays} days` : '';
+      const owed = fin(p.landDue ?? 0);
+      const waiting = owed > 0.005 ? ` · waiting to pay ${fmtM(owed)} still owed for the plot` : p.loanWanted > 0 ? ' · waiting for funds' : p.stalledDays > 0 ? ` · stalled ${p.stalledDays} days` : '';
       setText(v.meta, `${Math.round(f * 100)}% done · ${fmtM(fin(p.billed))} billed${waiting}`);
       MATS.forEach(([k], i) => {
         const need = fin(p.need?.[k]);
