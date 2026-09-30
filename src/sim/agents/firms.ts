@@ -1650,6 +1650,8 @@ export function firmsEndDay(s: SimState): void {
   const profitLevies = monthEnd && hasLevyBase(s, 'profit');
   const pending = new Set<number>();
   for (const r of s.bank.requests ?? []) if (isFirm(r.borrower)) pending.add(r.borrower);
+  // an empty workshop counts the days it has stood empty (what it fetches falls with them: entry.vacantPrice)
+  for (const b of s.buildings) if (b && b.kind === 'firm' && b.status === 'vacant') b.vacantDays = fin(b.vacantDays) + 1;
   const n = s.firms.length;
   for (let i = 0; i < n; i++) {
     const f = s.firms[i];

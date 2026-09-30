@@ -41,7 +41,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a price moving more than a set share in a day; a loan rate above or below a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital (the standing 8 % rule can be raised or lowered).
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
 - **Build** — commission roads, houses, workshops of any trade, or piers. A road can join two towns or run anywhere you draw it on the map — paved, or a cheaper dirt track; clearing forest, cutting hills, draining marsh and bridging rivers cost more. You pay the builders; your own workers help for free on your projects (the builders bill only for the rest). With *Staff it with Treasury workers automatically* on, the town then employs as many Treasury workers as its projects can use and lets them go as they finish — the **Works** tab shows who is where. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
-- **Transfer** — a one-off payment to (or seizure from) a group of people, or the bank; or a one-off handout of goods you hold in a town.
+- **Transfer** — a one-off payment to (or seizure from) a group of people, the bank, or the town councils; or a one-off handout of goods you hold in a town.
 
 Everything else is up to you to discover.`,
       },
@@ -135,7 +135,7 @@ A workshop raises its wage when it cannot fill its posts, and lowers it only slo
         title: 'Investors and the market for companies',
         body: `Everyone with money to spare is a would-be investor, and no two think alike: some look three years ahead, others fifteen; some want a good deal more than the bank pays before they risk their money; some see every business through rosy spectacles; some risk most of their savings, others a little.
 
-What a business is worth to someone is the profit they expect from it over the years they look ahead, counted at the rate they would want for their money, plus what it holds less what it owes — and never less than it would fetch broken up. Once a month businesses change hands: when a buyer values one well above what its owners would take, it buys it, paying every owner their share. Owners of a business in trouble take less. A business bought by another becomes part of it.
+What a business is worth to someone is the profit they expect from it over the years they look ahead, counted at the rate they would want for their money, plus what it holds less what it owes — and never less than it would fetch broken up. Once a month shares in businesses change hands: when a buyer values one well above what its owners would take, they buy as large a share as they can afford — the whole of it if they can — from all its owners alike, each paid for their part. Owners of a business in trouble take less. Whoever holds the largest share runs the business, so control can pass a share at a time; a business controlled by another becomes part of it.
 
 Owning a rival in the same town lets an owner set their prices together — the bigger their share of the town's trade, the higher the price they can keep (a price limit stops that). Owning a supplier in the same town means the goods come straight across each morning at the going price: the workshop never goes short while its sister has stock.
 
@@ -189,6 +189,14 @@ It spends first on enough food (bread or fish — it buys more of whichever is c
       {
         title: 'Births, deaths and migration',
         body: `Healthy, housed people have children; people die of age and of hunger. When a town has more open posts than jobless people and empty rooms to spare, newcomers arrive from abroad with a little coin. When someone dies, their savings, holdings and property pass to an heir.`,
+      },
+      {
+        title: 'Town councils, mayors and land',
+        body: `Every town has a council with a purse of its own, kept at the bank like anyone's savings, and a mayor — a resident the town chooses every two years, the more established the likelier. A council plans like its mayor: some look many years ahead, some few; some drive a hard bargain.
+
+The unbuilt land within a town is its council's. Whoever builds there — a venture, a developer, or you — buys the plot when the works start: dearer at the centre and as the town fills up, cheaper toward its edge; beyond the town, land is free to whoever clears it. So a crowded town pushes workshops outward, and grows. A mayor whose town has many out of work asks less for land, to draw workshops in; one whose town is full asks more.
+
+Once a month each council may: buy an empty building that has stood idle a year or more, when its plot is worth more to the council than the owner asks — the two meet somewhere between, by how hard each bargains — then have it cleared and sell the plot again; build houses to let when people have no roof and nobody else is building; and build the road that would save its town's carters most, if it pays over the mayor's horizon. A council never borrows: it spends what its land, its rents and its savings bring in, and whatever you hand it (Transfer → Town councils). The town's view shows its mayor, purse and what it has done this year.`,
       },
     ],
   },

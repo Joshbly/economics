@@ -34,7 +34,7 @@ export function createMoneyView(): LedgerView {
   let lastS: SimState | null = null;
 
   const tiles = {
-    money: kpi({ label: 'Money', format: fmtMoneyShort, spark: true, hint: 'Every private balance of money in the realm — households, firms and the foreign merchants’ desk. All of it is held as deposits at the Bank.' }),
+    money: kpi({ label: 'Money', format: fmtMoneyShort, spark: true, hint: 'Every private balance of money in the realm — households, firms, the town councils and the foreign merchants’ desk. All of it is held as deposits at the Bank.' }),
     credit: kpi({ label: 'Bank loans', format: fmtMoneyShort, spark: true, hint: 'What borrowers owe the Bank. Lending creates deposits; repayment destroys them.' }),
     reserves: kpi({ label: 'Reserves', format: fmtMoneyShort, spark: true, hint: 'The Bank’s money on deposit with the Treasury. It grows when the Treasury pays out and shrinks when the Treasury takes in.' }),
     iou: kpi({ label: 'IOUs outstanding', format: (v) => fmtNum(v), spark: true, hint: 'Treasury IOUs held by the Bank and by people.' }),
@@ -75,6 +75,7 @@ export function createMoneyView(): LedgerView {
     let deposits = fin(s.foreign?.coin);
     for (const p of s.people ?? []) if (p && p.alive) deposits += fin(p.cash);
     for (const f of s.firms ?? []) if (f && f.alive) deposits += fin(f.cash);
+    for (const tw of s.towns ?? []) deposits += fin(tw.council?.purse ?? 0); // (the town councils' purses are deposits too)
     let loans = 0;
     for (const ln of s.loans ?? []) if (ln && ln.active) loans += Math.max(0, fin(ln.principal));
     const reserves = fin(b?.reserves);

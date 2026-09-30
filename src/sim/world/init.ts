@@ -142,11 +142,12 @@ import {
   TRADE_MIN_MARGIN_PCT,
   WAGON_CAPACITY,
   WAGON_WEAR_DAY,
+  COUNCIL_START_PER_HEAD,
 } from '../config';
 import { farmSeason, heatNeed, seasonFactor } from '../calendar';
 import { newFirm, newLoan, newMarket, newPerson, newProject, newShipment, newSimState, newTown, newTreasury } from '../factory';
 import { CONSUMER_GOODS, G, GOODS, HOUSE_COST, HOUSE_SLOTS, N_GOODS, PRODUCER_OF, SECTORS, TRADABLE_GOODS, type SectorDef } from '../goods';
-import { deposits, firmRef, loansOutstanding, personRef, reconcileBank } from '../ledger';
+import { blankCouncil, deposits, firmRef, loansOutstanding, personRef, reconcileBank } from '../ledger';
 import { bufferTarget, foodIndex, goodsBudget, steadyStateDemand } from '../agents/demandModel';
 import { basePrices, materialCostPerUnit, materialsValue, tfp, toolCostPerUnit, unitVariableCost } from '../agents/production';
 import { heatAheadMean, healthTarget, ladderInto, newPlanScratch, planInto, rungSets } from '../agents/households';
@@ -1719,6 +1720,14 @@ export function createWorld(opts: WorldOptions): SimState {
   if (harbor) for (let g = 0; g < N_GOODS; g++) tradeVal += (cal.imports[g] + cal.exports[g]) * P[harbor.id][g];
   fo.coin = round2(Math.max(DESK_WORKING_COIN, INIT_FOREIGN_COIN_DAYS * tradeVal * 0.5));
   (fo as { tradeEma?: number }).tradeEma = round3(tradeVal * 0.5); // daily port trade, (imports + exports) / 2
+
+  // ---- town councils (agents/council.ts): a purse of COUNCIL_START_PER_HEAD a household; mayors are chosen on day 0
+  for (const t of s.towns) {
+    t.council = blankCouncil();
+    let n = 0;
+    for (const p of s.people) if (p.alive && p.town === t.id) n++;
+    t.council.purse = round2(COUNCIL_START_PER_HEAD * n);
+  }
 
   // ---- bank, Treasury ---------------------------------------------------------------------------------------
   s.treasury.purse = INIT_PURSE;

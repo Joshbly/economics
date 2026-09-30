@@ -31,11 +31,12 @@ const GROUPS: { value: TransferGroup; label: string; noun: string }[] = [
   { value: 'hungry', label: 'Hungry people', noun: 'hungry people' },
   { value: 'firms', label: 'Firms', noun: 'firms' },
   { value: 'bank', label: 'The Bank’s own capital', noun: 'the Bank' },
+  { value: 'councils', label: 'Town councils', noun: 'town councils' },
 ];
 
 /** Groups that can receive goods: people (their pantry) or workshops (their stores). */
 const GOODS_GROUPS: { value: TransferGroup; label: string }[] = [
-  ...GROUPS.filter((g) => g.value !== 'firms' && g.value !== 'bank').map((g) => ({ value: g.value, label: g.label })),
+  ...GROUPS.filter((g) => g.value !== 'firms' && g.value !== 'bank' && g.value !== 'councils').map((g) => ({ value: g.value, label: g.label })),
   { value: 'firms', label: 'Workshops' },
 ];
 
@@ -49,6 +50,16 @@ interface Tally {
 
 function tally(s: SimState, group: TransferGroup, town: number, amount: number, sector: Sector | 'any' = 'any'): Tally {
   if (group === 'bank') return { n: 1, takeable: Math.min(amount, Math.max(0, fin(s.bank?.equity))) };
+  if (group === 'councils') {
+    let n = 0;
+    let takeable = 0;
+    for (const tw of s.towns) {
+      if (town >= 0 && tw.id !== town) continue;
+      n++;
+      takeable += Math.min(amount, Math.max(0, fin(tw.council?.purse ?? 0)));
+    }
+    return { n, takeable };
+  }
   let n = 0;
   let takeable = 0;
   if (group === 'firms') {
@@ -280,6 +291,9 @@ export function transferLever(): Lever {
     else if (t.n === 0) bits.push(`Nobody matches: there are no ${g.noun}${where}.`);
     else if (group === 'bank') {
       bits.push(dir === 1 ? 'Pays ' : 'Takes ', B(fmtM(dir === 1 ? a : t.takeable)), dir === 1 ? ' into the Bank’s own capital (its buffer against bad loans).' : ' out of the Bank’s own capital.');
+    } else if (group === 'councils' && dir === 1) {
+      bits.push('Pays ', B(fmtM(total)), ' in all into the purse of ', B(t.n === 1 ? 'the town council' : `each of the ${fmtInt(t.n)} town councils`), where, '. Each council spends it as its mayor sees fit: roads for its town’s trade, houses to let when people have no roof, empty buildings bought for their plots.');
+      if (!s.treasury.autoMint && total > purse) bits.push(h('span', { class: 'warn' }, ` The Purse holds only ${fmtM(purse)}.`));
     } else if (dir === 1) {
       bits.push('Hands ', B(fmtM(total)), ' in all to ', B(`${fmtInt(t.n)} ${g.noun}`), where, ', paid from the Purse.');
       if (!s.treasury.autoMint && total > purse) {
@@ -421,6 +435,21 @@ export function transferLever(): Lever {
       paint();
     },
     focus: () => (mode === 'goods' ? units.focus() : amount.focus()),
+    prefill(req) {
+      if (req.lever !== 'transfer') return false;
+      mode = 'money';
+      modeSeg.set(mode);
+      if (req.group && GROUPS.some((g) => g.value === req.group)) {
+        group = req.group;
+        groupSel.set(group);
+      }
+      if (req.town !== undefined) town = req.town;
+      dir = 1;
+      dirSeg.set(dir);
+      key = '';
+      changed();
+      return true;
+    },
     reset() {
       key = '';
       optSig = '';

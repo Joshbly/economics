@@ -9,6 +9,7 @@
 //   value = output at the site × (net price − materials − tool cost)   the ground
 //         − hands × wage × COMMUTE_COST_PER_TILE × tiles beyond the town   the walk
 //         − track to the road × (rate + 1/TRACK_LIFE_YEARS)                the road
+//         − the plot, within a town's core, × rate                        the land
 //
 // Output follows the site's richness (0.6 + 0.8 · quality, as in production); its
 // workers walk from the town, and it must pay them for the walk to hire them; the
@@ -24,6 +25,9 @@
 // trade's average; a thin one far off does worse) — and the venture is only worth
 // it if that return still beats the hurdle.
 // Town trades (bakeries, workshops, …) keep the sites near the centre (layout.findSite).
+// The plot of a site within a town's core is bought from its council (agents/council.ts:
+// dearer the nearer the centre and the more crowded the town); land beyond is free — land
+// does not wear out, so a plot costs the interest on its price a year.
 // ============================================================================
 import { COMMUTE_COST_PER_TILE, ENTRY_SCREEN_SPREAD, TRACK_CLEAR_FACTOR, TRACK_LIFE_YEARS, VENTURE_REACH } from '../config';
 import { G, SECTORS, BRIDGE_TILE_COST, TRACK_TILE_COST } from '../goods';
@@ -36,6 +40,7 @@ import { belongingOfPlace, ownerTown } from '../world/belonging';
 import { accessTrack, doorTile, findSite, isResourceSector, siteFits, siteQuality } from '../world/layout';
 import { hash2 } from '../world/mapgen';
 import { needCost, roadNeed } from './construction';
+import { plotPrice } from './council';
 import { defaultWage } from './firms';
 import { materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
 
@@ -46,6 +51,8 @@ export interface VentureSite {
   access: number[];
   /** Its cost at today's prices. */
   accessCost: number;
+  /** The plot's price (the council's land within a town's core; 0 beyond). */
+  land: number;
   /** Productivity multiplier of the site (0.6 + 0.8 · quality). */
   richness: number;
   /** Tiles its workers walk beyond the town. */
@@ -182,7 +189,8 @@ export function ventureSite(s: SimState, sector: Sector, town: TownId, owner: Re
     }
     if (!xy) return null;
     const access = accessTrack(s, { x: xy.x, y: xy.y, w: fw, h: fh, town });
-    return { x: xy.x, y: xy.y, access, accessCost: access.length ? needCost(s, town, roadNeed(s, access, 1)) : 0, richness: 1, walk: 0, value: 0, rel: 1 };
+    const land = plotPrice(s, xy.x, xy.y, fw, fh).price;
+    return { x: xy.x, y: xy.y, access, accessCost: access.length ? needCost(s, town, roadNeed(s, access, 1)) : 0, land, richness: 1, walk: 0, value: 0, rel: 1 };
   }
   const terms = tradeTerms(s, sector, town);
   if (!terms) return null;
@@ -213,16 +221,17 @@ export function ventureSite(s: SimState, sector: Sector, town: TownId, owner: Re
       const richness = 0.6 + 0.8 * siteQuality(m, sector, x, y, fw, fh);
       const walk = Math.max(0, dist - radius);
       const accessCost = units * unitTrack;
-      let value = q0 * richness * margin * 360 - walkCost * walk - accessCost * crf;
+      const land = plotPrice(s, x, y, fw, fh).price;
+      let value = q0 * richness * margin * 360 - walkCost * walk - accessCost * crf - land * Math.max(0.01, rate);
       // a little of the investor's own judgement
       value += 0.04 * Math.abs(value) * (hash2(s.seed ^ (s.day * 7919), x, y) - 0.5);
-      if (!best || value > best.value) best = { x, y, access: [], accessCost, richness, walk, value, rel: 1 };
+      if (!best || value > best.value) best = { x, y, access: [], accessCost, land, richness, walk, value, rel: 1 };
     }
   }
   if (!best) return null;
   best.access = accessTrack(s, { x: best.x, y: best.y, w: fw, h: fh, town });
   best.accessCost = best.access.length ? needCost(s, town, roadNeed(s, best.access, 1)) : 0;
   const ref = q0 * margin * 360 - walkCost * 3;
-  best.rel = ref > 0 ? Math.min(2, Math.max(0.3, (best.value + best.accessCost * crf) / ref)) : 1;
+  best.rel = ref > 0 ? Math.min(2, Math.max(0.3, (best.value + best.accessCost * crf + best.land * Math.max(0.01, rate)) / ref)) : 1;
   return best;
 }

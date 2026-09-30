@@ -80,7 +80,7 @@ import { G, GOODS, HOUSE_SLOTS, PRODUCER_SECTORS, SECTORS } from '../goods';
 import { cashOf, firmRef, isFirm, isPerson, pay, refId } from '../ledger';
 import { expectedGrossFor, expectedNetFor, marketOf } from '../market/markets';
 import { employerWageCost } from '../policy/levies';
-import { decisionRand } from '../rng';
+import { decisionRand, decisionSeed } from '../rng';
 import { news } from '../stats/events';
 import { rt } from '../runtime';
 import type { Building, Firm, LoanPurpose, Project, Ref, Sector, SimState, TownId } from '../types';
@@ -91,7 +91,8 @@ import { accessCost, builderFor, estimateCost, needCost, roadNeed, startProject,
 import { freightPerUnit } from './traders';
 import { daysAlong, freightAfter } from '../world/roadEffect';
 import { roadPlan, routeBetweenTowns, trackPlan } from '../world/paths';
-import { townCentreTile } from '../world/layout';
+import { findSite, townCentreTile } from '../world/layout';
+import { plotPrice } from './council';
 import { ventureSite, type VentureSite } from './sites';
 import { temperament } from './temperament';
 import { experienceAdjust, learnFromVentures, noteVenture, type VentureFacts } from './experience';
@@ -439,7 +440,7 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: numbe
     total += w;
   }
   if (!cands.length || !(total > 0)) return null;
-  let r = decisionRand(s.seed, s.day, town, key) * total;
+  let r = decisionRand(decisionSeed(s), s.day, town, key) * total;
   for (let i = 0; i < cands.length; i++) {
     r -= weights[i];
     if (r <= 0) return cands[i];
@@ -452,9 +453,10 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: numbe
  * a loan request sized so the bank's quote is positive; the expected return must
  * beat the owner's actual borrowing rate + hurdle. Returns true if started.
  */
-function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurdle: number, syn: readonly Contribution[] = []): boolean {
+function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurdle: number, syn: readonly Contribution[] = [], land = 0): boolean {
   const owner = spec.owner;
-  const free = investableCash(s, owner);
+  // the plot (the council's land in a town's core, agents/council.ts) is bought outright when the works start
+  const free = Math.max(0, investableCash(s, owner) - Math.max(0, land));
   if (!(total > 0)) return false;
   // co-investors' stakes (a syndicate, pickSyndicate): paid into the works when they start
   let pooled = 0;
@@ -481,6 +483,7 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   const r = startProject(s, spec);
   if (typeof r === 'string') return false;
   const { purpose, term } = financing(spec.kind, owner);
+  const freeNow = Math.min(free, investableCash(s, owner)); // (after the plot)
   // the access track to the road is part of the works: the bank's share grows with it
   const track = accessCost(s, r);
   let inE = 0;
@@ -501,7 +504,7 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
     r.loanWanted = loan;
     requestLoan(s, { borrower: owner, amount: loan, term, purpose, project: r.id });
   } else {
-    const paid = pay(s, owner, firmRef(r.builder), Math.max(0, Math.min(total + track - inE, free)), 'asset');
+    const paid = pay(s, owner, firmRef(r.builder), Math.max(0, Math.min(total + track - inE, freeNow)), 'asset');
     r.prepaid = fin(r.prepaid) + paid;
   }
   return true;
@@ -549,7 +552,7 @@ function pickSyndicate(s: SimState, town: TownId, equity: number, key: number): 
     let tot = 0;
     for (const w of weights) tot += w;
     if (!(tot > 0)) break;
-    let x = decisionRand(s.seed, s.day, town, key * 16 + 3, draw) * tot;
+    let x = decisionRand(decisionSeed(s), s.day, town, key * 16 + 3, draw) * tot;
     let k = 0;
     for (; k < weights.length - 1; k++) {
       x -= weights[k];
@@ -617,9 +620,19 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
   const tn = s.towns[town]?.name ?? '';
   if (!c.sector) {
     const total = estimateCost(s, 'house', town);
-    const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * total, ventureKey(c.sector));
+    let xy: { x: number; y: number } | null = null;
+    try {
+      xy = findSite(s, 'house', town);
+    } catch {
+      xy = null;
+    }
+    if (!xy) return miss(s, 'nosite');
+    const land = plotPrice(s, xy.x, xy.y, 1, 1).price;
+    const roc = c.roc * (total / Math.max(1, total + land));
+    if (!(roc > c.req)) return miss(s, 'site');
+    const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * total + land, ventureKey(c.sector));
     if (syn === null) return miss(s, 'noowner');
-    return launch(s, { kind: 'house', town, owner: syn.lead, label: `Houses in ${tn}` }, total, c.roc, HOUSE_HURDLE) || miss(s, 'finance');
+    return launch(s, { kind: 'house', town, owner: syn.lead, x: xy.x, y: xy.y, label: `Houses in ${tn}` }, total, roc, HOUSE_HURDLE, [], land) || miss(s, 'finance');
   }
   const sector = c.sector;
   const d = SECTORS[sector];
@@ -668,12 +681,12 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
   }
   if (!site) return miss(s, 'nosite');
   const total = projectTotal(s, 'firm', town, sector);
-  const roc = c.roc * site.rel * (total / Math.max(1, total + site.accessCost));
+  const roc = c.roc * site.rel * (total / Math.max(1, total + site.accessCost + site.land));
   if (!(roc > c.req)) return miss(s, 'site');
-  const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * (total + site.accessCost), ventureKey(sector));
+  const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * (total + site.accessCost) + site.land, ventureKey(sector));
   if (syn === null) return miss(s, 'noowner');
-  if (!launch(s, { kind: 'firm', town, owner: syn.lead, sector, x: site.x, y: site.y, anywhere: true, label: `New ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE, syn.partners)) return miss(s, 'finance');
-  remember(s, factsFor(s, town, sector, sig, site.rel), roc, total + site.accessCost);
+  if (!launch(s, { kind: 'firm', town, owner: syn.lead, sector, x: site.x, y: site.y, anywhere: true, label: `New ${d.name} in ${tn}` }, total, roc, ENTRY_HURDLE, syn.partners, site.land)) return miss(s, 'finance');
+  remember(s, factsFor(s, town, sector, sig, site.rel), roc, total + site.accessCost + site.land);
   return true;
 }
 
@@ -714,7 +727,7 @@ function voluntaryExit(s: SimState): void {
     for (const f of list) {
       if (n >= EXIT_MAX_PER_TRADE) break;
       if ((active.get(key) ?? 0) <= 1) break;
-      if (!(decisionRand(s.seed, s.day, f.id, 55) < EXIT_PROB)) continue;
+      if (!(decisionRand(decisionSeed(s), s.day, f.id, 55) < EXIT_PROB)) continue;
       active.set(key, (active.get(key) ?? 1) - 1);
       n++;
       bump(s, 'exits');
@@ -789,7 +802,7 @@ export function roadVentures(s: SimState): void {
     if (!best) continue;
     const req = r0 + ROAD_HURDLE;
     const rel = (best.roc - req) / Math.max(0.01, req);
-    if (!(rel > 0) || !(decisionRand(s.seed, s.day, f.id, 77) < Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * rel))) continue;
+    if (!(rel > 0) || !(decisionRand(decisionSeed(s), s.day, f.id, 77) < Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * rel))) continue;
     const A = s.towns[a].name;
     const B = s.towns[best.to].name;
     const label = `${best.grade === 1 ? 'Track' : 'Paved road'} ${A}–${B}, for ${f.name}`;
@@ -852,7 +865,7 @@ export function entryStep(s: SimState): void {
     for (const c of cands) {
       if (budget <= 0) break;
       const prob = Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * c.rel);
-      if (!(decisionRand(s.seed, s.day, t, ventureKey(c.sector)) < prob)) continue;
+      if (!(decisionRand(decisionSeed(s), s.day, t, ventureKey(c.sector)) < prob)) continue;
       const ok = tryCandidate(s, t, c);
       const trace = rt(s).bag.entryTrace;
       if (Array.isArray(trace)) trace.push({ day: s.day, town: t, sector: c.sector ?? 'house', roc: c.roc, req: c.req, ok });

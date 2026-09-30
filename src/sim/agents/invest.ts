@@ -22,19 +22,27 @@
 //
 // Monthly (MARKET_DAY) the market for companies meets: COMPANY_OFFERS firms are looked
 // at (firms in distress or long losing money three times as likely), and for each
-// COMPANY_BIDDERS would-be buyers who could pay for it (people and firms, weighted by
-// their spare cash; the town's own twice as likely). The holders' reservation is
-// what the firm is worth to them, less a discount when it is in trouble (they need to
-// get out); a buyer to whom it is worth more than that by COMPANY_DEAL_GAIN buys it
-// whole, at the reservation plus half the gap — every holder paid by their share. The
-// buyer runs it from then on (a firm bought by a firm is its subsidiary: its profits
-// flow up). So firms pass to those who value them most: to the optimistic from the
-// gloomy, to the patient from the hard-pressed, to rivals and to suppliers.
+// COMPANY_BIDDERS would-be buyers who could pay for at least COMPANY_MIN_STAKE of it
+// (people and firms, weighted by their spare cash; the town's own twice as likely). The
+// holders' reservation is what the whole firm is worth to them, less a discount when it
+// is in trouble (they need to get out). A buyer to whom it is worth more than that by
+// COMPANY_DEAL_GAIN buys as large a stake as their spare cash allows (all of it, if they
+// can), at the reservation plus half the gap for the whole — bought from the other
+// holders in proportion to what each holds, each paid for their part. Whoever then holds
+// the largest share runs the firm (a firm controlled by a firm is its subsidiary: its
+// profits flow up); what owning a rival or a supplier adds (synergy) counts only for a
+// buyer who would then control it. So shares pass to those who value them most — to the
+// optimistic from the gloomy, to the patient from the hard-pressed, to rivals and
+// suppliers — and control of a firm can change hands a stake at a time. (Whole firms cost
+// far more than most savers hold: a market in whole firms alone would hardly ever meet.)
+// A firm has at most COMPANY_MAX_HOLDERS holders; no firm buys into a firm that controls it.
 // ============================================================================
 import {
   COMPANY_BIDDERS,
   COMPANY_DEAL_GAIN,
   COMPANY_DISTRESS_DISCOUNT,
+  COMPANY_MAX_HOLDERS,
+  COMPANY_MIN_STAKE,
   COMPANY_OFFERS,
   DAYS_PER_YEAR,
   INTEGRATION_HORIZONTAL,
@@ -45,7 +53,7 @@ import { dayOfMonth } from '../calendar';
 import { G, N_GOODS, SECTORS } from '../goods';
 import { firmRef, isFirm, isPerson, pay, refId, refName } from '../ledger';
 import { marketOf } from '../market/markets';
-import { decisionRand } from '../rng';
+import { decisionRand, decisionSeed } from '../rng';
 import { news } from '../stats/events';
 import type { Firm, Ref, SimState } from '../types';
 import { STATE } from '../types';
@@ -53,7 +61,7 @@ import { clamp, fin } from '../util';
 import { debtOf } from './bank';
 import { investableCash, screenRate } from './entry';
 import { temperament } from './temperament';
-import { holders, setHoldings } from './ownership';
+import { holders, setHoldings, stakeOf, type Holding } from './ownership';
 
 export { temperament, type Temperament } from './temperament';
 
@@ -131,25 +139,42 @@ function reservation(s: SimState, f: Firm): number {
   return v * (1 - (trouble ? COMPANY_DISTRESS_DISCOUNT : 0));
 }
 
-/** Would-be buyers of a firm: people and firms who could pay `price` (weighted by their spare cash, the town's own twice as likely), not its holders. */
+/** True if firm `o` is `f` or is controlled, up the chain of owners, by `f` (it may not buy into `f`). */
+function ownedBy(s: SimState, o: Firm, f: Firm): boolean {
+  let cur: Firm | undefined = o;
+  for (let k = 0; k < 8 && cur; k++) {
+    if (cur.id === f.id) return true;
+    if (!isFirm(cur.owner)) return false;
+    cur = s.firms[refId(cur.owner)];
+  }
+  return false;
+}
+
+/** What a would-be buyer can spare for a stake: their free cash × their nerve. */
+function spareFor(s: SimState, ref: Ref): number {
+  return investableCash(s, ref) * temperament(s, ref).nerve;
+}
+
+/** Would-be buyers of a stake in a firm: people and firms who could pay `price` for the least stake (weighted by their spare cash, the town's own twice as likely); its controlling owner is not among them. */
 function bidders(s: SimState, f: Firm, price: number, n: number): Ref[] {
-  const held = new Set(holders(f).map((h) => h.ref));
   const cands: Ref[] = [];
   const w: number[] = [];
+  const full = holders(f).length >= COMPANY_MAX_HOLDERS;
   const consider = (ref: Ref, town: number) => {
-    if (held.has(ref)) return;
-    const spare = investableCash(s, ref) * temperament(s, ref).nerve;
+    if (ref === f.owner) return;
+    if (full && !(stakeOf(f, ref) > 0)) return;
+    const spare = spareFor(s, ref);
     if (!(spare >= price)) return;
     cands.push(ref);
     w.push(spare * (town === f.town ? 2 : 1));
   };
   for (const p of s.people) if (p && p.alive) consider(p.id, p.town);
-  for (const o of s.firms) if (o && o.alive && o.status === 'active' && o.owner !== STATE && o.sector !== 'stateworks' && o.id !== f.id && fin(o.profit) > 0) consider(firmRef(o.id), o.town);
+  for (const o of s.firms) if (o && o.alive && o.status === 'active' && o.owner !== STATE && o.sector !== 'stateworks' && fin(o.profit) > 0 && !ownedBy(s, o, f)) consider(firmRef(o.id), o.town);
   const out: Ref[] = [];
   for (let draw = 0; out.length < n && cands.length; draw++) {
     let tot = 0;
     for (const x of w) tot += x;
-    let r = decisionRand(s.seed, s.day, f.id, 400 + draw) * tot;
+    let r = decisionRand(decisionSeed(s), s.day, f.id, 400 + draw) * tot;
     let k = 0;
     for (; k < w.length - 1; k++) {
       r -= w[k];
@@ -177,7 +202,7 @@ export function companyMarket(s: SimState): void {
   for (let n = 0; n < COMPANY_OFFERS && pool.length; n++) {
     let tot = 0;
     for (const x of weight) tot += x;
-    let r = decisionRand(s.seed, s.day, 300 + n) * tot;
+    let r = decisionRand(decisionSeed(s), s.day, 300 + n) * tot;
     let k = 0;
     for (; k < weight.length - 1; k++) {
       r -= weight[k];
@@ -187,33 +212,69 @@ export function companyMarket(s: SimState): void {
     pool.splice(k, 1);
     weight.splice(k, 1);
     const ask = Math.max(1, reservation(s, f));
-    let best: Ref = -1;
-    let bestV = ask * (1 + COMPANY_DEAL_GAIN);
-    for (const b of bidders(s, f, ask, COMPANY_BIDDERS)) {
-      const v = firmWorth(s, f, b);
-      if (v > bestV) {
-        bestV = v;
-        best = b;
-      }
-    }
-    if (best === -1) continue;
-    const price = ask + 0.5 * (bestV - ask);
-    if (!(investableCash(s, best) >= price)) continue;
-    const from = f.owner;
+    const bid = bestBid(s, f, ask);
+    if (!bid) continue;
+    const { ref: best, q, price } = bid;
+    const before = f.owner;
+    const hs = holders(f);
+    const own = stakeOf(f, best);
+    const others = Math.max(1e-9, 1 - own);
+    // bought from the other holders in proportion to what each holds
     let paid = 0;
-    for (const h of holders(f)) paid += pay(s, best, validPayee(s, f, h.ref), price * h.share, 'asset');
-    if (!(paid > 0.5 * price)) continue;
-    setHoldings(s, f, [{ ref: best, share: 1 }]);
+    const list: Holding[] = [];
+    for (const h of hs) {
+      if (h.ref === best) continue;
+      const part = (q * h.share) / others;
+      const got = pay(s, best, validPayee(s, f, h.ref), price * part, 'asset');
+      paid += got;
+      const sold = price > 0 ? Math.min(part, got / price) : part;
+      list.push({ ref: h.ref, share: h.share - sold });
+    }
+    if (!(paid > 0.01)) continue;
+    list.push({ ref: best, share: own + paid / price });
+    setHoldings(s, f, list);
     deals++;
+    bump(s, 'company_stakes', 1);
+    bump(s, 'company_stakes_value', paid);
+    if (f.owner === before) continue;
     bump(s, 'company_sales', 1);
     bump(s, 'company_sales_value', paid);
     const tn = s.towns[f.town]?.name ?? '';
     const why = f.distress > 0 || f.lossDays > 60 ? ' from its hard-pressed owners' : '';
     const how = isFirm(best) ? ` — it is now part of ${refName(s, best)}` : '';
-    news(s, `${refName(s, best)} has bought ${f.name} in ${tn}${why} for ${Math.round(paid).toLocaleString('en-GB')} ¤${how}.`, 'info', f.town);
-    void from;
+    const what = f.owner === best && stakeOf(f, best) > 0.999 ? `has bought ${f.name} in ${tn}${why}` : `has taken control of ${f.name} in ${tn}${why}, buying ${Math.round(100 * (paid / price))} % of it`;
+    news(s, `${refName(s, best)} ${what} for ${Math.round(paid).toLocaleString('en-GB')} ¤${how}.`, 'info', f.town);
   }
   void deals;
+}
+
+/**
+ * The best bid for a stake in `f` against the holders' reservation `ask` (for the whole firm): among
+ * the would-be buyers, whoever gains most — (their worth − price) × the stake — with their worth at
+ * least COMPANY_DEAL_GAIN over the ask; the stake is what their spare cash buys at the price (all
+ * the others hold, at most). Null if nobody bids.
+ */
+function bestBid(s: SimState, f: Firm, ask: number): { ref: Ref; q: number; price: number } | null {
+  let best: { ref: Ref; q: number; price: number; gain: number } | null = null;
+  const hs = holders(f);
+  for (const b of bidders(s, f, COMPANY_MIN_STAKE * ask, COMPANY_BIDDERS)) {
+    const own = stakeOf(f, b);
+    const room = 1 - own;
+    if (!(room > COMPANY_MIN_STAKE * 0.5)) continue;
+    const spare = spareFor(s, b);
+    // would this stake give them control? (then what they own besides adds to it: synergy)
+    const q0 = Math.min(room, spare / ask);
+    let top = 0;
+    for (const h of hs) if (h.ref !== b) top = Math.max(top, (h.share * (room - q0)) / Math.max(1e-9, room));
+    const v = firmWorth(s, f, b, own + q0 > top);
+    if (!(v >= ask * (1 + COMPANY_DEAL_GAIN))) continue;
+    const price = ask + 0.5 * (v - ask);
+    const q = Math.min(room, spare / price);
+    if (!(q >= COMPANY_MIN_STAKE) && q < room - 1e-9) continue;
+    const gain = (v - price) * q;
+    if (!best || gain > best.gain) best = { ref: b, q, price, gain };
+  }
+  return best ? { ref: best.ref, q: best.q, price: best.price } : null;
 }
 
 function validPayee(s: SimState, f: Firm, ref: Ref): Ref {

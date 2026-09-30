@@ -1,0 +1,46 @@
+// The town's Council block (mayor, purse, land, accounts) and "Fund the council" → Transfer
+// prefilled with the town councils of that town; a payment lands in the council's purse.
+import { open, report } from './lib.mjs';
+const q = await open({ fresh: true });
+await q.ready();
+const { page } = q;
+const fails = [];
+const check = (name, ok, extra = '') => {
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`);
+  if (!ok) fails.push(name);
+};
+await q.s('R.setSpeed(0)');
+await q.s(`R.select({kind:'town', id:1})`);
+await page.waitForTimeout(600);
+const block = page.locator('.ins-town section.section', { has: page.locator('h3.section-title', { hasText: /^Council/ }) }).first();
+const text = (await block.textContent()) ?? '';
+check('town view has a Council block with a mayor and a purse', /Mayor/.test(text) && /Purse/.test(text) && /Land at the centre/.test(text), text.slice(0, 160));
+await block.scrollIntoViewIfNeeded();
+await q.shot('council-block');
+await block.locator('button:text-is("Fund the council")').click();
+await page.waitForTimeout(700);
+const openLever = await page.evaluate(() => document.querySelector('.lv-item.open')?.dataset.lever);
+const sels = await page.locator('.lv-item[data-lever="transfer"] .lv-body select:visible').evaluateAll((ss) => ss.map((s) => s.options[s.selectedIndex]?.text));
+const town1 = await q.s('s.towns[1].name');
+check('Fund the council opens Transfer for that town’s council', openLever === 'transfer' && sels.includes('Town councils') && sels.includes(town1), `open=${openLever} selects=${sels.join('/')}`);
+await q.shot('council-transfer');
+const before = await q.s('s.towns[1].council.purse');
+const body = page.locator('.lv-item[data-lever="transfer"] .lv-body');
+const amt = body.locator('input:visible').first();
+await amt.fill('250');
+await amt.press('Tab');
+await page.waitForTimeout(300);
+await q.shot('council-transfer-filled');
+await body.locator('button:text-is("Give now")').click();
+await page.waitForTimeout(800);
+const after = await q.s('s.towns[1].council.purse');
+check('a Transfer lands in the council’s purse', Math.abs(after - before - 250) < 0.01, `${before} → ${after}`);
+await q.s(`R.select({kind:'town', id:1})`);
+await page.waitForTimeout(700);
+const text2 = (await block.textContent()) ?? '';
+check('the town view shows what the Treasury handed over', /From the Treasury/.test(text2) && /250/.test(text2), text2.slice(-120));
+await q.shot('council-block-after');
+const errs = report(q, 'council');
+if (errs.length) fails.push('console errors');
+console.log(fails.length ? `FAILED: ${fails.join(', ')}` : 'ALL PASS');
+await q.close();

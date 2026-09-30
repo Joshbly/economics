@@ -165,6 +165,7 @@ export function createBankView(): LedgerView {
     let deposits = fin(s.foreign?.coin);
     for (const p of s.people ?? []) if (p && p.alive) deposits += fin(p.cash);
     for (const f of s.firms ?? []) if (f && f.alive) deposits += fin(f.cash);
+    for (const tw of s.towns ?? []) deposits += fin(tw.council?.purse ?? 0); // (the town councils' purses are deposits too)
     const reserves = fin(b.reserves);
     const iouBook = fin(b.iouBook);
     const iouMkt = fin(b.iou) * fin(s.iouMarket?.price);

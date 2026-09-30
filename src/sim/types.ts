@@ -17,13 +17,15 @@ export type TownId = number;
  *   STATE   : -1  the Treasury (the player)
  *   BANK    : -2  the commercial bank
  *   FOREIGN : -3  the outside world's desk at the port
- * Helpers live in ledger.ts (personRef, firmRef, isPerson, isFirm, refId).
+ *   council : COUNCIL_BASE − town  (−10, −11, …)  a town's council (agents/council.ts)
+ * Helpers live in ledger.ts (personRef, firmRef, councilRef, isPerson, isFirm, isCouncil, refId).
  */
 export type Ref = number;
 export const FIRM_BASE = 1_000_000;
 export const STATE: Ref = -1;
 export const BANK: Ref = -2;
 export const FOREIGN: Ref = -3;
+export const COUNCIL_BASE: Ref = -10;
 
 // ---------------------------------------------------------------------------
 // Map
@@ -92,6 +94,38 @@ export interface Town {
   unrestDays: number; // consecutive days contentment < threshold
   droughtDays: number; // > 0 while a drought hits farms here
   evictions?: number; // households turned out for unpaid rent so far this month (for the month's news)
+  /** The town's council (agents/council.ts): absent only in saves from before councils. */
+  council?: Council;
+}
+
+/** A council's year in figures (¤, and counts). */
+export interface CouncilYear {
+  /** Plots of the town's land sold to those who build on them. */
+  landSold: number;
+  plots: number;
+  /** Buildings bought from their owners and cleared. */
+  landBought: number;
+  deals: number;
+  /** Roads commissioned (¤ committed) and how many; houses likewise. */
+  roads: number;
+  roadCount: number;
+  houses: number;
+  houseCount: number;
+  /** Money handed to it (the Treasury's Transfers), net of any taken. */
+  received: number;
+}
+
+/** A town's council: its purse (a deposit at the bank, ledger ref councilRef(town)) and its mayor. */
+export interface Council {
+  purse: number;
+  /** The mayor: a resident (person id), -1 none. */
+  mayor: number;
+  /** Day the mayor took office. */
+  since: number;
+  /** The council's asking price for its land against the going rate (LAND_MUL_MIN … LAND_MUL_MAX; 1 = the formula's). */
+  landMul: number;
+  year: CouncilYear;
+  last: CouncilYear;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +151,7 @@ export interface Building {
   residents: number[]; // person ids
   rent: number; // ¤ per slot per day asked by the landlord
   owner: Ref; // landlord / owner (-1 STATE allowed)
-  vacantDays: number; // consecutive days with at least one empty slot
+  vacantDays: number; // houses: consecutive days with at least one empty slot; workshops: days standing empty
   cost: number; // book value ¤ (construction cost) — collateral & yields
   built: number; // day completed (-1 if not yet)
   project: number; // active project id or -1
@@ -851,7 +885,8 @@ export interface Policy {
 // ---------------------------------------------------------------------------
 // Player actions (UI -> Game.dispatch)
 // ---------------------------------------------------------------------------
-export type TransferGroup = Group | 'bank';
+/** Who a Transfer reaches: people or firms (a Group), the bank's own capital, or the town councils' purses. */
+export type TransferGroup = Group | 'bank' | 'councils';
 
 export type PlayerAction =
   | { type: 'mint'; amount: number }
@@ -1023,6 +1058,8 @@ export interface SimState {
   seed: number;
   /** The realm's investment experience (agents/experience.ts). Absent until the first venture is judged. */
   invest?: InvestState;
+  /** Salt of the decision draws (rng.decisionSeed): 0 in play; the experiments give each replica its own. */
+  drawSalt?: number;
   rng: number[]; // RNG state words
   day: number; // days since founding (warm-up included)
   startDay: number; // day the player took control (after warm-up)

@@ -359,6 +359,11 @@ interface Experiment {
   /** 'warmup': start from the realm as the warm-up leaves it, before the --pre days (its own baseline). */
   from?: 'warmup';
   note?: (res: Results, c: Ctx) => string;
+  /**
+   * Why the experiment's premise does not hold in this realm at its start (it is then reported as
+   * not applicable — neither passed nor failed — with the reason), or null.
+   */
+  applies?: (s: SimState, c: Ctx) => string | null;
 }
 
 const act = (g: Game, a: PlayerAction, what: string): number => {
@@ -469,10 +474,17 @@ const EXPERIMENTS: Experiment[] = [
   {
     id: '5b',
     name: 'Window rates to 0 %',
+    // Cheap money moves credit and investment by a few per cent in a year — within what one chaotic
+    // path of the realm swings: judge the mean of three runs (common random numbers). Investment, a
+    // flow, is judged over the whole year; credit, a stock, at the end. Near full employment the
+    // investment check can fail for a real reason: cheaper money brings more ventures forward (seed 1:
+    // 6 → 15 in the year) but most are turned away for want of free hands, and the builders cannot
+    // hire to build faster — the realm's hands, not its money, then limit what gets built.
+    replicas: 3,
     arms: [{ name: 'window 0 %', setup: (g) => act(g, { type: 'setWindow', reserveRate: 0, lendRate: 0.01 }, 'window') }],
     checks: [
       { label: 'credit up', metric: 'credit', kind: 'up', tol: 0.03 },
-      { label: 'investment up', metric: 'inv', kind: 'up', tol: 0.03 },
+      { label: 'investment up (whole year)', metric: 'inv', kind: 'up', tol: 0.03, window: (d) => [0, d] },
     ],
     show: ['money', 'cpi', 'unemp'],
   },
@@ -552,6 +564,7 @@ const EXPERIMENTS: Experiment[] = [
     replicas: 3, // whether and when a house paves the lane in the baseline is one chaotic path
     arms: [{ name: 'paved road', setup: (g, c) => act(g, { type: 'build', kind: 'road', from: c.farm, to: c.paveTo }, 'road') }],
     checks: [{ label: 'freight on the lane falls', metric: 'freightPave', kind: 'down', tol: 0.1 }],
+    applies: (s, c) => (safe(() => roadPlan(s, c.farm, c.paveTo).length) > 0 ? null : `every road from the farm town is already paved when the warm-up ends: there is nothing left for the Treasury to pave`),
     show: ['grainGapPave', 'roadLeftPave', 'freight'],
     note: (r, c) => {
       const left = r.arms['paved road']?.roadLeftPave;
@@ -785,7 +798,10 @@ interface Results {
 
 function runArm(json: string, c: Ctx, arm: Arm | null, days: number, metrics: string[], label: string, verbose: boolean, replica = 0): Record<string, number[]> {
   const g = Game.load(json);
-  if (replica > 0) g.s.rng = seedRng((g.s.seed * 1_000_003 + replica * 7919) >>> 0);
+  if (replica > 0) {
+    g.s.rng = seedRng((g.s.seed * 1_000_003 + replica * 7919) >>> 0);
+    g.s.drawSalt = replica; // the investors' own draws differ between replicas too (the same in every arm)
+  }
   const out: Record<string, number[]> = {};
   for (const k of metrics) out[k] = [];
   const t0 = performance.now();
@@ -939,7 +955,17 @@ function main(): void {
 
   const verdicts: Verdict[] = [];
   const notes: string[] = [];
+  const skipped: { exp: Experiment; why: string }[] = [];
   for (const exp of selected) {
+    if (exp.applies) {
+      const w = exp.from === 'warmup';
+      const why = exp.applies(Game.load(w ? jsonWarm : json).s, w ? ctxWarm : ctx);
+      if (why) {
+        console.error(`[${exp.id}] ${exp.name}: NOT APPLICABLE — ${why}`);
+        skipped.push({ exp, why });
+        continue;
+      }
+    }
     const days = exp.days ? exp.days(o) : o.days;
     const window = exp.window ? exp.window(days) : ([Math.max(0, days - 90), days] as [number, number]);
     const metrics = [...new Set([...exp.checks.map((c) => c.metric), ...(exp.show ?? [])])];
@@ -995,14 +1021,17 @@ function main(): void {
     const lbl = v.refName === 'baseline' ? v.check.label : `${v.check.label} (${v.armName} vs ${v.refName})`;
     line([pad(first ? v.exp.id : '', W.id), pad(first ? v.exp.name : '', W.name), pad(lbl, W.check), pad(fmt(v.ref), W.ref, true), pad(fmt(v.val), W.val, true), pad(d, W.d, true), v.pass ? 'PASS' : 'FAIL']);
   }
+  for (const k of skipped) line([pad(k.exp.id, W.id), pad(k.exp.name, W.name), `not applicable in this realm: ${k.why}`]);
   if (notes.length) {
     console.log('');
     for (const n of notes) console.log(n);
   }
   const passed = verdicts.filter((v) => v.pass).length;
-  const expPassed = selected.filter((e) => verdicts.filter((v) => v.exp === e).every((v) => v.pass)).length;
+  const run = selected.filter((e) => !skipped.some((k) => k.exp === e));
+  const expPassed = run.filter((e) => verdicts.filter((v) => v.exp === e).every((v) => v.pass)).length;
+  const na = skipped.length ? ` (${skipped.length} not applicable)` : '';
   console.log('');
-  console.log(`${passed}/${verdicts.length} checks passed; ${expPassed}/${selected.length} experiments fully passed (seed ${o.seed}, window = last 90 days unless noted, ${((performance.now() - t0) / 1000).toFixed(0)} s).`);
+  console.log(`${passed}/${verdicts.length} checks passed; ${expPassed}/${run.length} experiments fully passed${na} (seed ${o.seed}, window = last 90 days unless noted, ${((performance.now() - t0) / 1000).toFixed(0)} s).`);
 }
 
 try {

@@ -3,6 +3,8 @@
 // ============================================================================
 import { ALL_SECTORS, GOODS, N_GOODS } from '../../../sim/goods';
 import { STATE, type SimState } from '../../../sim/types';
+import { landTilePrice } from '../../../sim/agents/council';
+import { councilRef } from '../../../sim/ledger';
 import { recentBalance } from '../../../sim/market/markets';
 import { h } from '../../dom';
 import { fmtIndex, fmtInt, fmtMoneyShort, fmtPct, fmtPrice, fmtQty } from '../../format';
@@ -61,6 +63,17 @@ export function marketTable(): { el: HTMLElement; update(s: SimState, town: numb
   };
 }
 
+/** What a tile of the town's land costs at its centre today (0 if it cannot be priced). */
+function safeLand(s: SimState, id: number): number {
+  const t = s.towns[id];
+  if (!t) return 0;
+  try {
+    return fin(landTilePrice(s, id, t.x, t.y));
+  } catch {
+    return 0;
+  }
+}
+
 export function townView(s0: SimState, id: number): View {
   const hr = hero();
   const tiles: Record<string, Kpi> = {
@@ -91,6 +104,15 @@ export function townView(s0: SimState, id: number): View {
   const rVacant = homes.row('Empty slots');
   const rRent = homes.row('Average rent', 'Per occupied slot per day');
   const rState = homes.row('Treasury’s house blocks');
+  const rCouncilHomes = homes.row('Council’s house blocks', 'Houses the town council lets');
+  const council = kvBlock();
+  const rMayor = council.row('Mayor', 'A resident the town chooses every two years (sooner if the mayor dies or moves away)');
+  const rPurse = council.row('Purse', 'The council’s money: a deposit at the Bank');
+  const rLand = council.row('Land at the centre', 'What a tile of the town’s land costs at the centre today. The unbuilt land within the town is the council’s: whoever builds there buys the plot. Dearer the nearer the centre and the fuller the town; beyond the town, land is free');
+  const rSold = council.row('Plots sold', 'This year · last year');
+  const rBought = council.row('Bought and cleared', 'Empty buildings bought from their owners for their plots, this year · last year');
+  const rWorks = council.row('Commissioned', 'Roads and houses the council paid for (blocks of homes to let), this year · last year');
+  const rGot = council.row('From the Treasury', 'Handed over by Transfer this year (net of any taken back)');
   const stores = miniTable(
     [
       { label: 'Treasury stores here', align: 'left', width: '50%' },
@@ -108,6 +130,7 @@ export function townView(s0: SimState, id: number): View {
     block('Workshops', null, firms.el, firmNote),
     block('Market', button({ label: 'Go to Markets', size: 'sm', kind: 'secondary', onClick: () => focusMarket(id, 8) }), market.el, h('div', { class: 'ins-para faint' }, 'Click a good to open its market: the day’s bids and offers, and the price history.')),
     block('Homes', null, homes.el),
+    block('Council', button({ label: 'Fund the council', size: 'sm', kind: 'secondary', title: 'Open Transfer to pay money into this town’s council', onClick: () => prefill({ lever: 'transfer', group: 'councils', town: id }) }), council.el),
     block('Treasury', button({ label: 'Trade here', size: 'sm', kind: 'secondary', title: 'Open a Trade order in this town’s markets', onClick: () => prefill({ lever: 'trade', market: { kind: 'good', town: id, good: 8 } }) }), stores.el),
   );
   void town0;
@@ -167,18 +190,37 @@ export function townView(s0: SimState, id: number): View {
     let slots = 0;
     let let_ = 0;
     let stateBlocks = 0;
+    let councilBlocks = 0;
     for (const b of s.buildings ?? []) {
       if (!b || b.town !== id || b.kind !== 'house' || b.status !== 'active') continue;
       blocks++;
       slots += fin(b.slots);
       let_ += b.residents?.length ?? 0;
       if (b.owner === STATE) stateBlocks++;
+      if (b.owner === councilRef(id)) councilBlocks++;
     }
     rBlocks.text(fmtInt(blocks));
     rSlots.text(`${fmtInt(let_)} of ${fmtInt(slots)}${slots ? ' · ' + fmtPct(let_ / slots) : ''}`);
     rVacant.text(fmtInt(Math.max(0, slots - let_)), slots - let_ <= 0 && t.homeless > 0 ? 'bad' : undefined);
     rRent.text(`${fmtPrice(t.avgRent)} / day`);
     rState.text(fmtInt(stateBlocks));
+    rCouncilHomes.text(fmtInt(councilBlocks));
+
+    // the council
+    const c = t.council;
+    if (c) {
+      const m = c.mayor >= 0 ? s.people?.[c.mayor] : undefined;
+      rMayor.text(m ? `${m.name}${c.since >= 0 ? ` · since ${fmtInt(Math.max(0, Math.floor((s.day - c.since) / 30)))} months` : ''}` : 'none just now');
+      rPurse.text(fmtMoneyShort(fin(c.purse)));
+      rLand.text(`${fmtMoneyShort(safeLand(s, id))} a tile${fin(c.landMul ?? 1) < 0.99 ? ' · cut to draw workshops in' : fin(c.landMul ?? 1) > 1.01 ? ' · raised: the town is full' : ''}`);
+      const one = (v: number, n: number) => (n > 0 || fin(v) > 0.005 ? `${fmtMoneyShort(fin(v))} (${fmtInt(n)})` : 'none');
+      const yl = (a: number, b: number, n: number, m2: number) => `${one(a, n)} · ${one(b, m2)}`;
+      rSold.text(yl(c.year.landSold, c.last.landSold, c.year.plots, c.last.plots));
+      rBought.text(yl(c.year.landBought, c.last.landBought, c.year.deals, c.last.deals));
+      const works = (y: typeof c.year) => [y.roadCount ? `${fmtInt(y.roadCount)} road ${fmtMoneyShort(fin(y.roads))}` : '', y.houseCount ? `${fmtInt(y.houseCount)} house ${fmtMoneyShort(fin(y.houses))}` : ''].filter(Boolean).join(', ') || 'nothing';
+      rWorks.text(`${works(c.year)} · ${works(c.last)}`);
+      rGot.text(fmtMoneyShort(fin(c.year.received)));
+    }
 
     // treasury stores
     const held = s.treasury?.goods?.[id] ?? [];

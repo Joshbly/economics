@@ -93,6 +93,12 @@ export function shuffle<T>(h: RngHolder, arr: T[]): T[] {
  * of a realm that differ only in a policy then make the same draws for the same decisions and
  * differ only where the policy changes the odds (common random numbers). Uniform in [0, 1).
  */
+/** The seed decision draws start from: the realm's, salted for an experiment's replica (SimState.drawSalt). */
+export function decisionSeed(s: { seed: number; drawSalt?: number }): number {
+  const k = s.drawSalt ?? 0;
+  return k ? (s.seed ^ Math.imul(k | 0, 0x9e3779b1)) >>> 0 : s.seed;
+}
+
 export function decisionRand(seed: number, ...keys: number[]): number {
   let h = (seed ^ 0x2545f491) >>> 0;
   for (const k of keys) {

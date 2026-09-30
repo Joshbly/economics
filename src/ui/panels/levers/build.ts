@@ -15,9 +15,10 @@ import type { LineFare, LineStaffing } from '../../../sim/types';
 import { estimateCost, needCost, projectNeed, roadNeed } from '../../../sim/agents/construction';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
 import { roadPlan, trackPlan } from '../../../sim/world/paths';
-import { townCentreTile } from '../../../sim/world/layout';
+import { findSite, townCentreTile } from '../../../sim/world/layout';
+import { plotPrice } from '../../../sim/agents/council';
 import { paveEffect } from '../../../sim/world/roadEffect';
-import { STATE, type Materials, type ProjectKind, type Sector, type SimState } from '../../../sim/types';
+import { STATE, type Materials, type ProjectKind, type Sector, type SimState, type TownId } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { centerMap, on, setPlacing, ui, type PrefillRequest } from '../../uiState';
@@ -199,6 +200,24 @@ export function buildLever(): Lever {
     return kind === 'expand' ? 'expand' : kind === 'line' ? 'road' : kind;
   }
 
+  /** The plot the builders would choose: bought from the town's council when it lies within the town. */
+  let plotKey = '';
+  let plotMemo = '';
+  function plotText(s: SimState, what: Sector | 'house', t: TownId): string {
+    const k = `${what}:${t}:${s.day}`;
+    if (k === plotKey) return plotMemo;
+    plotKey = k;
+    const xy = safe(() => findSite(s, what, t), null as { x: number; y: number } | null);
+    const [w, hh] = what === 'house' ? [1, 1] : (SECTORS[what]?.footprint ?? [1, 1]);
+    const p = xy ? safe(() => plotPrice(s, xy.x, xy.y, w, hh), { town: -1, price: 0 }) : { town: -1, price: 0 };
+    plotMemo = !xy
+      ? ''
+      : p.town >= 0 && p.price > 0.5
+        ? ` The plot is ${townName(s, p.town)}’s land: about ${fmtM(p.price)} more, paid to its council when the works start (less on a site you pick further out).`
+        : ' The site lies beyond the town: its land is free.';
+    return plotMemo;
+  }
+
   function cost(s: SimState): { money: number; need: Materials; tiles: number } {
     let tiles = 0;
     let t = town;
@@ -292,11 +311,11 @@ export function buildLever(): Lever {
         break;
       case 'house':
         title = `Treasury houses in ${townName(s, town)}`;
-        desc = `A block of ${HOUSE_SLOTS} homes. The Treasury is the landlord: rent flows to the Purse.`;
+        desc = `A block of ${HOUSE_SLOTS} homes. The Treasury is the landlord: rent flows to the Purse.` + plotText(s, 'house', town);
         break;
       case 'firm':
         title = `Treasury ${SECTORS[sector]?.name ?? 'workshop'} in ${townName(s, town)}`;
-        desc = recipe(sector) + ' It hires, buys and sells like any firm; its profits flow to the Purse.';
+        desc = recipe(sector) + ' It hires, buys and sells like any firm; its profits flow to the Purse.' + plotText(s, sector, town);
         break;
       case 'pier':
         if (!ports.length) {

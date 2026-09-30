@@ -8,9 +8,9 @@
 // bank balance-sheet drift. Problems are reported in plain words.
 // Runtime caches (runtime.ts) are never saved; modules rebuild them on demand.
 // ============================================================================
-import { LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
+import { LAND_MUL_MAX, LAND_MUL_MIN, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { G, GOODS, N_GOODS } from './goods';
-import { checkLedger, deposits, reconcileBank } from './ledger';
+import { blankCouncil, checkLedger, deposits, reconcileBank } from './ledger';
 import type { SimState } from './types';
 
 /** Serialise the whole state to JSON (compact). */
@@ -410,8 +410,33 @@ function fillInvest(s: SimState): void {
   s.invest!.pending = s.invest!.pending.filter((r) => isObj(r) && isNum(r.project) && isNum(r.firm) && isNum(r.day) && arr(r.x) && isNum(r.promised) && isNum(r.capital));
 }
 
+/** Town councils (agents/council.ts): saves from before them get an empty council each; damaged fields are repaired (a purse is kept as it was: it is a deposit the bank owes). */
+function fillCouncils(s: SimState): void {
+  const years = (y: unknown) => {
+    const b = blankCouncil().year;
+    if (!isObj(y)) return b;
+    for (const k of Object.keys(b) as (keyof typeof b)[]) if (isNum((y as Obj)[k])) b[k] = (y as Obj)[k] as number;
+    return b;
+  };
+  for (const t of s.towns) {
+    if (!t) continue;
+    if (t.evictions !== undefined && !isNum(t.evictions)) delete t.evictions;
+    const c = t.council as unknown;
+    if (!isObj(c)) {
+      t.council = blankCouncil();
+      continue;
+    }
+    const o = c as Obj;
+    const mayor = isNum(o.mayor) && s.people[o.mayor as number]?.alive ? (o.mayor as number) : -1;
+    const landMul = isNum(o.landMul) ? Math.min(LAND_MUL_MAX, Math.max(LAND_MUL_MIN, o.landMul as number)) : 1;
+    t.council = { purse: isNum(o.purse) ? (o.purse as number) : 0, mayor, since: isNum(o.since) ? (o.since as number) : -1, landMul, year: years(o.year), last: years(o.last) };
+  }
+}
+
 function fillDefaults(s: SimState): void {
   fillInvest(s);
+  fillCouncils(s);
+  if (s.drawSalt !== undefined && !isNum(s.drawSalt)) delete s.drawSalt;
   const st = s.stats;
   st.acc = isObj(st.acc) ? st.acc : {};
   st.macc = isObj(st.macc) ? st.macc : {};

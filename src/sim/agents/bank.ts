@@ -38,6 +38,7 @@ import { G, HOUSE_SLOTS, N_GOODS } from '../goods';
 import {
   bailIn,
   cashOf,
+  councilRef,
   deposits,
   disburse,
   isFirm,
@@ -636,6 +637,14 @@ function payHolders(s: SimState): void {
       } else {
         depInt -= pay(s, FOREIGN, BANK, -coin * rDay, 'interest');
       }
+    }
+    // …and so is each town council's purse (agents/council.ts)
+    for (const tw of s.towns) {
+      const purse = tw.council?.purse ?? 0;
+      if (!(purse > 0)) continue;
+      const ref = councilRef(tw.id);
+      if (rDay > 0) depInt += pay(s, BANK, ref, purse * rDay, 'interest');
+      else depInt -= pay(s, ref, BANK, -purse * rDay, 'interest');
     }
   }
   _ctx.person = undefined;

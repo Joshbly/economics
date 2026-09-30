@@ -34,7 +34,7 @@ import { creditAppetite, quoted, quoteRate, requestLoan } from './bank';
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
 // live import bindings (which cost a getter call per read under tsx/vitest).
 const { rand } = RNG;
-const { isFirm, isPerson, pay, personRef, refId } = LEDGER;
+const { councilTown, isCouncil, isFirm, isPerson, pay, personRef, refId } = LEDGER;
 const { COMMUTE_COST_PER_TILE, EVICT_ARREARS_DAYS, MAX_RENT_SHARE, MIN_RENT, MOVE_CLOSER_PROB_DAY, MOVE_COMMUTE_TILES, MOVE_MIN_SAVING, RENT_CASH_COVER_DAYS, RENT_CUT_VACANT_DAYS, RENT_DEPOSIT_DAYS, RENT_DOWN, RENT_UP, VACANCY_TIGHT } = CFG;
 const { clamp, dist, fin } = UTIL;
 const { isMonthStart } = CAL;
@@ -82,10 +82,11 @@ function liveHouse(b: Building | undefined): b is Building {
   return !!b && b.kind === 'house' && b.status === 'active';
 }
 
-/** Valid landlord ref for rent payments: a living person, a firm that is alive, or the Treasury. */
+/** Valid landlord ref for rent payments: a living person, a firm that is alive, a town council, or the Treasury. */
 function landlordOf(s: SimState, b: Building): Ref {
   const o = b.owner;
   if (o === STATE) return STATE;
+  if (isCouncil(o)) return s.towns[councilTown(o)] ? o : STATE;
   if (isPerson(o)) {
     const q = s.people[o];
     return q && q.alive ? o : STATE;

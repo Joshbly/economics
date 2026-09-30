@@ -3,14 +3,14 @@
 import { describe, expect, it } from 'vitest';
 import { experienceAdjust, features, investState, learnFromVentures, noteVenture, ventureOpened, type VentureFacts } from '../src/sim/agents/experience';
 import { groupMarkup, sisterSupply, controllerOf } from '../src/sim/agents/integration';
-import { firmWorth, synergy, temperament } from '../src/sim/agents/invest';
-import { setHoldings } from '../src/sim/agents/ownership';
-import { EXP_MAX_ADJ, EXP_MIN_AGE } from '../src/sim/config';
+import { askingPrice, companyMarket, firmWorth, synergy, temperament } from '../src/sim/agents/invest';
+import { holders, setHoldings, stakeOf } from '../src/sim/agents/ownership';
+import { EXP_MAX_ADJ, EXP_MIN_AGE, MARKET_DAY } from '../src/sim/config';
 import { Game } from '../src/sim/game';
 import { G, SECTORS } from '../src/sim/goods';
-import { checkLedger, firmRef } from '../src/sim/ledger';
+import { checkLedger, firmRef, mint, pay } from '../src/sim/ledger';
 import { deserialize, serialize } from '../src/sim/save';
-import type { Firm, SimState } from '../src/sim/types';
+import { STATE, type Firm, type SimState } from '../src/sim/types';
 
 function world(seed = 1): SimState {
   const g = Game.create({ seed, warmup: false });
@@ -128,6 +128,50 @@ describe('firms under one control', () => {
     expect(bakery.inv[G.grain]).toBeCloseTo(moved, 9);
     expect(farm.cash).toBeGreaterThan(cash0);
     expect(SECTORS.bakery.inputs.some(([g]) => g === G.grain)).toBe(true);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+});
+
+describe('the market for companies', () => {
+  /** A market day on which only `f` is for sale (every other firm too young to sell), and one saver with money to spare. */
+  function marketFor(s: SimState, f: Firm, cash: number): number {
+    s.day += 400;
+    while ((s.day % 30) + 1 !== MARKET_DAY) s.day++;
+    for (const o of s.firms) if (o && o !== f) o.founded = s.day;
+    f.founded = s.day - 400;
+    const buyer = s.people.find((p) => p.alive && p.town === f.town && !holders(f).some((h) => h.ref === p.id))!;
+    mint(s, cash);
+    pay(s, STATE, buyer.id, cash, 'transfer');
+    return buyer.id;
+  }
+
+  it('a saver buys into a firm its hard-pressed owners sell cheap: shares move, every holder is paid, the books balance', () => {
+    const s = world();
+    const f = s.firms.find((x) => x && x.alive && x.status === 'active' && x.sector === 'bakery' && x.owner >= 0 && !x.partners)!;
+    f.distress = 5;
+    f.lossDays = 100;
+    const owner = f.owner;
+    const buyer = marketFor(s, f, 0.6 * askingPrice(s, f)); // enough for a stake, not the whole firm
+    const cash0 = s.people[owner].cash;
+    companyMarket(s);
+    const got = stakeOf(f, buyer);
+    expect(got).toBeGreaterThan(0);
+    expect(got).toBeLessThan(1);
+    expect(s.people[owner].cash).toBeGreaterThan(cash0);
+    expect(holders(f).reduce((a, h) => a + h.share, 0)).toBeCloseTo(1, 9);
+    expect(s.people[buyer].owns).toContain(f.id);
+    expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
+  });
+
+  it('a buyer who can pay for all of it takes the whole firm and runs it', () => {
+    const s = world();
+    const f = s.firms.find((x) => x && x.alive && x.status === 'active' && x.sector === 'bakery' && x.owner >= 0 && !x.partners)!;
+    f.distress = 5;
+    f.lossDays = 100;
+    const buyer = marketFor(s, f, 1e6);
+    companyMarket(s);
+    expect(f.owner).toBe(buyer);
+    expect(stakeOf(f, buyer)).toBeGreaterThan(0.999);
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
   });
 });

@@ -27,6 +27,7 @@ import { foldFlows } from './stats/flows';
 import { townsStep } from './world/belonging';
 import { companyMarket } from './agents/invest';
 import { sisterSupply } from './agents/integration';
+import { councilStep } from './agents/council';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -72,6 +73,7 @@ export function stepDay(s: SimState): void {
   stockLevies(s);
   entryStep(s);
   companyMarket(s); // (monthly) firms change hands between those who value them most (agents/invest.ts)
+  councilStep(s); // town councils: mayors; (monthly) empty buildings bought for their plots, roads (agents/council.ts)
   townsStep(s); // (monthly) settlement radii, which town each building belongs to, districts
   demographyStep(s);
   foreignEndDay(s);

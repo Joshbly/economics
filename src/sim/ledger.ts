@@ -1,7 +1,7 @@
 // ============================================================================
 // The ledger: the ONLY place money moves. Keeps the bank's balance sheet exact.
 //
-//   Private accounts (people, firms, the foreign desk) hold deposits at the bank.
+//   Private accounts (people, firms, the foreign desk, the town councils) hold deposits at the bank.
 //   The Treasury holds the Purse. The bank holds reserves at the Treasury.
 //
 //   Bank:  assets = reserves + Σ loans + iouBook
@@ -18,7 +18,7 @@
 //   STATE   → BANK    : Purse ↓, reserves ↑ (+equity unless 'asset').
 //   BANK    → STATE   : reserves ↓, Purse ↑ (−equity unless 'asset').
 // ============================================================================
-import { BANK, FIRM_BASE, FOREIGN, STATE, type Ref, type SimState } from './types';
+import { BANK, COUNCIL_BASE, FIRM_BASE, FOREIGN, STATE, type Council, type Ref, type SimState, type TownId } from './types';
 
 export type Flow =
   | 'wage'
@@ -46,13 +46,31 @@ export const personRef = (id: number): Ref => id;
 export const firmRef = (id: number): Ref => FIRM_BASE + id;
 export const isPerson = (r: Ref): boolean => r >= 0 && r < FIRM_BASE;
 export const isFirm = (r: Ref): boolean => r >= FIRM_BASE;
-export const isPrivate = (r: Ref): boolean => r >= 0 || r === FOREIGN;
+export const councilRef = (town: TownId): Ref => COUNCIL_BASE - town;
+export const isCouncil = (r: Ref): boolean => r <= COUNCIL_BASE;
+export const councilTown = (r: Ref): TownId => COUNCIL_BASE - r;
+export const isPrivate = (r: Ref): boolean => r >= 0 || r === FOREIGN || r <= COUNCIL_BASE;
 export const refId = (r: Ref): number => (r >= FIRM_BASE ? r - FIRM_BASE : r);
+
+/** An empty council's record (plain data; agents/council.ts runs it). */
+export function blankCouncil(): Council {
+  const y = () => ({ landSold: 0, plots: 0, landBought: 0, deals: 0, roads: 0, roadCount: 0, houses: 0, houseCount: 0, received: 0 });
+  return { purse: 0, mayor: -1, since: -1, landMul: 1, year: y(), last: y() };
+}
+
+/** A town's council record (created, empty, if a save from before councils lacks it); undefined for no such town. */
+export function councilOf(s: SimState, town: TownId): Council | undefined {
+  const t = s.towns[town];
+  if (!t) return undefined;
+  if (!t.council) t.council = blankCouncil();
+  return t.council;
+}
 
 export function refName(s: SimState, r: Ref): string {
   if (r === STATE) return 'the Treasury';
   if (r === BANK) return 'the Bank';
   if (r === FOREIGN) return 'foreign merchants';
+  if (isCouncil(r)) return `the council of ${s.towns[councilTown(r)]?.name ?? 'a town'}`;
   if (isFirm(r)) return s.firms[refId(r)]?.name ?? 'a firm';
   return s.people[r]?.name ?? 'someone';
 }
@@ -64,6 +82,7 @@ export function cashOf(s: SimState, r: Ref): number {
   if (r >= 0) return s.people[r].cash;
   if (r === STATE) return s.treasury.autoMint ? 1e15 : Math.max(0, s.treasury.purse);
   if (r === FOREIGN) return s.foreign.coin;
+  if (r <= COUNCIL_BASE) return s.towns[COUNCIL_BASE - r]?.council?.purse ?? 0;
   return 1e15; // BANK
 }
 
@@ -72,6 +91,10 @@ function debit(s: SimState, r: Ref, a: number): void {
   else if (r >= 0) s.people[r].cash -= a;
   else if (r === STATE) s.treasury.purse -= a;
   else if (r === FOREIGN) s.foreign.coin -= a;
+  else if (r <= COUNCIL_BASE) {
+    const c = councilOf(s, COUNCIL_BASE - r);
+    if (c) c.purse -= a;
+  }
 }
 
 function credit(s: SimState, r: Ref, a: number): void {
@@ -81,6 +104,10 @@ function credit(s: SimState, r: Ref, a: number): void {
     p.cash += a;
   } else if (r === STATE) s.treasury.purse += a;
   else if (r === FOREIGN) s.foreign.coin += a;
+  else if (r <= COUNCIL_BASE) {
+    const c = councilOf(s, COUNCIL_BASE - r);
+    if (c) c.purse += a;
+  }
 }
 
 /** Precomputed stats keys (avoids a string concat on every payment — this is a hot path). */
@@ -243,6 +270,13 @@ export function bailIn(s: SimState, fraction: number): number {
     s.foreign.coin -= c;
     total += c;
   }
+  for (const t of s.towns) {
+    const k = t.council;
+    if (!k || !(k.purse > 0)) continue;
+    const c = k.purse * f;
+    k.purse -= c;
+    total += c;
+  }
   s.bank.equity += total;
   s.stats.acc.flow_bailin = (s.stats.acc.flow_bailin || 0) + total;
   return total;
@@ -254,6 +288,7 @@ export function deposits(s: SimState): number {
   let d = s.foreign.coin;
   for (const p of s.people) if (p.alive) d += p.cash;
   for (const f of s.firms) if (f.alive) d += f.cash;
+  for (const t of s.towns) if (t.council) d += t.council.purse;
   return d;
 }
 

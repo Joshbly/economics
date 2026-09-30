@@ -70,7 +70,8 @@ export type PrefillRequest =
   | { lever: 'trade'; market: import('../sim/types').OrderMarket; side?: 'buy' | 'sell'; price?: number }
   | { lever: 'levy'; base?: import('../sim/types').LevyBase; good?: number; town?: number }
   | { lever: 'limit'; kind?: import('../sim/types').LimitKind; good?: number; town?: number }
-  | { lever: 'build'; kind?: 'road' | 'house' | 'firm' | 'pier'; town?: number; sector?: string };
+  | { lever: 'build'; kind?: 'road' | 'house' | 'firm' | 'pier'; town?: number; sector?: string }
+  | { lever: 'transfer'; group?: import('../sim/types').TransferGroup; town?: number };
 
 /** Ask the map to centre on a tile. */
 export function centerMap(x: number, y: number, zoom?: number): void {

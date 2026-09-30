@@ -1042,8 +1042,11 @@ export const MARKET_DAY = 22;
 /** Firms looked at each month, and would-be buyers asked about each. */
 export const COMPANY_OFFERS = 6;
 export const COMPANY_BIDDERS = 5;
-/** A buyer must value a firm this much above the holders' reservation to buy it. */
+/** A buyer must value a firm this much above the holders' reservation to buy into it. */
 export const COMPANY_DEAL_GAIN = 0.1;
+/** The least stake bought (a share of the firm), and the most holders a firm has. */
+export const COMPANY_MIN_STAKE = 0.05;
+export const COMPANY_MAX_HOLDERS = 8;
 /** Holders of a firm in trouble (distress, or losing money for two months) take this much less. */
 export const COMPANY_DISTRESS_DISCOUNT = 0.3;
 /** What a rival of the same trade and town adds to its buyer a year, as a share of its sales; and a supplier or customer, of the trade between them. */
@@ -1056,3 +1059,56 @@ export const INTEGRATION_POWER = 0.5;
 export const INTEGRATION_MARKUP_MAX = 0.3;
 /** A group's supplier passes a sister firm of its town what it needs for this many days of making, each morning. */
 export const SISTER_DAYS = 3;
+
+// ---- town councils and the town's land (agents/council.ts) ----
+/** Day of the month the councils meet (after the ventures of ENTRY_DAY and the market for companies). */
+export const COUNCIL_DAY = 25;
+/** A mayor serves this many days before the town chooses again (sooner if they die or move away). */
+export const MAYOR_TERM_DAYS = 720;
+/** Only residents at least this old stand for mayor. */
+export const MAYOR_MIN_AGE = 30;
+/** A council's purse at founding: this much a household. */
+export const COUNCIL_START_PER_HEAD = 4;
+/**
+ * A plot of the town's land, a tile, at the very centre: LAND_TILE_SHARE of what a house costs to
+ * build in the town today × (LAND_CROWD_BASE + the share of the core already built on); at the core's
+ * edge LAND_EDGE_SHARE of that. Land beyond every town's core is nobody's: free to whoever clears it.
+ */
+export const LAND_TILE_SHARE = 0.2;
+export const LAND_CROWD_BASE = 0.5;
+export const LAND_EDGE_SHARE = 0.25;
+/** A council counts this share of the freight a road saves on its town's own traffic (the town at the other end the rest). */
+export const COUNCIL_ROAD_SHARE = 0.5;
+/** A council asks its mayor's premium × this over the bank's rate of what it builds (a council is not in it for profit alone). */
+export const COUNCIL_PREMIUM_SHARE = 0.5;
+/** A council spends at most this share of its purse on any one thing. */
+export const COUNCIL_SPEND_SHARE = 0.8;
+/** A council looks at buying a building for its plot once it has stood empty this many days. */
+export const COUNCIL_CLEAR_DAYS = 360;
+/** Clearing a building costs this share of its book value (paid to the town's builders); its materials fetch SALVAGE_SHARE — about what the clearing costs. */
+export const CLEAR_COST_SHARE = 0.05;
+export const SALVAGE_SHARE = 0.05;
+/** The odds a council gives itself of selling a cleared plot: [the town sold plots in the last year, it sold none]. */
+export const COUNCIL_RESALE_ODDS: readonly [number, number] = [0.9, 0.5];
+/** An owner values the land under an empty building at this share of the council's price for it (they cannot sell a plot to builders themselves). */
+export const OWNER_LAND_SHARE = 0.5;
+/**
+ * A mayor's land policy, monthly: with more than LAND_JOBLESS_HIGH of the town's households
+ * out of work the council asks LAND_MUL_STEP less for its land (to draw workshops in); with fewer
+ * than LAND_JOBLESS_LOW and the core more than LAND_CROWDED built on, LAND_MUL_STEP more; within
+ * [LAND_MUL_MIN, LAND_MUL_MAX], drifting back toward 1 otherwise.
+ */
+export const LAND_JOBLESS_HIGH = 0.08;
+export const LAND_JOBLESS_LOW = 0.03;
+export const LAND_CROWDED = 0.45;
+export const LAND_MUL_STEP = 0.15;
+export const LAND_MUL_MIN = 0.25;
+export const LAND_MUL_MAX = 2;
+/**
+ * A council builds a house (and lets it, as any landlord) when at least COUNCIL_HOUSE_HOMELESS of its
+ * town's households have no roof and nobody is building houses there: it counts the rents of a full
+ * house, plus COUNCIL_HOUSE_CIVIC of them again for the households it takes off the street, over its
+ * mayor's horizon, against the cost.
+ */
+export const COUNCIL_HOUSE_HOMELESS = 3;
+export const COUNCIL_HOUSE_CIVIC = 0.5;

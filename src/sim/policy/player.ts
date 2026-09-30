@@ -44,7 +44,7 @@ import {
 import { dateLabel } from '../calendar';
 import { fin } from '../util';
 import { GOODS, N_GOODS, SECTORS } from '../goods';
-import { burn, mint, pay } from '../ledger';
+import { burn, cashOf, councilOf, councilRef, mint, pay } from '../ledger';
 import { rt } from '../runtime';
 import { BANK, FIRM_BASE, GOLD_GOOD, IOU_GOOD, STATE } from '../types';
 import type {
@@ -1797,7 +1797,7 @@ function closeLine(s: SimState, a: Extract<PlayerAction, { type: 'closeLine' }>)
 // ---------------------------------------------------------------------------
 // Transfers
 // ---------------------------------------------------------------------------
-const TRANSFER_GROUPS: TransferGroup[] = [...GROUPS, 'bank'];
+const TRANSFER_GROUPS: TransferGroup[] = [...GROUPS, 'bank', 'councils'];
 
 /** Validate a transfer's optional trade filter: only with group 'firms'. Returns an error or null. */
 function checkTransferSector(a: Extract<PlayerAction, { type: 'transfer' }>): string | null {
@@ -1814,6 +1814,7 @@ function firmsText(sector: Sector | undefined): string {
 
 /** "each of 3 coal mines" — or "the one coal mine" when a trade's firms number one. */
 function eachOf(n: number, who: string, group: TransferGroup, sector: Sector | undefined): string {
+  if (group === 'councils') return n === 1 ? 'the town council' : `each of the ${withCommas(n)} town councils`;
   if (n === 1 && group === 'firms') return `the one ${sector ? (SECTORS[sector]?.name ?? 'firm').toLowerCase() : 'firm'}`;
   return `each of ${withCommas(n)} ${who}`;
 }
@@ -1832,7 +1833,7 @@ function transfer(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): 
   if (a.dir === 1 && !t.autoMint && !(t.purse > 0)) return fail('The Purse is empty. Create money first, or turn on auto-mint.');
   if (a.group === 'bank' && a.dir === -1 && !(bankClaimRoom(s) > 0)) return fail('The Bank has no capital of its own to spare, so there is nothing to take.');
   const n = a.group === 'bank' ? 1 : countRecipients(s, a.group, a.town, sector);
-  const who = a.group === 'firms' ? firmsText(sector) : (GROUP_PLURAL[a.group as Group] ?? 'recipients');
+  const who = a.group === 'firms' ? firmsText(sector) : a.group === 'councils' ? 'town councils' : (GROUP_PLURAL[a.group as Group] ?? 'recipients');
   if (n === 0) return fail(`Nobody matches: there are no ${a.group === 'bank' ? 'recipients' : who}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);
   const total = executeTransfer(s, a.group, a.town, a.amount, a.dir, sector);
   const where = a.town >= 0 ? ` in ${townName(s, a.town)}` : '';
@@ -1863,6 +1864,7 @@ function transferGoods(s: SimState, a: Extract<PlayerAction, { type: 'transfer' 
   if (!validGood(g)) return fail('Unknown good.');
   if (a.dir !== 1) return fail('Goods can only be handed out; to gather goods, the Treasury buys them in the market.');
   if (a.group === 'bank') return fail('The Bank takes no goods; hand them to people or firms.');
+  if (a.group === 'councils') return fail('Town councils take money, not goods; hand goods to people or firms.');
   if (!validTown(s, a.town)) return fail('Choose the town whose Treasury stores the goods come from.');
   if (!isNum(a.amount) || a.amount <= 0) return fail('The quantity for each recipient must be a positive number.');
   if (a.amount > PLAYER_MAX_QTY) return fail(`At most ${qtyText(PLAYER_MAX_QTY)} units each.`);
@@ -1944,6 +1946,7 @@ function transferMembers(s: SimState, group: Group, town: TownId, fn: (ref: numb
 
 function countRecipients(s: SimState, group: TransferGroup, town: TownId, sector?: Sector): number {
   if (group === 'bank') return 1;
+  if (group === 'councils') return town >= 0 ? (s.towns[town] ? 1 : 0) : s.towns.length;
   let n = 0;
   transferMembers(s, group, town, () => n++, sector);
   return n;
@@ -1953,6 +1956,7 @@ function countRecipients(s: SimState, group: TransferGroup, town: TownId, sector
  * One-off transfer: dir 1 = give `amount` to every member of the group (in
  * `town`, or all towns if -1); dir −1 = take up to `amount` from each.
  * 'bank' group → pay to/from BANK (a recapitalisation / levy on the bank).
+ * 'councils' → to/from the purse of the town's council (or of every town's; agents/council.ts).
  * 'all' and 'persons' mean every person; 'firms' every active private firm (of
  * `sector` only, when given).
  * If the Purse cannot cover a payment to everyone (auto-mint off), each member
@@ -1968,6 +1972,24 @@ export function executeTransfer(s: SimState, group: TransferGroup, town: TownId,
     // pay any sum, which would sink its capital below zero and bail in every depositor.
     const take = Math.min(amount, bankClaimRoom(s));
     return take > 0 ? pay(s, BANK, STATE, take, 'transfer') : 0;
+  }
+  if (group === 'councils') {
+    const towns = town >= 0 ? [town] : s.towns.map((t) => t.id);
+    let each = amount;
+    if (dir === 1 && !s.treasury.autoMint) each = Math.min(amount, Math.max(0, s.treasury.purse) / Math.max(1, towns.length));
+    let total = 0;
+    for (const t of towns) {
+      const c = councilOf(s, t);
+      if (!c || !(each > 0)) continue;
+      const ref = councilRef(t);
+      const moved = dir === 1 ? pay(s, STATE, ref, each, 'transfer') : pay(s, ref, STATE, Math.min(each, cashOf(s, ref)), 'transfer');
+      c.year.received += dir === 1 ? moved : -moved;
+      total += moved;
+    }
+    const acc = s.stats.acc;
+    if (dir === 1) acc.transfer_give = (acc.transfer_give || 0) + total;
+    else acc.transfer_take = (acc.transfer_take || 0) + total;
+    return total;
   }
   const sec = group === 'firms' ? sector : undefined;
   let each = amount;

@@ -120,7 +120,7 @@ describe('ventures choose their sites on their merits', () => {
     for (let d = 0; d < 400; d++) stepDay(s);
     for (const bl of s.buildings) if (bl && bl.kind === 'firm' && bl.firm >= 0 && s.firms[bl.firm]?.alive) expect(s.firms[bl.firm].town).toBe(bl.town);
     for (const p of s.people) if (p.alive && p.home >= 0) expect(p.town).toBe(s.buildings[p.home].town);
-  });
+  }, 90000); // 400 days of a whole realm
 });
 
 describe('trading houses build the roads that pay them', () => {

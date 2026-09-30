@@ -40,6 +40,7 @@ import {
   BUILDER_STOCK_SHARE,
   BUILDER_TOOLLESS_HANDS,
   CASH_TARGET_DAYS,
+  COUNCIL_SPEND_SHARE,
   LABOR_AHEAD_MAX,
   MAX_ACTIVE_PROJECTS,
   STATE_PARALLEL_MAX,
@@ -59,7 +60,8 @@ import {
 } from '../config';
 import { newProject as newProjectRecord } from '../factory';
 import { BRIDGE_TILE_COST, G, HOUSE_COST, HOUSE_SLOTS, PIER_COST, ROAD_TILE_COST, SECTORS, TRACK_TILE_COST } from '../goods';
-import { cashOf, firmRef, isFirm, isPerson, pay, refId, refName, repayPrincipal, writeOff } from '../ledger';
+import { cashOf, councilTown, firmRef, isCouncil, isFirm, isPerson, pay, refId, refName, repayPrincipal, writeOff } from '../ledger';
+import { buyPlot } from './council';
 import { addBid, bookFor, type Books } from '../market/markets';
 import { wageLevyRates } from '../policy/levies';
 import { lineCrewIn } from '../policy/lines';
@@ -317,6 +319,7 @@ function billingCapacity(s: SimState, p: Project): number {
     const keep = WAGE_RESERVE_DAYS * f.workers.length * Math.max(0, fin(f.wage));
     return pre + Math.max(0, f.cash - keep);
   }
+  if (isCouncil(o)) return pre + Math.max(0, COUNCIL_SPEND_SHARE * cashOf(s, o));
   return pre;
 }
 
@@ -995,6 +998,7 @@ function defaultLabel(s: SimState, spec: ProjectSpec): string {
 
 function ownerValid(s: SimState, o: Ref): boolean {
   if (o === STATE) return true;
+  if (isCouncil(o)) return !!s.towns[councilTown(o)];
   if (isPerson(o)) return !!s.people[o]?.alive;
   if (isFirm(o)) return !!s.firms[refId(o)]?.alive;
   return false;
@@ -1034,6 +1038,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
       tiles = safeAccess(s, bld);
+      buyPlot(s, spec.owner, bld); // within a town's core the plot is the council's (agents/council.ts)
       break;
     }
     case 'house':
@@ -1049,6 +1054,7 @@ export function startProject(s: SimState, spec: ProjectSpec): Project | string {
       if (!bld) return 'The building could not be placed there.';
       building = bld.id;
       tiles = safeAccess(s, bld);
+      if (kind === 'house') buyPlot(s, spec.owner, bld); // (a pier stands in the water: no plot)
       break;
     }
     case 'expand': {

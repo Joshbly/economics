@@ -334,12 +334,19 @@ dividends to their owner, invest, and can go bankrupt.
   (synergy: INTEGRATION_HORIZONTAL of a rival's sales a year, INTEGRATION_VERTICAL of the trade
   with a supplier or customer). **The market for companies** (companyMarket, monthly on
   MARKET_DAY): COMPANY_OFFERS firms are looked at (in distress or long losing money: three times
-  as likely), each offered to COMPANY_BIDDERS would-be buyers who could pay (people and
-  profitable firms, weighted by their spare cash × nerve, the town's own twice as likely); the
-  holders' reservation is its worth to each by share, less COMPANY_DISTRESS_DISCOUNT when it is
-  in trouble; a buyer valuing it COMPANY_DEAL_GAIN above that buys it whole at the reservation +
-  half the gap, every holder paid by share, and runs it (a firm bought by a firm is its
-  subsidiary: its profits flow up). A builders' yard's spare cash excludes the advances it
+  as likely), each offered to COMPANY_BIDDERS would-be buyers who could pay for at least
+  COMPANY_MIN_STAKE of it (people and profitable firms, weighted by their spare cash × nerve,
+  the town's own twice as likely; not its controlling owner; no firm into a firm that controls
+  it; at most COMPANY_MAX_HOLDERS holders); the holders' reservation is its worth to each by
+  share, less COMPANY_DISTRESS_DISCOUNT when it is in trouble. A buyer valuing the firm
+  COMPANY_DEAL_GAIN above that buys the largest stake their spare cash allows (all of it if
+  they can) at the reservation + half the gap for the whole, from the other holders in
+  proportion to their holdings, each paid for their part; the one who gains most ((worth −
+  price) × stake) is served. Synergy counts only for a buyer the stake would make its largest
+  holder. Whoever then holds the largest share runs it (a firm controlled by a firm is its
+  subsidiary: its profits flow up) — so control changes hands a stake at a time. (A market in
+  whole firms alone would hardly ever meet: most firms are worth ten times what the richest
+  saver can spare.) A builders' yard's spare cash excludes the advances it
   holds for its customers. An empty workshop is bought from its holder by whoever reopens it
   (vacantPrice: VACANT_PRICE_SHARE of its book value, falling to a third over two years empty).
   **Firms under one control** (`agents/integration.ts`; the controller is the largest holder,
@@ -508,6 +515,64 @@ its working balance — DESK_COIN_DAYS of its *two-way* trade (min of imports an
 exports): coin earned on a one-sided import surplus weakens the coin rather than
 raising the desk's appetite for it, so the realm's money does not drain abroad. Households hoard gold when inflation erodes
 deposits; the Treasury can trade gold (hold reserves, defend a price…).
+
+### 3.7 Town councils and the town's land (`agents/council.ts`)
+Every town has a **council**: a purse — a deposit at the bank like anyone's (ledger ref
+`councilRef(town)` = COUNCIL_BASE − town; it earns or pays the deposit rate, and a
+bail-in cuts it too) — and a **mayor**, a resident the town chooses every
+MAYOR_TERM_DAYS (sooner if the mayor dies or moves away): among residents of at least
+MAYOR_MIN_AGE, the more standing (savings against the town's average, years in the
+town, contentment, a business of their own) the likelier, the sitting mayor twice as
+likely (a `decisionRand` draw). The council plans with its mayor's temperament
+(§3.2): the years ahead it looks, what it asks over the bank's rate
+(COUNCIL_PREMIUM_SHARE of the mayor's premium), how rosy it sees things, how hard it
+bargains. It starts with COUNCIL_START_PER_HEAD a household and never borrows.
+
+*Land.* Within a town's core (settlement radius + BELONG_CORE) the unbuilt land is the
+council's; beyond every core it is nobody's, free to whoever clears it. Whoever puts up
+a new building in the core — a venture, a developer, the Treasury — buys the plot from
+the council when the works start (`construction.startProject` → `buyPlot`; a pier stands
+in the water and pays nothing). A tile at the very centre costs LAND_TILE_SHARE of what
+a house costs to build in the town today × (LAND_CROWD_BASE + the share of the core
+already built on) × the council's land policy (`landMul`), falling to LAND_EDGE_SHARE
+of that at the core's edge. Ventures weigh the plot like any capital: in a site's value
+(`sites.ventureSite`: the interest on its price a year — land does not wear out), in the
+return a venture expects and in the equity its owner must put up (`entry.launch`); so a
+crowded centre sends land-hungry workshops to the edge and beyond, and the town grows
+outward.
+
+*Monthly* (COUNCIL_DAY), each council:
+1. sets its land policy: with more than LAND_JOBLESS_HIGH of its households out of work
+   it asks LAND_MUL_STEP less for its land (to draw workshops in); with fewer than
+   LAND_JOBLESS_LOW and the core more than LAND_CROWDED built on, LAND_MUL_STEP more;
+   otherwise back toward 1 (within LAND_MUL_MIN … LAND_MUL_MAX);
+2. buys an empty building for its plot — a workshop or a house within its core empty
+   for COUNCIL_CLEAR_DAYS — by a bargain (`plotDeal`). The plot is worth to the council
+   its price × the odds of selling it again (COUNCIL_RESALE_ODDS: had the town sold plots
+   in the last year?) × (1 + the mayor's optimism), plus what the materials fetch less
+   the clearing (SALVAGE_SHARE − CLEAR_COST_SHARE of the book value); the owner asks what
+   the building might still be worth to them (a workshop: what a reopener would pay;
+   a house: half its cost — both less the longer it stands empty), plus OWNER_LAND_SHARE
+   of the land, raised by their own optimism. If the council's value exceeds the ask they
+   meet at ask + θ·(value − ask), θ = the owner's nerve ÷ both nerves. The council pays the
+   owner, pays the town's builders CLEAR_COST_SHARE to clear it (`layout.removeBuilding`),
+   and the plot is its to sell again. Never a building the Treasury owns;
+3. builds houses when at least COUNCIL_HOUSE_HOMELESS of its households have no roof and
+   nobody is building houses in the town: if the rents of a full block, plus
+   COUNCIL_HOUSE_CIVIC of them again for the households taken off the street, repay the
+   cost over the mayor's horizon (on its own land; it pays the works up front) — and lets
+   it like any landlord, the rents going to its purse;
+4. builds the road that pays its town best: for each town its carters trade with
+   (TraderState.lane both ways, ROAD_MIN_LANE and more) it weighs paving the way or
+   cutting a new track centre to centre (as the trading houses weigh theirs, §3.2) —
+   but counting COUNCIL_ROAD_SHARE of the freight saved on all the town's traffic, not
+   one house's — worth its cost over the mayor's horizon; one road at a time, paid up
+   front.
+It spends at most COUNCIL_SPEND_SHARE of its purse on any one thing. Its money: the plots
+it sells, its houses' rents, deposit interest, and whatever the Treasury hands it
+(Transfer to the town councils, §5). The busiest lanes are usually paved by the trading
+houses before a council has saved enough; a council the Treasury funds builds sooner.
+Its accounts for this year and last (`Council.year` / `last`) show in the town's view.
 
 ---------------------------------------------------------------------------
 
@@ -766,7 +831,9 @@ that pay ¤5 per year each, forever). Seven primitives:
      Closing hands the line's tools and oil to the Treasury's stores in `a` (cargo on
      the road still arrives).
 7. **Transfer** — a one-off lump-sum payment to (or seizure from) a group
-   (group "firms" may be narrowed to one trade). *In kind:* hand out units of a good
+   (group "firms" may be narrowed to one trade; group "councils" pays into — or takes
+   from — the purse of a town's council, or of every town's: each spends it as its mayor
+   plans, §3.7). *In kind:* hand out units of a good
    the Treasury holds in a town (payments only) to every member of a group there —
    into people's larders (goods households use) or firms' stores (any good; tools
    handed to a workshop join its tool stock that evening). If the stores hold too
@@ -827,6 +894,8 @@ bankEndDay          loan decisions, dividends, capital check, failure
 stockLevies         money/goods/head/building levies
 entryStep           (monthly) new firms, expansions, houses, trading houses' roads; (daily) financing, ventures judged
 companyMarket       (monthly) firms change hands (agents/invest.ts)
+councilStep         town councils: the year's accounts turn, mayors chosen; (monthly) land policy,
+                    empty buildings bought for their plots, houses, roads (agents/council.ts)
 townsStep           (monthly) settlement radii, each building's town by the rules, districts (world/belonging.ts)
 demographyStep      births, deaths, migration
 foreignEndDay       world prices, dealer valuation, desk balance
@@ -900,14 +969,21 @@ Layout (dark, native-feeling on macOS, system font, tabular numerals):
 * Unit tests: auction, ledger identity, levies, limits, pathfinding.
 * Headless runner: `npm run sim -- --years 10 --seed 1`.
 * Experiments (`npm run experiments`): same seed, baseline vs treatment,
-  report deltas. Required directional results (these define "accurate"):
+  report deltas. Where the effect is small against one chaotic path, an experiment runs
+  `replicas` (each replica k of every arm reseeds the random stream and salts the
+  investors' decision draws with k — `SimState.drawSalt`, rng.decisionSeed — so arms share
+  their draws within a replica and replicas differ) and is judged on the mean path. An
+  experiment whose premise does not hold in the realm at its start (`applies`) is reported
+  as not applicable, neither passed nor failed. Required directional results (these define
+  "accurate"):
   1. Mint + per-head give → CPI rises vs baseline.
   2. 30 % levy on bread sales → consumer bread price up, bread quantity down,
      fish quantity up (substitution), Purse revenue > 0.
   3. Price ceiling on bread well below market → persistent shortage, hunger ↑.
   4. Minimum wage far above market → unemployment ↑.
   5. Window rates to 15 % → credit and investment ↓, inflation ↓.
-  6. Paved road between two towns → grain price gap between them ↓.
+  6. Paved road between two towns → freight on the lane ↓ (the grain price gap is shown: it is
+     mostly carters' margins; not applicable when the warm-up leaves no lane unpaved).
   7. Big Treasury buy order for tools → tools price ↑; big sell below market → ↓.
   8. Levy on oil → shipping rate ↑.
   9. Import levy → Saltmere price of an imported good ↑.
