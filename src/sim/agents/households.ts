@@ -441,6 +441,26 @@ export function ladderInto(qty: number, pExp: number, maxSpend: number, good: nu
 // Scratch reused across people.
 const _ladder: number[] = [];
 const _plan: PlanScratch = newPlanScratch();
+const _want: PlanScratch = newPlanScratch();
+
+/**
+ * What a household would take today of each consumer good (units in `out`, by good): its plan at the
+ * going prices of its town (planInto), with at least 1.5 × its subsistence to spend — what it needs,
+ * whatever it can pay. Used by the Treasury's free handouts (policy/player.treasuryHandouts), before
+ * the market meets: what it is given, it no longer buys.
+ */
+export function householdWants(s: SimState, p: Person, out: number[]): number[] {
+  const c = householdCache(s);
+  if (c.day !== s.day) householdsBeginDay(s);
+  for (let g = 0; g < N_GOODS; g++) out[g] = 0;
+  const t = p.town >= 0 && p.town < s.towns.length ? p.town : 0;
+  const prices = c.prices[t];
+  if (!prices) return out;
+  const base = Math.max(0, fin(p.budget), 1.5 * (c.subsist[p.id] || 0));
+  const plan = planInto(_want, base, Math.max(fin(p.cash), base), prices, p.pantry, c.heat, c.heatAhead, p.foodSat < HUNGRY_BELOW, c.fiIndex[t], c.fiBread[t], c.fiFish[t]);
+  for (const g of CONSUMER_GOODS) out[g] = Math.max(0, fin(plan.qty[g]));
+  return out;
+}
 const _ownPrices: number[] = new Array(N_GOODS).fill(1);
 const _peopleRules: Levy[][] = [];
 

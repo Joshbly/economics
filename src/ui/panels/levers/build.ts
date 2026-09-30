@@ -13,6 +13,7 @@ import { freightPerUnit } from '../../../sim/agents/traders';
 import { estimateLine, lineBetween } from '../../../sim/policy/lines';
 import type { LineFare, LineStaffing } from '../../../sim/types';
 import { estimateCost, needCost, projectNeed, roadNeed } from '../../../sim/agents/construction';
+import { isWorks } from '../../../sim/agents/ownership';
 import { GOODS, HOUSE_SLOTS, SECTORS } from '../../../sim/goods';
 import { roadPlan, trackPlan } from '../../../sim/world/paths';
 import { findSite, townCentreTile } from '../../../sim/world/layout';
@@ -80,6 +81,28 @@ function roadText(s: SimState, plan: readonly number[]): string {
   const speed = `Wagons and walkers cover about ${SPEED_PAVED} tiles a day on paving against ${SPEED_DIRT} on dirt.`;
   if (!trips.length) return `${what} ${speed}`;
   return `${what} ${speed} Trips it speeds up: ${trips.join('; ')}. Cheaper carrying lets the trading houses move more between these towns, so their prices draw closer.`;
+}
+
+/**
+ * What running a new workplace as the Treasury's own means (agents/works.ts): where its output goes,
+ * and which of the Treasury's workplaces it would draw its materials from — or supply.
+ */
+function runByTreasuryText(s: SimState, sector: string, town: number): string {
+  const d = SECTORS[sector as keyof typeof SECTORS];
+  if (!d || !d.producer) return 'It hires, buys and sells like any firm; its profits flow to the Purse.';
+  const tn = townName(s, town);
+  const own = s.firms.filter((f) => isWorks(f));
+  const parts: string[] = [`The Treasury runs it as its own: what it makes goes to your stores in ${tn}, sold at the going price by a standing order (price it at 0 to hand it out free); the Purse pays its wages and materials.`];
+  for (const [g] of d.inputs) {
+    const here = own.find((f) => f.town === town && SECTORS[f.sector]?.out === g);
+    const there = here ? undefined : own.find((f) => SECTORS[f.sector]?.out === g);
+    const what = GOODS[g]?.name.toLowerCase() ?? 'materials';
+    if (here) parts.push(`It draws its ${what} from your ${SECTORS[here.sector].name} here first.`);
+    else if (there) parts.push(`It draws its ${what} from your ${SECTORS[there.sector].name} in ${townName(s, there.town)}, carried in as it needs it.`);
+  }
+  const users = own.filter((f) => f.town === town && SECTORS[f.sector]?.inputs.some(([g]) => g === d.out));
+  if (users.length) parts.push(`Your ${users.map((f) => SECTORS[f.sector].name).join(' and ')} here will draw on what it makes.`);
+  return parts.join(' ');
 }
 
 export function buildLever(): Lever {
@@ -315,7 +338,7 @@ export function buildLever(): Lever {
         break;
       case 'firm':
         title = `Treasury ${SECTORS[sector]?.name ?? 'workshop'} in ${townName(s, town)}`;
-        desc = recipe(sector) + ' It hires, buys and sells like any firm; its profits flow to the Purse.' + plotText(s, sector, town);
+        desc = recipe(sector) + ' ' + runByTreasuryText(s, sector, town) + plotText(s, sector, town);
         break;
       case 'pier':
         if (!ports.length) {

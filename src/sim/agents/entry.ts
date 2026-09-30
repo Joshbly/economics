@@ -708,7 +708,7 @@ function voluntaryExit(s: SimState): void {
   // The worst loss-maker of each trade and town is the candidate (at most EXIT_MAX_PER_TRADE a month).
   const worst = new Map<string, Firm[]>();
   for (const f of s.firms) {
-    if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') continue;
+    if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.works) continue; // (a Treasury works closes only when the Treasury says)
     if (s.day - f.founded < EXIT_MIN_AGE) continue;
     const d = SECTORS[f.sector];
     const seasonal = d && (d.season === 'farm' || d.out === G.coal);

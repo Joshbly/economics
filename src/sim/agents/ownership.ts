@@ -40,6 +40,16 @@ export function stakeOf(f: Firm, ref: Ref): number {
   return x;
 }
 
+/** True while `f` runs as a Treasury works (agents/works.ts): open, and flagged as one. */
+export function isWorks(f: Firm | undefined): boolean {
+  return !!f && !!f.works && f.alive && f.status === 'active';
+}
+
+/** True if the Treasury holds all of `f` (no other holder). */
+export function whollyTreasury(f: Firm): boolean {
+  return f.owner === STATE && !(f.partners && f.partners.some((p) => p.share > DUST));
+}
+
 /** True if `ref` holds any share of `f`. */
 export function holdsStake(f: Firm, ref: Ref): boolean {
   return stakeOf(f, ref) > DUST;

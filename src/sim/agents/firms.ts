@@ -141,6 +141,9 @@ import {
   WAGE_URGENCY_MAX,
   WAGE_VACANCY_DAYS,
   WAGON_CAPACITY,
+  WORKS_BOOK_EMA,
+  WORKS_INPUT_MAX_MULT,
+  WORKS_WAGE_PREMIUM,
   WORKING_DEBT_MAX_DAYS,
   WORKING_LOAN_RETRY_DAYS,
   WORKING_LOAN_TERM,
@@ -175,7 +178,7 @@ import {
   unitVariableCost,
 } from './production';
 import { flowIndex, flowTally, FLOW_MADE, FLOW_USED } from '../stats/flows';
-import { payHolders, releaseHolders } from './ownership';
+import { isWorks, payHolders, releaseHolders } from './ownership';
 import { groupMarkup } from './integration';
 
 // ---------------------------------------------------------------------------
@@ -983,19 +986,77 @@ export function firmsPlan(s: SimState): void {
       makersByTG[f.town * N_GOODS + d.out] += 1;
     }
   }
+  const going = worksGoingWages(s);
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') continue;
     const d = SECTORS[f.sector];
     if (!d) continue;
     const t = f.town >= 0 && f.town < nT ? f.town : 0;
-    adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1, pt);
+    if (isWorks(f)) {
+      // the Treasury pays the going wage of the town's other employers (a little more while short of hands): it never bids wages up itself
+      let w = (going[t] ?? 0) * (fin(f.target) - f.workers.length > 0.5 && f.vacancyDays > WAGE_VACANCY_DAYS ? 1 + WORKS_WAGE_PREMIUM : 1);
+      if ((lo[t] ?? -1) >= 0 && w < lo[t]) w = lo[t];
+      if ((hi[t] ?? -1) >= 0 && w > hi[t]) w = hi[t];
+      f.wage = Math.max(WAGE_MIN_ABS, fin(w, f.wage));
+    } else adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1, pt);
     if (!d.producer) continue;
     if (!operating(s, f)) {
       f.target = 0;
       continue;
     }
-    planTarget(s, f, pt, salesByTG, makersByTG, levies, sc);
+    if (isWorks(f)) planWorks(s, f);
+    else planTarget(s, f, pt, salesByTG, makersByTG, levies, sc);
   }
+}
+
+/**
+ * The going wage by town among employers other than the Treasury's own (weighted by their hands):
+ * the realm's where a town has none, the founding wage × prices where the realm has none.
+ */
+function worksGoingWages(s: SimState): number[] {
+  const nT = s.towns.length;
+  const sum = new Array(nT).fill(0);
+  const n = new Array(nT).fill(0);
+  let all = 0;
+  let allN = 0;
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.works || !(f.wage > 0)) continue;
+    const k = Math.max(1, f.workers.length);
+    if (f.town >= 0 && f.town < nT) {
+      sum[f.town] += f.wage * k;
+      n[f.town] += k;
+    }
+    all += f.wage * k;
+    allN += k;
+  }
+  const cpi = Math.max(0.1, fin(s.stats?.latest?.cpi, 100) / 100);
+  const realm = allN > 0 ? all / allN : Math.max(1, fin(s.stats?.baseWage, BASE_WAGE)) * cpi;
+  return sum.map((x, t) => (n[t] > 0 ? x / n[t] : realm));
+}
+
+/**
+ * A Treasury works' workforce (agents/works.ts sets what it is to make, `works.want`): the hands
+ * that output takes with today's tools and people, within its room, moving with the same smoothing
+ * and step caps as any firm's (hiring and firing take time).
+ */
+function planWorks(s: SimState, f: Firm): void {
+  const d = SECTORS[f.sector];
+  const cap = Math.max(0, f.capacity);
+  const nW = f.workers.length;
+  const eff = nW > 0 ? clamp(workforceEff(s, f) / nW, 0.3, 3) : 0.95;
+  const q = Math.max(0, fin(f.works?.want ?? 0));
+  let raw = q > 0 ? laborForOutput(f.sector, q, planSeason(d, s.day), siteMultiplier(s, f)) / eff : 0;
+  raw = clamp(fin(raw), 0, cap);
+  if (raw > 0 && raw < 1) raw = Math.min(1, cap);
+  const cur = clamp(fin(f.target), 0, cap);
+  let next = cur;
+  if (Math.abs(raw - cur) > TARGET_HYSTERESIS * cur + 0.1) {
+    const step = TARGET_SMOOTH * (raw - cur);
+    const stepCap = TARGET_MAX_STEP * Math.max(cur, 1) + TARGET_MAX_STEP_ABS;
+    next = cur + (nW === 0 && raw > cur ? step : clamp(step, -stepCap, stepCap));
+  }
+  if (raw <= 0 && next < 0.3) next = 0;
+  f.target = clamp(fin(next), 0, cap);
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,7 +1321,7 @@ function askOutput(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmS
 }
 
 /** Input and tool bid ladders for a producer, capped by cash. */
-function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmScratch, levies: boolean): void {
+function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, sc: FirmScratch, levies: boolean, anyCost = false): void {
   const d = SECTORS[f.sector];
   const k = f.sector;
   const t = f.town;
@@ -1288,8 +1349,10 @@ function bidInputsAndTools(s: SimState, books: Books, f: Firm, pt: PriceTable, s
       if (!(gap > 1e-6)) continue;
       const u = clamp(1 - have / Math.max(1e-9, want), 0, 1);
       const pj = gross[j];
-      // Short-run break-even: the most this input can cost while output still covers materials and tool wear.
-      const beMax = (pNet - (mc - a * pj) - tc) / a;
+      // Short-run break-even: the most this input can cost while output still covers materials and tool wear
+      // (a Treasury works buys what its plan needs — the Treasury decided to run it — but never more than
+      // WORKS_INPUT_MAX_MULT × what the material costs to make).
+      const beMax = anyCost ? WORKS_INPUT_MAX_MULT * fairPrice(s, t, j, gross) : (pNet - (mc - a * pj) - tc) / a;
       if (!(beMax > 0)) continue;
       const book = bookFor(books, t, j);
       // The part of the gap needed for the next INPUT_ESSENTIAL_DAYS of production is
@@ -1400,6 +1463,11 @@ export function firmOrders(s: SimState, books: Books): void {
     }
     const d = SECTORS[f.sector];
     if (!d || !d.producer || !operating(s, f)) continue;
+    // a Treasury works' output is in the Treasury's stores (sold by its orders); it buys what the stores lack
+    if (isWorks(f)) {
+      bidInputsAndTools(s, books, f, pt, sc, levies, true);
+      continue;
+    }
     askOutput(s, books, f, pt, sc);
     bidInputsAndTools(s, books, f, pt, sc, levies);
   }
@@ -1666,6 +1734,10 @@ export function firmsEndDay(s: SimState): void {
     if (!d) continue;
     const fref = firmRef(f.id);
     absorbTools(s, f, pt);
+    if (isWorks(f)) {
+      worksAccounts(s, f, sc, i, monthEnd);
+      continue;
+    }
 
     // ---- accounting ----
     let profit = accountDay(s, f, sc);
@@ -1764,6 +1836,35 @@ export function firmsEndDay(s: SimState): void {
   }
 }
 
+/**
+ * A Treasury works' evening (agents/works.ts): its books — what it cost to run (wages, materials at the
+ * going price wherever they came from, tool wear, interest and levies) and what its output would fetch
+ * at the going price — and, as `profit`, what it would earn as a company. It borrows nothing, pays no
+ * dividend and is never made bankrupt: a Purse that cannot pay its workers leaves it in distress only.
+ */
+function worksAccounts(s: SimState, f: Firm, sc: FirmScratch, i: number, monthEnd: boolean): void {
+  const b = f.works!;
+  const d = SECTORS[f.sector];
+  const mat = i < sc.n ? sc.matUsed[i] : 0;
+  const wear = i < sc.n ? sc.toolWear[i] : 0;
+  const prod = Math.max(0, fin(f.producedToday));
+  const cost = Math.max(0, fin(f.wageBill) + mat + wear + fin(f.otherCosts));
+  const value = prod * Math.max(0, fin(marketOf(s, f.town, d.out).ema));
+  b.cost = fin(ema(fin(b.cost), cost, WORKS_BOOK_EMA));
+  b.value = fin(ema(fin(b.value), value, WORKS_BOOK_EMA));
+  const profit = value - cost;
+  f.output = Math.max(0, ema(fin(f.output), prod, SALES_EMA));
+  f.sales = Math.max(0, ema(fin(f.sales), 0, SALES_EMA));
+  f.unitCost = f.output > 1e-6 ? b.cost / f.output : f.unitCost;
+  f.profit = fin(ema(fin(f.profit), profit, PROFIT_EMA));
+  f.profitLong = fin(ema(fin(f.profitLong), profit, PROFIT_LONG_EMA));
+  f.profitLife = fin(f.profitLife ?? 0) + profit;
+  f.lossDays = f.profit < 0 ? fin(f.lossDays) + 1 : 0;
+  f.monthProfit = monthEnd ? 0 : fin(f.monthProfit) + profit;
+  const unpaid = i < sc.n ? sc.unpaid[i] : 0;
+  f.distress = unpaid > 1e-6 ? fin(f.distress) + 1 : Math.max(0, fin(f.distress) - DISTRESS_RECOVER);
+}
+
 // ---------------------------------------------------------------------------
 // Life cycle
 // ---------------------------------------------------------------------------
@@ -1802,6 +1903,7 @@ export function createFirm(s: SimState, sector: Sector, town: TownId, building: 
 const CLOSE_REASON: Record<string, string> = {
   bankrupt: 'it could no longer pay its workers and creditors',
   unprofitable: 'after months of losses its owner gave up',
+  treasury: 'the Treasury has closed it',
 };
 
 /**

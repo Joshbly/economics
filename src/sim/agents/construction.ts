@@ -724,7 +724,7 @@ function complete(s: SimState, b: Firm | undefined, p: Project): void {
       handOver(s, b, p, firmRef(f.id));
       startingCapital(s, p.owner, f);
       const nm = SECTORS[sector].name;
-      if (p.owner === STATE) news(s, p.kind === 'firm' ? `The Treasury's new ${nm} in ${tn} has opened; its profits will go to the Purse.` : `The Treasury has reopened a ${nm} in ${tn}.`, 'good', p.town);
+      if (p.owner === STATE) news(s, p.kind === 'firm' ? `The Treasury's new ${nm} in ${tn} has opened.` : `The Treasury has reopened a ${nm} in ${tn}.`, 'good', p.town);
       else news(s, p.kind === 'firm' ? `A new ${nm} has opened in ${tn}, set up by ${ownerLabel(s, p.owner)}.` : `A ${nm} in ${tn} has reopened under ${ownerLabel(s, p.owner)}.`, 'good', p.town);
       break;
     }

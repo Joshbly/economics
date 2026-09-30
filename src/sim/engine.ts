@@ -8,7 +8,7 @@ import type { SimState } from './types';
 import { isMonthStart } from './calendar';
 
 import { openBooks, clearAll } from './market/markets';
-import { policyBeginDay, playerOrders, playerAfterClear, playerBeforeSession, playerAfterSession } from './policy/player';
+import { policyBeginDay, playerOrders, playerAfterClear, playerBeforeSession, playerAfterSession, treasuryHandouts } from './policy/player';
 import { stockLevies, levyMonthRollover } from './policy/levies';
 import { householdsBeginDay, householdOrders, householdPortfolioOrders, householdsConsume } from './agents/households';
 import { laborMarket } from './agents/labor';
@@ -30,6 +30,7 @@ import { sisterSupply } from './agents/integration';
 import { councilStep } from './agents/council';
 import { bondsAfterMarket, bondsBeginDay } from './agents/bonds';
 import { goldBeginDay } from './agents/gold';
+import { worksAfterProduce, worksBeginDay, worksEndDay } from './agents/works';
 
 export function stepDay(s: SimState): void {
   // --- morning ---
@@ -41,6 +42,7 @@ export function stepDay(s: SimState): void {
   bondsBeginDay(s); // what IOUs are worth to holders today: expected rates, premia (agents/bonds.ts)
   goldBeginDay(s); // why households want gold today: fear for the bank, the coin's fall (agents/gold.ts)
   tradersBeginDay(s); // arrivals, wagons return
+  worksBeginDay(s); // Treasury works: what left the stores, each works' plan, its sell order and carry rules (agents/works.ts)
 
   // --- work ---
   firmsPlan(s); // employment targets, wages, vacancies
@@ -48,12 +50,14 @@ export function stepDay(s: SimState): void {
   laborMarket(s); // layoffs, search, matching
   staffLines(s); // Treasury freight lines: drivers posted from their town's crew
   firmsProduce(s); // production, tool wear
+  worksAfterProduce(s); // Treasury works: output to the Treasury's stores, materials drawn from them, the Purse's top-up
   constructionProgress(s); // projects advance, completions
   firmsPayWages(s); // wages (+ wage levies)
 
   // --- market ---
   householdsBeginDay(s); // income EMA, expectations, budgets
   sisterSupply(s); // firms under one owner: suppliers pass sister firms of their town what they need (agents/integration.ts)
+  treasuryHandouts(s); // Treasury sell orders at a price of 0: goods handed out free to those in the town who need them
   const books = openBooks(s);
   householdOrders(s, books);
   householdPortfolioOrders(s, books);
@@ -74,6 +78,7 @@ export function stepDay(s: SimState): void {
   householdsConsume(s);
   housingStep(s);
   firmsEndDay(s);
+  worksEndDay(s); // Treasury works: in-house book, spare cash back to the Purse
   bankEndDay(s);
   stockLevies(s);
   entryStep(s);

@@ -6,8 +6,10 @@
 import { GOODS, N_GOODS, SECTORS } from '../../../sim/goods';
 import { STATE, type Firm, type Project, type SimState } from '../../../sim/types';
 import { h } from '../../dom';
-import { fmtDay, fmtDuration, fmtInt, fmtMoney, fmtMoneyShort, fmtNum, fmtPct, fmtPrice, fmtQty, fmtRate } from '../../format';
-import { focusMarket } from '../../uiState';
+import { fmtDay, fmtDuration, fmtInt, fmtMoney, fmtMoneyShort, fmtNum, fmtPct, fmtPrice, fmtQty, fmtRate, pluralize } from '../../format';
+import { act, focusMarket, prefill } from '../../uiState';
+import { confirmDialog } from '../../modal';
+import { worksReport } from '../../../sim/agents/works';
 import { button, icon, type Tone } from '../../widgets';
 import {
   block,
@@ -29,7 +31,7 @@ import {
 } from './common';
 import { hero, linkList, statStrip, statTile, type View } from './kit';
 import { belongingOf, belongingReason } from '../../../sim/world/belonging';
-import { holders } from '../../../sim/agents/ownership';
+import { holders, stakeOf, whollyTreasury } from '../../../sim/agents/ownership';
 import { refName } from '../../../sim/ledger';
 import type { Building } from '../../../sim/types';
 
@@ -117,6 +119,18 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
   const rProfit = pr.row('Profit, recent average', 'Per day');
   const rMonth = pr.row('Profit this month');
 
+  // ---- run by the Treasury (agents/works.ts) ----
+  const wk = kvBlock();
+  const rwTo = wk.row('What it makes goes to', 'The Treasury’s stores in its town. A standing order in Levers → Trade sells it at the going price — price it at 0 to hand it out free, or pause it and use Transfer or Carry');
+  const rwPlan = wk.row('It plans to make', 'Enough to keep your stores stocked for about 20 days of what leaves them');
+  const rwCost = wk.row('Running cost', 'A day: wages, materials at the going price (wherever they came from) and tool wear — the Purse pays');
+  const rwValue = wk.row('Its output would fetch', 'A day, at the going price in its town');
+  const rwIn = wk.row('Materials from your own workplaces', 'A day, valued at the going price: drawn from your stores before anything is bought');
+  const rwYear = wk.row('As a company it would earn', 'A year: what its output would fetch less what it costs to run — what a buyer of shares values it on');
+  const rwOrder = wk.row('Sold by');
+  const wkNote = h('p', { class: 'note ins-works-note' });
+  const worksBlock = block('Run by the Treasury', null, wk.el, wkNote);
+
   // ---- money ----
   const mo = kvBlock();
   const rCash = mo.row('Cash');
@@ -188,6 +202,7 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
     statStrip([tOut, tCash, tPrice]),
     ringNote,
     block('Workforce', null, wf.el),
+    producer ? worksBlock : null,
     producer ? block('Making and selling', null, pr.el) : null,
     isTrader ? block('Wagons', null, tr.el, h('div', { class: 'ins-gap' }), away.el, h('div', { class: 'ins-gap' }), transit.el) : null,
     isBuilder || isState ? block(isState ? 'Treasury projects here' : 'Projects in hand', null, queueEl) : null,
@@ -199,12 +214,59 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
   if (producer && out >= 0) {
     actions.appendChild(button({ label: `${GOODS[out].name} market in ${s0.towns[f0.town]?.name ?? 'town'}`, size: 'sm', kind: 'secondary', icon: icon('chevronRight', 14), onClick: () => focusMarket(f0.town, out) }));
   }
+  // shares and closing (agents/invest.ts, player.closeFirm)
+  const bSell = button({ label: 'Sell shares…', size: 'sm', kind: 'secondary', title: 'Offer part or all of the Treasury’s stake at the monthly market for companies (Levers → Trade)', onClick: () => prefill({ lever: 'trade', market: { kind: 'company', firm: id }, side: 'sell' }) });
+  const bBuy = button({ label: 'Buy shares…', size: 'sm', kind: 'secondary', title: 'Bid for a stake at the monthly market for companies (Levers → Trade); all of it makes it the Treasury’s own', onClick: () => prefill({ lever: 'trade', market: { kind: 'company', firm: id }, side: 'buy' }) });
+  const bClose = button({
+    label: 'Close it',
+    size: 'sm',
+    kind: 'ghost',
+    title: 'Close this workplace: its workers go, what it holds is sold off, the building stands empty',
+    onClick: async () => {
+      const f = state?.firms[id];
+      if (!f) return;
+      const ok = await confirmDialog({ title: `Close ${f.name}?`, message: 'Its workers are let go, what it holds is sold off over the next days, its cash returns to the Purse and the building stands empty for a buyer. Goods already in your stores stay there.', confirm: 'Close it', danger: true });
+      if (ok) act({ type: 'closeFirm', firm: id }, true);
+    },
+  });
+  if (!isState && f0.building >= 0) actions.append(bSell, bBuy, bClose);
+  let state: SimState | null = s0;
   sections.splice(3, 0, actions.childElementCount ? actions : null);
   const el = h('div', { class: 'ins-view ins-firm' }, sections);
+
+  function paintWorks(s: SimState, f: Firm): void {
+    const w = producer ? worksReport(s, f) : null;
+    worksBlock.hidden = !w;
+    if (!w) return;
+    const u = out >= 0 ? GOODS[out].unit : 'unit';
+    const tn = s.towns[f.town]?.name ?? 'its town';
+    rwTo.text(`your stores in ${tn}: ${fmtQty(w.held)} held · ${fmtQty(w.out)} leave a day`);
+    rwPlan.text(`${fmtQty(w.want)} ${pluralize(u)} a day · making ${fmtQty(w.made)}`);
+    rwCost.text(`${fmtMoney(w.cost)} / day`);
+    rwValue.text(`${fmtMoney(w.value)} / day`);
+    rwIn.show(w.inhouse > 0.005 || (def?.inputs.length ?? 0) > 0);
+    rwIn.text(w.inhouse > 0.005 ? `${fmtMoney(w.inhouse)} / day` : 'none yet — it buys its materials in the market');
+    rwYear.text(`${fmtMoney(w.perYear)} / year`, w.perYear < 0 ? 'bad' : 'good');
+    const o = w.order >= 0 ? s.policy.orders.find((x) => x.id === w.order) : undefined;
+    rwOrder.text(o ? `${o.label}${o.enabled ? '' : ' (paused)'}` : 'no order — goods stay in your stores until you sell, carry or hand them out');
+    const notes: string[] = [];
+    if (w.value < w.cost - 0.5) notes.push(`It costs more to run than its output would fetch: the Purse pays about ${fmtMoney(w.cost - w.value)} a day more than it makes.`);
+    if (w.inhouse > 0.005 && w.value < w.cost) notes.push('At market prices its materials are worth more sold as they are than what it makes of them.');
+    if (w.carries.length) notes.push(`${w.carries.length === 1 ? 'A carry rule brings' : `${w.carries.length} carry rules bring`} it materials your other workplaces make (Levers → Trade → Carry).`);
+    wkNote.textContent = notes.join(' ');
+    wkNote.hidden = !notes.length;
+  }
 
   function update(s: SimState): void {
     const f = s.firms[id];
     if (!f) return;
+    state = s;
+    const open = f.alive && f.status === 'active' && !isState && f.building >= 0;
+    const held = stakeOf(f, STATE);
+    bSell.hidden = !(open && held > 1e-6);
+    bBuy.hidden = !(open && held < 1 - 1e-6);
+    bClose.hidden = !(open && whollyTreasury(f));
+    paintWorks(s, f);
     const town = s.towns[f.town];
     const debts = debtMap(s);
     const debt = debts.get(firmRefOf(f.id)) ?? 0;
@@ -217,7 +279,10 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
     hr.title(f.name);
     const st = STATUS[f.status] ?? ['', f.status];
     const chips: [Tone | '', string, string?][] = [[st[0], f.alive ? st[1] : 'Closed']];
-    if (f.owner === STATE) chips.push(['gold', 'Treasury-owned']);
+    const tHeld = stakeOf(f, STATE);
+    if (f.works) chips.push(['gold', 'Run by the Treasury', 'Wholly the Treasury’s: what it makes goes to your stores; the Purse pays its costs']);
+    else if (tHeld > 1 - 1e-6) chips.push(['gold', 'Treasury-owned']);
+    else if (tHeld > 1e-6) chips.push(['gold', `Treasury holds ${fmtPct(tHeld, 0)}`, f.owner === STATE ? 'The largest holder: the Treasury controls it, but it runs as a company with other holders' : 'A stake: the Treasury is paid its share of the dividends']);
     if (f.distress > 0) chips.push(['warn', `In distress ${f.distress} ${f.distress === 1 ? 'day' : 'days'}`, 'Unpaid wages or overdue loans. 20 days in a row and it fails.']);
     if (town && town.strikeDays > 0) chips.push(['bad', 'Town on strike']);
     if (town && town.droughtDays > 0 && f.sector === 'farm') chips.push(['warn', 'Drought']);
@@ -234,7 +299,7 @@ export function firmView(s0: SimState, id: number, viaBuilding = false): View {
 
     // stat strip
     if (producer) {
-      tOut.set(out >= 0 ? fmtQty(f.producedToday) : '—', `average ${fmtQty(f.output)}${out >= 0 ? ' ' + GOODS[out].unit + 's' : ''}`, undefined, ring.out);
+      tOut.set(out >= 0 ? fmtQty(f.producedToday) : '—', `average ${fmtQty(f.output)}${out >= 0 ? ' ' + pluralize(GOODS[out].unit) : ''}`, undefined, ring.out);
       tPrice.set(fmtPrice(price), `cost ${fmtPrice(f.unitCost)} / unit`, undefined, ring.price);
     } else {
       tOut.set(fmtInt(f.workers.length), `wants ${fmtNum(Math.round(fin(f.target) * 10) / 10)}`, undefined, ring.out);

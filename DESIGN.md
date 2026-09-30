@@ -369,6 +369,17 @@ dividends to their owner, invest, and can go bankrupt.
   and each morning, before the market, a group's supplier passes a sister firm of its town what
   it needs for SISTER_DAYS of making (at most half its stock) at the going price
   (sisterSupply: goods and money move directly, `inhouse_value`).
+  **The Treasury in the market for companies** (treasuryShareDeals, first at every meeting): it
+  trades stakes only through its orders — `placeOrder` with market `{ kind: 'company', firm }`,
+  `qty` the share of the whole firm, `price` for the whole firm (`fixed`) or `any`, standing
+  until filled or for N days (one order a side per firm; a second replaces the first). Selling:
+  the would-be buyers to whom the firm is worth COMPANY_DEAL_GAIN over its price take its stake,
+  the keenest first, each what its spare cash buys (COMPANY_MIN_STAKE at least), at that price —
+  `any`: at the keenest's worth less the gain it asks. Buying: the other holders sell to it in
+  proportion to their holdings when its price for the whole firm is at least their reservation
+  — `any`: that reservation + half the deal gain over it; with auto-mint off, only what the Purse
+  can pay. The firms it controls are not offered to other buyers. A Treasury workplace sold in
+  part becomes an ordinary company (below); a firm bought whole becomes one the next morning.
   **Experience** (`agents/experience.ts`): a small neural network (15 features → EXP_HIDDEN tanh
   units → 1, weights in `s.invest.net`) learns how far the investors' formula is off. Each
   venture decided leaves a record (the trade's kind, the town's kind, margin over unit cost,
@@ -703,6 +714,9 @@ that pay ¤5 per year each, forever). Seven primitives:
      sets the price; what a patient order mainly avoids is bidding the edge on days it
      does not need to.) Labour orders: fixed, or `follow` = the town's going wage
      + band — the UI offers bands ORDER_BANDS (5/10/20/30%);
+     Where the Treasury's orders are most of a market (`MarketState.ownShare`, the smoothed share
+     of the day's trade the market would have had without them, below OWN_ANCHOR_MIN_SHARE), its
+     own price has hardly anyone behind it and following orders anchor to the price that trades.
      `any` has no effective limit (buy: going price × ORDER_ANY_MULT; sell: the floor),
      with the daily budget reserved at going price × ORDER_ANY_BUDGET_MULT. Typing a
      price switches an order back to `fixed`.
@@ -711,6 +725,16 @@ that pay ¤5 per year each, forever). Seven primitives:
      sell order offers what the store holds (re-sized before every session, so what an
      earlier session bought or a wagon brought in can be sold later the same day); a
      transfer in kind hands it out. Perishables spoil in store like anywhere else.
+   * **Free handouts.** A goods sell order at a fixed price of 0 does not go to the market:
+     each morning, before the market meets (player.treasuryHandouts), it hands out up to its
+     daily quantity of what the store holds, free — to the town's people, up to what each
+     would buy today at the going prices with at least 1.5 × its subsistence to spend
+     (households.householdWants), and to its workplaces (not the Treasury's own), up to
+     INPUT_BUFFER_DAYS of the material they make with and the tools their hands lack — equally
+     by need when there is not enough for all. What they are given they no longer buy, so the
+     market there sells less and its makers feel it. Handouts are local: the people of other towns get
+     nothing unless the goods are carried there and handed out there too (once nothing is sold in the
+     market, the trading houses no longer cart it).
    * **Carry** (`s.policy.carries`, policy/carry.ts): move the Treasury's goods from
      its store in one town to its store in another. It neither buys nor sells — a
      "supply line" is three rules side by side: a buy order in A, a carry A → B, a
@@ -814,9 +838,50 @@ that pay ¤5 per year each, forever). Seven primitives:
 5. **Window** — the rate the Treasury pays on the bank's reserves and the rate
    it charges when the bank borrows from it.
 6. **Build** — commission construction paid from the Purse: a road, a house
-   block (Treasury landlord), a workshop of any sector (Treasury-owned; its
-   profits flow to the Purse), a pier at the port (more foreign ship capacity),
-   or expand a Treasury workshop.
+   block (Treasury landlord), a workshop of any sector (run by the Treasury as its
+   own, below), a pier at the port (more foreign ship capacity), or expand a
+   Treasury workshop.
+   * **The Treasury's own workplaces** (`agents/works.ts`, `Firm.works`). A producer the
+     Treasury wholly owns (built, bought whole, or left to it) runs as a department:
+     each morning what it made goes to the Treasury's store in its town and it draws
+     its materials from that store first (INPUT_BUFFER_DAYS of making — the Treasury's
+     workplaces supply one another in-house, at no price); what the store lacks it buys
+     in the market (no break-even cap: the Treasury decided to run it). The Purse keeps
+     its cash at WORKS_FLOAT_DAYS of its running cost plus the tools it lacks and takes
+     back what is beyond twice that; it never borrows (the Purse pays off its loans when
+     it becomes one), pays no dividend, is never made bankrupt and never closes itself.
+     It pays the going wage of the town's other employers (WORKS_WAGE_PREMIUM more while posts
+     stay unfilled) and never bids wages up itself; it bids for materials at most
+     WORKS_INPUT_MAX_MULT × what they cost to make. It plans (`works.want`) to keep the store
+     stocked for WORKS_STOCK_DAYS of what leaves it (+ the heating season's carry for coal, the
+     harvest's carry for a farm) — what leaves being never less than what the Treasury's own
+     workplaces need of it (treasuryUse: an empty store hides their need) — with a bounded supply
+     response while the market pays well over what the good costs to make or goes short
+     (firms.planTarget's SUPPLY_ELASTICITY / SUPPLY_RESP_MAX / SHORTAGE_WEIGHT): the outflow is the fall in the store since
+     the morning before (sold, handed out, carried off, drawn by other workplaces, spoilt,
+     less what the Treasury bought or carried in), smoothed at WORKS_OUT_EMA and shared
+     among the Treasury's makers of the good in the town by their room; up gently
+     (INV_CORR_MAX), down to a stop while the store overflows; one hand at work while the
+     store is low (it learns when demand returns); a new one at NEW_FIRM_SCALE of its room
+     until it has a record. When it becomes one it gets a standing sell order asking what the
+     good costs to make (`atCost`: firms.fairPrice × WORKS_PRICE_MULT, re-set each morning — where
+     the Treasury is the only maker it does not wring a monopolist's price out of the town; in a
+     uniform-price auction it is paid the clearing price wherever others set it) whose daily
+     quantity (`PlayerOrder.works`)
+     is re-set each morning to what it makes beyond what the Treasury's own workplaces use,
+     × (1 + WORKS_OFFER_SLACK) — or, while it rests, its stock beyond that use over
+     WORKS_SELLDOWN_DAYS. The player prices it (0 hands it out free, §2), pauses it, or sets
+     its quantity (then it is a plain order). Where a material is made by a Treasury workplace
+     in another town and none in its own, a carry rule (`CarryRule.works`, "what it needs"
+     — destNeed counts what the Treasury's workplaces there use) is added once from the
+     nearest such town; a rule the player removes is not added again. Its books
+     (`WorksBook`: running cost, its output at the going price, materials drawn in-house at
+     the going price) — and its `profit`, what it would earn as a company — tell whether it
+     and the chain pay; buyers of a stake value it on them. Selling any part of it, or it
+     closing, ends it (works.releaseWorks): its order becomes a plain one (taken back if it
+     is wholly the Treasury's again), its carry rules go, and it runs as an ordinary company.
+     **Close** (`closeFirm`): a workplace the Treasury wholly owns shuts — workers go, what it
+     holds is sold off, its cash returns to the Purse, the building stands empty.
    * **Roads anywhere** (`build` `road` between two towns, or `track` between any
      two tiles `a`, `b`; `grade` 1 a dirt track, 2 paving, the default): between
      towns, paving follows the way wagons go (paths.roadPlan) and a new dirt track
@@ -912,15 +977,19 @@ bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisatio
 bondsBeginDay       what IOUs are worth today: the rate memory, the stress of coupons cut, premia (agents/bonds.ts)
 goldBeginDay        why households want gold today: fear for the bank, the gold price on a year ago (agents/gold.ts)
 tradersBeginDay     shipments arrive (the Treasury's cargo due by the opening lands in its stores), wagons return
+worksBeginDay       the Treasury's own workplaces: made one / no longer one, what left their stores, each one's
+                    plan, its sell order's quantity, carry rules for materials made elsewhere (agents/works.ts)
 firmsPlan           employment targets, wage adjustments, vacancies
 constructionPlan    builders' workforce targets
 laborMarket         layoffs, job search, matching, Treasury workers (freight-line drivers let go last)
 staffLines          Treasury freight lines: drivers posted from their town's crew (their own stay)
 firmsProduce        production, tools wear
+worksAfterProduce   the Treasury's workplaces: output to its stores, materials drawn from them, the Purse's top-up
 constructionProgress
 firmsPayWages       wages (+ wage levies); Treasury workers paid from the Purse
 householdsBeginDay  income EMA, expectations, budgets
 sisterSupply        firms under one owner: suppliers pass sister firms of the town what they need
+treasuryHandouts    Treasury sell orders at 0: goods handed out free to the town's people and workplaces
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
   traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
@@ -941,7 +1010,8 @@ playerAfterClear    Treasury order bookkeeping (patient steps, Treasury workers,
 bondsAfterMarket    no IOUs in anyone's hands: the quote is what IOU_QUOTE_LOT would fetch from the bids
 householdsConsume   eating, heating, ale, furniture wear, health, contentment
 housingStep         rent, arrears, evictions, moves, rent adjustment (monthly)
-firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy
+firmsEndDay         accounting, expectations, loan requests, dividends, bankruptcy (the Treasury's workplaces: their books only)
+worksEndDay         the Treasury's workplaces: in-house book, cash beyond twice the float back to the Purse
 bankEndDay          loan decisions, dividends, capital check, failure
 stockLevies         money/goods/head/building levies
 entryStep           (monthly) new firms, expansions, houses, trading houses' roads; (daily) financing, ventures judged

@@ -377,6 +377,39 @@ function fillLines(s: SimState): void {
 
 /** Fill optional bookkeeping that older or hand-edited saves may lack. */
 /**
+ * The Treasury's own workplaces (agents/works.ts): a damaged book is dropped (a workplace wholly the
+ * Treasury's is made one again the next morning); damaged store records are dropped (relearnt);
+ * links from orders and carry rules to a workplace must be whole numbers; an order for shares must
+ * name a firm.
+ */
+function fillWorks(s: SimState): void {
+  const int = (x: unknown): x is number => isNum(x) && x >= 0 && Math.floor(x) === x;
+  for (const f of s.firms) {
+    if (!f || f.works === undefined) continue;
+    const b = f.works as unknown as Obj;
+    const ok = isObj(b) && ['since', 'want', 'cost', 'value', 'inhouse'].every((k) => isNum(b[k])) && Array.isArray(b.linked);
+    if (!ok) delete f.works;
+    else f.works!.linked = (b.linked as unknown[]).filter((g): g is number => int(g) && g < N_GOODS);
+  }
+  const t = s.treasury as unknown as Obj;
+  if (t.storeFlow !== undefined) {
+    if (!isObj(t.storeFlow)) delete t.storeFlow;
+    else for (const [k, v] of Object.entries(t.storeFlow as Obj)) if (!isObj(v) || !isNum((v as Obj).prev) || !isNum((v as Obj).out)) delete (t.storeFlow as Obj)[k];
+  }
+  s.policy.orders = s.policy.orders.filter((o) => {
+    const x = o as unknown as Obj;
+    if (x.works !== undefined && !int(x.works)) delete x.works;
+    if (x.worksWas !== undefined && !int(x.worksWas)) delete x.worksWas;
+    const m = x.market as Obj | undefined;
+    return !(isObj(m) && m.kind === 'company' && !int(m.firm));
+  });
+  for (const c of s.policy.carries ?? []) {
+    const x = c as unknown as Obj;
+    if (x.works !== undefined && !int(x.works)) delete x.works;
+  }
+}
+
+/**
  * Shares of firms and the realm's investment experience: a damaged holding (not a person or firm,
  * a share not in (0, 1)) is dropped — its share falls back to the controlling owner; damaged
  * network weights or records reset the experience (it is relearnt).
@@ -447,6 +480,7 @@ function fillCouncils(s: SimState): void {
 
 function fillDefaults(s: SimState): void {
   fillInvest(s);
+  fillWorks(s);
   fillCouncils(s);
   if (s.drawSalt !== undefined && !isNum(s.drawSalt)) delete s.drawSalt;
   // the IOU market's memory (agents/bonds.ts): rebuilt from today's rate if damaged

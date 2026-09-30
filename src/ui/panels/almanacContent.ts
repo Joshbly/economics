@@ -36,11 +36,11 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
       {
         title: 'Your seven levers',
         body: `- **Mint** — create money in the Purse, or destroy money you hold.
-- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market. Orders can be one-off, last a number of days, or stand until cancelled. **Carry** moves the goods you hold from your store in one town to your store in another, once or as a standing rule. Buying in one town and selling in another is simply a buy order there, a carry, and a sell order here — three rules, each listed and changed on its own.
+- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market, or shares in a business. Orders can be one-off, last a number of days, or stand until cancelled. **Carry** moves the goods you hold from your store in one town to your store in another, once or as a standing rule. Buying in one town and selling in another is simply a buy order there, a carry, and a sell order here — three rules, each listed and changed on its own.
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a price moving more than a set share in a day; a loan rate above or below a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital (the standing 8 % rule can be raised or lowered).
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
-- **Build** — commission roads, houses, workshops of any trade, or piers. A road can join two towns or run anywhere you draw it on the map — paved, or a cheaper dirt track; clearing forest, cutting hills, draining marsh and bridging rivers cost more. You pay the builders; your own workers help for free on your projects (the builders bill only for the rest). With *Staff it with Treasury workers automatically* on, the town then employs as many Treasury workers as its projects can use and lets them go as they finish — the **Works** tab shows who is where. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
+- **Build** — commission roads, houses, workshops of any trade (the Treasury runs them as its own: see *Workplaces the Treasury runs*), or piers. A road can join two towns or run anywhere you draw it on the map — paved, or a cheaper dirt track; clearing forest, cutting hills, draining marsh and bridging rivers cost more. You pay the builders; your own workers help for free on your projects (the builders bill only for the rest). With *Staff it with Treasury workers automatically* on, the town then employs as many Treasury workers as its projects can use and lets them go as they finish — the **Works** tab shows who is where. You can also run your own freight line: Treasury wagons carrying the traders' goods between two towns.
 - **Transfer** — a one-off payment to (or seizure from) a group of people, the bank, or the town councils; or a one-off handout of goods you hold in a town.
 
 Everything else is up to you to discover.`,
@@ -296,7 +296,23 @@ Your own goods between the two towns ride the line too, without a fare. Pausing 
         title: 'Handing out goods',
         body: `A **Transfer** can hand out goods instead of money: so many units of a good you hold in a town to every member of a group there. People put them in their pantries; workshops (of every trade, or of one) put them in their stores, as if they had bought them.
 
-Goods handed out are goods nobody has to buy that day, so the market for them is quieter while they last.`,
+Goods handed out are goods nobody has to buy that day, so the market for them is quieter while they last.
+
+To hand goods out day after day, put a **sell order at a price of 0**: every morning, before the market meets, the people of that town take what they would have bought of it that day, and its workshops what they need to work with — free. What they are given they no longer buy, so the market there sells less and its makers feel it. (Any price above 0 sells in the market instead, where everyone is paid the same price whatever they asked.)`,
+      },
+      {
+        title: 'Workplaces the Treasury runs',
+        body: `A mine, farm or workshop the Treasury owns outright — one you built, or bought whole — the Treasury runs as its own. It hires and pays its people like anyone, but what it makes goes each morning to your stores in its town, and it takes its materials from your stores there first: your lumber camp's wood feeds your furniture workshop in the same town without being bought or sold. What your stores lack, it buys in the market. The Purse pays its wages, materials and tools; it never borrows, pays no dividends and never goes bankrupt — the Purse carries it.
+
+It makes enough to keep your stores stocked for about three weeks of what leaves them: sold, handed out, carried off or used by your other workplaces. When it opens it gets a standing **sell order** at the going price, sized each day to what it makes beyond what your own workplaces use. Change that order as you like: a price of 0 hands the goods out free, a higher price sells less, pausing it keeps them in store. If one of its materials is made by one of your workplaces in another town, a **carry** rule is added to bring what it needs.
+
+Its page shows what it costs to run and what its output would fetch at the going price — so you can see whether it pays, and whether turning your wood into furniture is worth more than selling the wood. What it would earn as a company is also what buyers of its shares value it on.`,
+      },
+      {
+        title: 'Buying and selling shares',
+        body: `In **Trade → Shares** you can offer part or all of what the Treasury owns of a business, or bid for a stake in any business — at a price for the whole business, or at whatever the other side will take. Orders wait for the market for companies, which meets once a month: a buyer takes your stake if the business is worth well over your price to them; owners sell to you if your price beats what it is worth to them (owners in trouble take less).
+
+Selling any part of a workplace the Treasury runs makes it an ordinary company: it sets its own prices, and the Treasury is paid its share of the dividends. Buying all of a business makes it one the Treasury runs, from the next morning. A business the Treasury owns outright can also simply be **closed** from its page: its people are let go, what it holds is sold off, and the building stands empty for a buyer.`,
       },
       {
         title: 'The port and gold',

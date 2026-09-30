@@ -53,6 +53,7 @@ import { shareOut } from '../util';
 import { lineOffer, usableRoute } from './lines';
 import { recentBalance } from '../market/markets';
 import { news } from '../stats/events';
+import { treasuryUse } from '../agents/works';
 
 /**
  * Days goods may wait in a store for a fuller wagon: until waiting longer would cost the good more
@@ -193,7 +194,8 @@ export function destNeed(s: SimState, sources: number[], town: number, good: num
   let onRoad = 0;
   for (const sh of s.shipments) if (sh && sh.owner === STATE && sh.to === town && sh.good === good) onRoad += Math.max(0, sh.qty);
   const held = Math.max(0, s.treasury.goods[town]?.[good] ?? 0);
-  const rate = Math.min(b.shortage + b.treasury, offered);
+  // what the town's market lacks and the Treasury sells there, and what the Treasury's own works there use (agents/works.ts)
+  const rate = Math.min(b.shortage + b.treasury, offered) + treasuryUse(s, town, good);
   return { town, need: rate * (days + 1) - held - onRoad, shortage: b.shortage, sold: b.treasury, offered, held, onRoad, days };
 }
 

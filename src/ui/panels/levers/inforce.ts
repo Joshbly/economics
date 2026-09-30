@@ -13,7 +13,7 @@
 //   Projects: Treasury construction with progress
 // Rows are keyed by id and updated in place (4×/s safe).
 // ============================================================================
-import { PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
+import { MARKET_DAY, PLAYER_MAX_MONEY, PLAYER_MAX_PCT, PLAYER_MAX_PRICE, PLAYER_MAX_UNIT_RATE } from '../../../sim/config';
 import { GOODS } from '../../../sim/goods';
 import { isAimed } from '../../../sim/policy/levies';
 import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
@@ -181,6 +181,7 @@ function orderTitle(s: SimState, o: PlayerOrder): string {
   if (m.kind === 'labor') return `Workers · ${s.towns[m.town]?.name ?? ''}`;
   if (m.kind === 'good') return `${GOODS[m.good]?.name ?? 'Goods'} · ${s.towns[m.town]?.name ?? ''}`;
   if (m.kind === 'iou') return 'IOUs';
+  if (m.kind === 'company') return `Shares · ${s.firms[m.firm]?.name ?? 'a company'}`;
   return 'Gold';
 }
 
@@ -322,6 +323,8 @@ function orderRow(o: PlayerOrder): OrderRow {
 function limitText(o: PlayerOrder): string {
   const mode = o.priceMode ?? 'fixed';
   if (mode === 'any') return 'any price';
+  if (o.market.kind === 'company') return `${o.side === 'buy' ? '≤ ' : '≥ '}${fmtPrice(o.price)} for the firm`;
+  if (mode === 'fixed' && o.side === 'sell' && o.market.kind === 'good' && !(o.price > 0)) return 'free — handed out';
   if (mode === 'follow') {
     const b = Math.round(fin(o.band) * 100);
     if (o.pace !== 'patient') return `market ${o.side === 'buy' ? '+' : '−'}${b}%`;
@@ -346,14 +349,16 @@ function paintOrder(s: SimState, v: OrderRow, o: PlayerOrder): void {
   const netted = fin(o.nettedToday);
   const words = tersely(safe(() => describeOrder(s, o), o.label));
   setText(v.desc, netted > 1e-6 ? `${words} Today ${fmtQ(netted)} cancelled against your own ${o.side === 'buy' ? 'offer' : 'purchase'} in this market (the Treasury never trades with itself).` : words);
-  setText(v.today.v, `${fmtQ(fin(o.filledToday))} of ${fmtQ(o.qty)}${o.market.kind === 'gold' ? ' oz' : ''}`);
-  setText(v.all.v, fmtQ(fin(o.filled)) + (o.total >= 0 ? ` / ${fmtQ(o.total)}` : ''));
+  const shares = o.market.kind === 'company';
+  const pc = (x: number) => `${Math.round(100 * fin(x))}%`;
+  setText(v.today.v, shares ? (o.enabled ? `meets day ${MARKET_DAY}` : 'done') : `${fmtQ(fin(o.filledToday))} of ${fmtQ(o.qty)}${o.market.kind === 'gold' ? ' oz' : ''}`);
+  setText(v.all.v, shares ? `${pc(o.filled)} / ${pc(o.total)}` : fmtQ(fin(o.filled)) + (o.total >= 0 ? ` / ${fmtQ(o.total)}` : ''));
   // value: positive = spent from the Purse
   const val = -fin(o.value);
   setText(v.value.v, Math.abs(val) >= 1000 ? (val > 0 ? '+' : '−') + fmtMS(Math.abs(val)) : signedMoney(val));
   v.value.v.title = signedMoney(val);
   setTone(v.value.v, TONES, flowTone(val));
-  v.price.refresh(labor ? fmtPrice(o.price) + '/day' : limitText(o), o.price, false, PLAYER_MAX_PRICE);
+  v.price.refresh(labor ? fmtPrice(o.price) + '/day' : limitText(o), o.price, false, shares ? PLAYER_MAX_MONEY : PLAYER_MAX_PRICE);
 }
 
 interface CarryRow {

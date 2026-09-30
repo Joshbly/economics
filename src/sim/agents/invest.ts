@@ -36,6 +36,18 @@
 // suppliers — and control of a firm can change hands a stake at a time. (Whole firms cost
 // far more than most savers hold: a market in whole firms alone would hardly ever meet.)
 // A firm has at most COMPANY_MAX_HOLDERS holders; no firm buys into a firm that controls it.
+//
+// The Treasury trades stakes only through its orders (treasuryShareDeals, first at every meeting):
+//   · selling: its stake goes to the would-be buyers (as above) to whom the firm is worth at least
+//     COMPANY_DEAL_GAIN over its price for the whole firm — the keenest first, each taking what its
+//     spare cash buys (COMPANY_MIN_STAKE at least) — at that price; "at any price": at what the
+//     keenest would pay, less the gain it asks. Selling any part of a Treasury works ends it as one
+//     (works.releaseWorks): it runs as an ordinary company from then;
+//   · buying: the other holders sell to it, in proportion to what each holds, if its price for the
+//     whole firm is at least their reservation (their worth, less a discount when it is in trouble);
+//     "at any price": it pays that reservation and half the deal gain over it. All of it bought, the
+//     firm is wholly the Treasury's — a Treasury works from the next morning.
+// The firms the Treasury controls are not offered to other buyers.
 // ============================================================================
 import {
   COMPANY_BIDDERS,
@@ -61,7 +73,9 @@ import { clamp, fin } from '../util';
 import { debtOf } from './bank';
 import { investableCash, screenRate } from './entry';
 import { temperament } from './temperament';
-import { holders, setHoldings, stakeOf, type Holding } from './ownership';
+import { holders, isWorks, setHoldings, stakeOf, transferStake, type Holding } from './ownership';
+import { releaseWorks } from './works';
+import type { PlayerOrder } from '../types';
 
 export { temperament, type Temperament } from './temperament';
 
@@ -190,6 +204,7 @@ function bidders(s: SimState, f: Firm, price: number, n: number): Ref[] {
 /** Monthly: the market for companies (see the header). */
 export function companyMarket(s: SimState): void {
   if (dayOfMonth(s.day) !== MARKET_DAY) return;
+  treasuryShareDeals(s);
   const pool: Firm[] = [];
   const weight: number[] = [];
   for (const f of s.firms) {
@@ -246,6 +261,123 @@ export function companyMarket(s: SimState): void {
     news(s, `${refName(s, best)} ${what} for ${Math.round(paid).toLocaleString('en-GB')} ¤${how}.`, 'info', f.town);
   }
   void deals;
+}
+
+/** The Treasury's orders for shares (see the header), in the order they were placed. */
+export function treasuryShareDeals(s: SimState): void {
+  for (const o of s.policy.orders) {
+    if (!o.enabled || o.market.kind !== 'company') continue;
+    if (o.until >= 0 && o.until < s.day) continue;
+    const f = s.firms[o.market.firm];
+    if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.building < 0) {
+      o.enabled = false;
+      continue;
+    }
+    o.filledToday = 0;
+    if (o.side === 'sell') sellStake(s, o, f);
+    else buyStake(s, o, f);
+    if (o.filled >= o.total - 1e-6) o.enabled = false;
+  }
+}
+
+function sellStake(s: SimState, o: PlayerOrder, f: Firm): void {
+  let left = Math.min(o.total - o.filled, stakeOf(f, STATE));
+  if (!(left > 1e-6)) {
+    o.enabled = false;
+    return;
+  }
+  const ask = o.priceMode === 'any' ? 0 : Math.max(0, fin(o.price));
+  // would-be buyers, keenest first: what the whole firm is worth to each (control, and what it adds to theirs, if they would run it)
+  const offers: { ref: Ref; v: number }[] = [];
+  for (const b of bidders(s, f, COMPANY_MIN_STAKE * Math.max(1, ask), COMPANY_BIDDERS * 2)) {
+    if (b === STATE) continue;
+    const own = stakeOf(f, b);
+    const q0 = Math.min(left, spareFor(s, b) / Math.max(1, ask));
+    const top = Math.max(stakeOf(f, STATE) - q0, ...holders(f).filter((h) => h.ref !== b && h.ref !== STATE).map((h) => h.share));
+    const v = firmWorth(s, f, b, own + q0 > top);
+    if (v >= Math.max(1, ask) * (1 + COMPANY_DEAL_GAIN)) offers.push({ ref: b, v });
+  }
+  offers.sort((a, b) => b.v - a.v || a.ref - b.ref);
+  const tn = s.towns[f.town]?.name ?? '';
+  for (const { ref: b, v } of offers) {
+    if (!(left > 1e-6)) break;
+    const price = ask > 0 ? ask : v / (1 + COMPANY_DEAL_GAIN);
+    if (!(price > 0)) continue;
+    let q = Math.min(left, spareFor(s, b) / price, 1 - stakeOf(f, b));
+    if (!(q >= COMPANY_MIN_STAKE) && q < left - 1e-9) continue;
+    if (!(q > 1e-6)) continue;
+    const paid = pay(s, b, STATE, price * q, 'asset');
+    q = Math.min(q, paid / price);
+    if (!(q > 1e-6)) continue;
+    // a Treasury works becomes a company as the first of it changes hands
+    if (f.works) releaseWorks(s, f);
+    transferStake(s, f, STATE, b, q);
+    left -= q;
+    o.filled += q;
+    o.filledToday += q;
+    o.value -= paid;
+    bump(s, 'company_stakes', 1);
+    bump(s, 'company_stakes_value', paid);
+    bump(s, 'treasury_stakes_sold', paid);
+    news(s, `The Treasury has sold ${Math.round(100 * q)} % of ${f.name} in ${tn} to ${refName(s, b)} for ${Math.round(paid).toLocaleString('en-GB')} ¤${f.owner === b ? ` — ${refName(s, b)} now runs it` : ''}.`, 'policy', f.town);
+  }
+}
+
+function buyStake(s: SimState, o: PlayerOrder, f: Firm): void {
+  const own = stakeOf(f, STATE);
+  let left = Math.min(o.total - o.filled, 1 - own);
+  if (!(left > 1e-6)) {
+    o.enabled = false;
+    return;
+  }
+  // the other holders' reservation for the whole firm
+  const hs = holders(f).filter((h) => h.ref !== STATE && h.share > 1e-9);
+  let others = 0;
+  let res = 0;
+  for (const h of hs) {
+    others += h.share;
+    res += h.share * firmWorth(s, f, h.ref, false);
+  }
+  if (!(others > 1e-9)) return;
+  res = (res / others) * (1 - (f.distress > 0 || f.lossDays > 60 ? COMPANY_DISTRESS_DISCOUNT : 0));
+  const price = o.priceMode === 'any' ? Math.max(1, res) * (1 + 0.5 * COMPANY_DEAL_GAIN) : Math.max(0, fin(o.price));
+  if (!(price > 0) || price < res) return; // they will not sell at that price this month
+  const t = s.treasury;
+  const budget = t.autoMint ? Infinity : Math.max(0, t.purse);
+  left = Math.min(left, budget / price);
+  if (!(left > 1e-6) || (left < COMPANY_MIN_STAKE && left < Math.min(o.total - o.filled, 1 - own) - 1e-9)) return;
+  // bought from the other holders in proportion to what each holds
+  const list: Holding[] = [];
+  let paid = 0;
+  let got = 0;
+  for (const h of holders(f)) {
+    if (h.ref === STATE) {
+      list.push(h);
+      continue;
+    }
+    const part = (left * h.share) / others;
+    const a = pay(s, STATE, validPayee(s, f, h.ref), price * part, 'asset');
+    const sold = Math.min(part, a / price);
+    paid += a;
+    got += sold;
+    list.push({ ref: h.ref, share: h.share - sold });
+  }
+  if (!(got > 1e-6)) return;
+  list.push({ ref: STATE, share: own + got });
+  const before = f.owner;
+  setHoldings(s, f, list);
+  o.filled += got;
+  o.filledToday += got;
+  o.value += paid;
+  bump(s, 'company_stakes', 1);
+  bump(s, 'company_stakes_value', paid);
+  bump(s, 'treasury_stakes_bought', paid);
+  const tn = s.towns[f.town]?.name ?? '';
+  const all = stakeOf(f, STATE) > 1 - 1e-6;
+  const what = all ? `all of ${f.name} in ${tn}` : `${Math.round(100 * got)} % of ${f.name} in ${tn}`;
+  const tail = all ? ' — the Treasury runs it as its own from tomorrow' : f.owner === STATE && before !== STATE ? ' — the Treasury now holds the largest share and controls it' : '';
+  news(s, `The Treasury has bought ${what} for ${Math.round(paid).toLocaleString('en-GB')} ¤${tail}.`, 'policy', f.town);
+  void isWorks;
 }
 
 /**

@@ -40,6 +40,10 @@ import {
   BANK_MIN_CAPITAL,
   BANK_OWN_MIN_CAPITAL,
   LIMIT_MOVE_MAX,
+  MARKET_DAY,
+  INPUT_BUFFER_DAYS,
+  OWN_ANCHOR_MIN_SHARE,
+  WORKS_PRICE_MULT,
 } from '../config';
 import { dateLabel } from '../calendar';
 import { fin } from '../util';
@@ -77,6 +81,10 @@ import { news } from '../stats/events';
 import { cancelProject, needCost, startProject, treasuryCrewWanted } from '../agents/construction';
 import { deliverTreasuryDue, freightPerUnit, sendTreasuryCargo, traderOf } from '../agents/traders';
 import { roadPlan, trackPlan } from '../world/paths';
+import { householdWants } from '../agents/households';
+import { stakeOf, whollyTreasury } from '../agents/ownership';
+import { askingPrice } from '../agents/invest';
+import { closeFirm, fairPrice } from '../agents/firms';
 import { nearestTown, townCentreTile } from '../world/layout';
 import { LINE_MARGIN_MAX, LINE_MARGIN_MIN, LINE_MAX_FARE, LINE_MAX_WAGONS, LINE_UNDER_MAX, TOOLS_PER_WAGON } from '../config';
 import { G } from '../goods';
@@ -627,7 +635,59 @@ function marketText(s: SimState, m: OrderMarket): string {
   if (m.kind === 'good') return `${goodLower(m.good)} in ${townName(s, m.town)}`;
   if (m.kind === 'labor') return `workers in ${townName(s, m.town)}`;
   if (m.kind === 'iou') return 'IOUs';
+  if (m.kind === 'company') return `shares in ${companyName(s, m.firm)}`;
   return 'gold';
+}
+
+/** A company's name and town ("Harlow's Ironworks in Kingsbridge"). */
+function companyName(s: SimState, firm: number): string {
+  const f = s.firms[firm];
+  return f ? `${f.name}${f.town >= 0 ? ' in ' + townName(s, f.town) : ''}` : 'a company';
+}
+
+/** The label of a Treasury works' sell order (agents/works.ts). */
+export function worksOrderLabel(s: SimState, o: PlayerOrder, f: Firm): string {
+  const m = o.market;
+  if (m.kind !== 'good') return o.label;
+  const lim = o.priceMode === 'any' ? 'any price' : o.priceMode === 'follow' ? `market ≥ −${pctText(o.band)}` : o.atCost ? `at cost ${moneyText(o.price)}` : !(o.price > 0) ? 'free' : `≥ ${moneyText(o.price)}`;
+  return `Sell ${f.name}'s ${goodLower(m.good)} · ${townName(s, m.town)} · ~${qtyText(o.qty)}/day · ${lim}`;
+}
+
+/** What a Treasury workplace asks for its good: what it costs to make (firms.fairPrice) × WORKS_PRICE_MULT, in its town. */
+export function worksCostPrice(s: SimState, f: Firm): number {
+  const d = SECTORS[f.sector];
+  return Math.max(0.01, Math.round(fairPrice(s, f.town, d.out) * WORKS_PRICE_MULT * 100) / 100);
+}
+
+/** A Treasury works' standing sell order (agents/works.ts): at what its good costs to make, sized each morning to what it makes. */
+export function addWorksOrder(s: SimState, f: Firm): PlayerOrder | undefined {
+  const d = SECTORS[f.sector];
+  if (!d || !d.producer || !validTown(s, f.town)) return undefined;
+  const market: OrderMarket = { kind: 'good', town: f.town, good: d.out };
+  const o: PlayerOrder = {
+    id: s.ids.policy++,
+    label: '',
+    enabled: true,
+    market,
+    side: 'sell',
+    price: 0,
+    qty: Math.max(0, fin(f.works?.want ?? f.output)),
+    total: -1,
+    until: -1,
+    once: false,
+    filled: 0,
+    value: 0,
+    filledToday: 0,
+    created: s.day,
+    priceMode: 'fixed',
+    band: 0,
+    works: f.id,
+    atCost: true,
+  };
+  o.price = worksCostPrice(s, f);
+  o.label = worksOrderLabel(s, o, f);
+  s.policy.orders.push(o);
+  return o;
 }
 
 /** Plain sentence describing a Treasury order. */
@@ -641,6 +701,16 @@ export function describeOrder(s: SimState, o: PlayerOrder): string {
     if (o.staff === 'projects')
       return `The Treasury will employ as many people in ${townName(s, m.town)} as its building projects there can use — ${qtyText(o.staffToday ?? 0)} today, never more than ${qtyText(o.qty)} — ${priceTerms(s, o, '')}${span}${lcap}, and let them go as the projects finish.`;
     return `The Treasury will employ up to ${qtyText(o.qty)} people in ${townName(s, m.town)} ${priceTerms(s, o, '')}${span}${lcap}. They work on the Treasury's building projects there, or wait idle.`;
+  }
+  if (m.kind === 'company') return describeCompanyOrder(s, o, m.firm);
+  if (isHandout(o) && m.kind === 'good') {
+    const whose = o.works !== undefined && s.firms[o.works] ? ` what its ${s.firms[o.works].name} makes` : ` up to ${amountOf(m.good, o.qty)} a day of the ${goodLower(m.good)} it holds there`;
+    return `The Treasury hands out${whose} free in ${townName(s, m.town)}${span}${cap}: every morning, before the market meets, the people there take what they would buy today and the workplaces there what they need to work with — what they are given they no longer buy. Only ${townName(s, m.town)} gets it: carry some elsewhere and hand it out there too. (A price above 0 sells it in the market instead.)`;
+  }
+  if (m.kind === 'good' && o.works !== undefined && o.side === 'sell') {
+    const f = s.firms[o.works];
+    const price = o.atCost ? `asking what it costs to make (${moneyText(o.price)} each today, re-set every morning) — never a monopolist's price` : priceTerms(s, o, ' each');
+    return `The Treasury sells what its ${f ? f.name : 'workplace'} makes in ${townName(s, m.town)} — about ${amountOf(m.good, o.qty)} a day beyond what its own workplaces use — ${price}${span}. Set a price (0 gives it away), pause it, or change the quantity to take it over as a plain order.`;
   }
   if (m.kind === 'good') {
     const what = amountOf(m.good, o.qty);
@@ -902,6 +972,11 @@ function checkMarket(s: SimState, m: OrderMarket | undefined): string | null {
     case 'iou':
     case 'gold':
       return null;
+    case 'company': {
+      const f = isInt(m.firm) && m.firm >= 0 ? s.firms[m.firm] : undefined;
+      if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.building < 0) return 'No such company is open.';
+      return null;
+    }
     default:
       return 'Unknown market.';
   }
@@ -989,6 +1064,7 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         if (o.market.kind !== 'labor') return fail('Only an order for workers can staff projects.');
         staff = p.staff === 'projects' ? 'projects' : undefined;
       }
+      if (p.price !== undefined || p.priceMode !== undefined) delete o.atCost; // the player prices it now
       if (p.price !== undefined && next.priceMode === 'fixed') {
         if (!isNum(p.price) || p.price < 0 || p.price > PLAYER_MAX_PRICE) return fail('The price must be a number between 0 and ' + moneyText(PLAYER_MAX_PRICE) + '.');
         if (o.side === 'buy' && p.price <= 0) return fail('A buying price must be above zero.');
@@ -1000,9 +1076,12 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       }
       if (p.qty !== undefined) {
         if (!isNum(p.qty) || p.qty <= 0) return fail('The quantity must be a positive number.');
-        const max = o.market.kind === 'labor' ? PLAYER_MAX_WORKERS : PLAYER_MAX_QTY;
-        if (p.qty > max) return fail(`The quantity can be at most ${qtyText(max)}.`);
+        const max = o.market.kind === 'labor' ? PLAYER_MAX_WORKERS : o.market.kind === 'company' ? 1 : PLAYER_MAX_QTY;
+        if (p.qty > max) return fail(o.market.kind === 'company' ? 'A stake is a share of the whole firm: at most all of it (1 = 100 %).' : `The quantity can be at most ${qtyText(max)}.`);
         next.qty = o.market.kind === 'labor' ? Math.max(1, Math.round(p.qty)) : p.qty;
+        if (o.market.kind === 'company') next.total = next.qty;
+        delete o.works; // the player sizes it now: a plain order
+        delete o.worksWas;
       }
       if (p.enabled !== undefined) next.enabled = !!p.enabled;
       if (p.total !== undefined) {
@@ -1033,7 +1112,8 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
         delete o.staffToday;
       }
       if (o.total >= 0 && o.filled >= o.total && o.enabled) o.enabled = false;
-      o.label = orderShortLabel(s, o.side, o.market, o.price, o.qty, o.priceMode, o.band, o.staff, o.pace);
+      const wf = o.works !== undefined ? s.firms[o.works] : undefined;
+      o.label = wf ? worksOrderLabel(s, o, wf) : o.market.kind === 'company' ? companyOrderLabel(s, o) : orderShortLabel(s, o.side, o.market, o.price, o.qty, o.priceMode, o.band, o.staff, o.pace);
       return { ok: true, message: o.enabled ? describeOrder(s, o) : 'Order paused.', id: o.id };
     }
     case 'cancelOrder': {
@@ -1179,6 +1259,15 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       );
       return { ok: true, message: t.autoMint ? 'Auto-mint on: the Purse can never run dry.' : 'Auto-mint off: payments stop when the Purse is empty.' };
     }
+    case 'closeFirm': {
+      const f = isInt(a.firm) && a.firm >= 0 ? s.firms[a.firm] : undefined;
+      if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') return fail('No such workplace is open.');
+      if (!whollyTreasury(f)) return fail(`The Treasury can close only what it wholly owns — ${f.name} has other holders (sell or buy them out first).`);
+      const tn = townName(s, f.town);
+      closeFirm(s, f, 'treasury');
+      policyNews(s, `The Treasury has closed ${f.name} in ${tn}: its workers are let go, what it holds is sold off over the next days, and the building stands empty for a buyer.`, f.town);
+      return { ok: true, message: `${f.name} is closing: its workers are let go and what it holds is sold off; the building will stand empty.` };
+    }
     case 'setEvents': {
       s.settings.events = !!a.value;
       return { ok: true, message: s.settings.events ? 'Chance events (droughts, shocks, accidents) are on.' : 'Chance events are off.' };
@@ -1213,8 +1302,9 @@ function orderRefPrice(s: SimState, m: OrderMarket): number {
   if (m.kind === 'labor') return goingWage(s, m.town);
   const mk = m.kind === 'good' ? s.markets[m.town * N_GOODS + m.good] : m.kind === 'iou' ? s.iouMarket : m.kind === 'gold' ? s.goldMarket : undefined;
   // The market's own going price (without the Treasury's orders), so an order that follows the
-  // market does not chase the price its own buying or selling moved.
-  const own = mk?.ownEma ?? 0;
+  // market does not chase the price its own buying or selling moved — unless the Treasury is most of
+  // the market: then that price has hardly anyone behind it, and the price that trades is the anchor.
+  const own = (mk?.ownShare ?? 1) >= OWN_ANCHOR_MIN_SHARE ? (mk?.ownEma ?? 0) : 0;
   const p = mk ? (own > 0 && Number.isFinite(own) ? own : mk.ema > 0 ? mk.ema : mk.price) : 0;
   if (p > 0 && Number.isFinite(p)) return p;
   return m.kind === 'iou' ? IOU_PAR : 0;
@@ -1291,12 +1381,103 @@ function iouFloorError(s: SimState, price: number): string | null {
   return `New IOUs need a lowest price of at least ${moneyText(min)} (a tenth of today's IOU price of about ${moneyText(ref)}). Each pays ${moneyText(IOU_COUPON)} a year forever, so selling below that would give them away for next to nothing.`;
 }
 
+/** Label of a Treasury order for shares ("Sell 40 % of X · ≥ ¤12,000 for the firm"). */
+export function companyOrderLabel(s: SimState, o: Pick<PlayerOrder, 'market' | 'side' | 'qty' | 'price' | 'priceMode'>): string {
+  const m = o.market;
+  if (m.kind !== 'company') return '';
+  const f = s.firms[m.firm];
+  const lim = o.priceMode === 'any' ? 'any price' : `${o.side === 'buy' ? '≤' : '≥'} ${moneyText(o.price)} for the firm`;
+  return `${o.side === 'buy' ? 'Buy' : 'Sell'} ${pctText(o.qty)} of ${f ? f.name : 'a company'} · ${lim}`;
+}
+
+/** Plain sentence for a Treasury order for shares. */
+function describeCompanyOrder(s: SimState, o: PlayerOrder, firm: number): string {
+  const name = companyName(s, firm);
+  const span = o.until >= 0 ? `, until ${dateLabel(o.until)}` : '';
+  const done = o.filled > 1e-6 ? ` (${pctText(o.filled)} ${o.side === 'buy' ? 'bought' : 'sold'} so far, for ${moneyText(Math.abs(o.value))})` : '';
+  const price =
+    o.priceMode === 'any'
+      ? o.side === 'buy'
+        ? 'paying what its holders ask, a little over'
+        : 'to whoever values it most, at what they would pay'
+      : o.side === 'buy'
+        ? `paying at most ${moneyText(o.price)} for the whole firm (${moneyText(o.price * o.qty)} for the stake)`
+        : `for no less than ${moneyText(o.price)} for the whole firm (${moneyText(o.price * o.qty)} for the stake)`;
+  return o.side === 'buy'
+    ? `The Treasury will buy up to ${pctText(o.qty)} of ${name} from its holders at the monthly market for companies, ${price}${span}${done}.`
+    : `The Treasury offers ${pctText(o.qty)} of ${name} at the monthly market for companies, ${price}${span}${done}.`;
+}
+
+/** Validate and record a Treasury order for shares (met monthly: agents/invest.ts treasuryShareDeals). */
+function placeCompanyOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }>, firm: number): ActionResult {
+  const f = s.firms[firm];
+  const pm = checkPriceMode(a.priceMode, a.band, a.market);
+  if (!pm.ok) return fail(pm.message);
+  const mode = pm.mode;
+  if (a.once) return fail('The market for companies meets once a month: a stake is offered (or sought) until it is taken, or the order ends.');
+  if (a.session !== undefined && a.session >= 0) return fail('The market for companies meets once a month, not in the day’s sessions.');
+  if (!isNum(a.qty) || a.qty <= 0 || a.qty > 1) return fail('Give the stake as a share of the whole firm, above 0 and at most 1 (0.4 = 40 %).');
+  const held = stakeOf(f, STATE);
+  let qty = a.qty;
+  if (a.side === 'sell') {
+    if (!(held > 1e-6)) return fail(`The Treasury holds no share of ${f.name}.`);
+    qty = Math.min(qty, held);
+  } else {
+    if (held > 1 - 1e-6) return fail(`The Treasury already holds all of ${f.name}.`);
+    qty = Math.min(qty, 1 - held);
+  }
+  let price = 0;
+  if (mode === 'fixed') {
+    if (!isNum(a.price) || a.price < 0 || a.price > PLAYER_MAX_MONEY) return fail(`The price for the whole firm must be a number between 0 and ${moneyText(PLAYER_MAX_MONEY)}.`);
+    if (a.side === 'buy' && a.price <= 0) return fail('A buying price must be above zero.');
+    price = a.price;
+  }
+  let until = -1;
+  if (a.days !== undefined && a.days !== 0) {
+    if (!isNum(a.days) || a.days < 0) return fail('The number of days must be positive (or 0 for no end).');
+    until = s.day + Math.max(1, Math.round(a.days)) - 1;
+  }
+  // one order a side per company: a second replaces the first
+  const clash = s.policy.orders.findIndex((x) => x.market.kind === 'company' && x.market.firm === firm && x.side === a.side);
+  if (clash >= 0) s.policy.orders.splice(clash, 1);
+  const o: PlayerOrder = {
+    id: s.ids.policy++,
+    label: '',
+    enabled: true,
+    market: { kind: 'company', firm },
+    side: a.side,
+    price,
+    qty,
+    total: qty,
+    until,
+    once: false,
+    filled: 0,
+    value: 0,
+    filledToday: 0,
+    created: s.day,
+    priceMode: mode,
+    band: 0,
+  };
+  o.label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : companyOrderLabel(s, o);
+  s.policy.orders.push(o);
+  const worth = askingPrice(s, f);
+  const note =
+    (qty < a.qty - 1e-9 ? ` (${a.side === 'sell' ? 'all the Treasury holds' : 'all it does not already hold'}: ${pctText(qty)})` : '') +
+    ` Its holders reckon it worth about ${moneyText(worth)} today. The market for companies meets on day ${MARKET_DAY} of each month.` +
+    (a.side === 'sell' && f.works ? ' Once any of it is sold it runs as an ordinary company: its own prices, the Treasury paid its share of the dividends.' : '') +
+    (a.side === 'buy' && !s.treasury.autoMint && !(s.treasury.purse > 0) ? ' The Purse is empty, so nothing will be bought until money comes in.' : '');
+  const text = describeCompanyOrder(s, o, firm);
+  policyNews(s, text, f.town);
+  return { ok: true, message: text + note, id: o.id };
+}
+
 function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }>): ActionResult {
   if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
   const err = checkMarket(s, a.market);
   if (err) return fail(err);
   if (a.side !== 'buy' && a.side !== 'sell') return fail('Choose buy or sell.');
   const m = a.market;
+  if (m.kind === 'company') return placeCompanyOrder(s, a, m.firm);
   if (m.kind === 'labor' && a.side !== 'buy') return fail('In the labour market the Treasury can only employ people.');
   const pm = checkPriceMode(a.priceMode, a.band, m);
   if (!pm.ok) return fail(pm.message);
@@ -1340,7 +1521,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   const staff = a.staff === 'projects' ? 'projects' : undefined;
   const lbl = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : orderShortLabel(s, a.side, m, price, qty, mode, band, staff, pace);
   const market: OrderMarket =
-    m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : { kind: m.kind };
+    m.kind === 'good' ? { kind: 'good', town: m.town, good: m.good } : m.kind === 'labor' ? { kind: 'labor', town: m.town } : m.kind === 'iou' ? { kind: 'iou' } : { kind: 'gold' };
   const o: PlayerOrder = {
     id: s.ids.policy++,
     label: lbl,
@@ -1379,7 +1560,7 @@ function placeOrder(s: SimState, a: Extract<PlayerAction, { type: 'placeOrder' }
   if (m.kind === 'labor' && !findStateworks(s, m.town)) note = ' (There is no Treasury workforce in that town.)';
   if (a.side === 'sell' && m.kind !== 'labor' && mode === 'fixed') {
     const ref = orderRefPrice(s, m);
-    if (ref > 0 && a.price < SELL_FLOOR_WARN_SHARE * ref)
+    if (ref > 0 && a.price > 0 && a.price < SELL_FLOOR_WARN_SHARE * ref)
       note += ` Note: the lowest price is far below today's price of about ${moneyText(ref)}; when buyers are few, a large offer will sell for next to nothing.`;
   }
   const text = describeOrder(s, o);
@@ -1392,6 +1573,7 @@ function checkPriceMode(mode: unknown, band: unknown, m: OrderMarket): { ok: tru
   if (mode === undefined || mode === 'fixed') return { ok: true, mode: 'fixed', band: 0 };
   if (mode !== 'follow' && mode !== 'any') return { ok: false, message: 'Choose a fixed price, a price that follows the market, or any price.' };
   if (m.kind === 'labor' && mode === 'any') return { ok: false, message: 'Treasury workers are hired at a daily wage: a fixed one, or the going wage plus a margin.' };
+  if (m.kind === 'company' && mode === 'follow') return { ok: false, message: 'A stake is priced for the whole firm: a fixed price, or whatever the other side will take.' };
   if (mode === 'any') return { ok: true, mode, band: 0 };
   const b = band === undefined ? 0.1 : band;
   if (!isNum(b) || b < 0 || b > ORDER_BAND_MAX) return { ok: false, message: `The band around the going price must lie between 0% and ${pctText(ORDER_BAND_MAX)} (0.1 = 10%).` };
@@ -1565,7 +1747,7 @@ function build(s: SimState, a: Extract<PlayerAction, { type: 'build' }>): Action
       if (typeof xy === 'string') return fail(xy);
       const label = `Treasury ${SECTORS[a.sector].name} in ${townName(s, a.town)}`;
       const r = startProject(s, { kind: 'firm', town: a.town, owner: STATE, sector: a.sector, x: xy?.x, y: xy?.y, label });
-      return projectResult(s, r, label, a.town, 'its profits will flow to the Purse');
+      return projectResult(s, r, label, a.town, SECTORS[a.sector]?.producer ? 'the Treasury will run it as its own: what it makes goes to its stores there, sold by a standing order at the going price' : 'its profits will flow to the Purse');
     }
     case 'expand': {
       const f = isInt(a.firm) ? s.firms[a.firm] : undefined;
@@ -2171,7 +2353,8 @@ export function playerOrders(s: SimState, books: Books): void {
   let iouBuyCommitted = 0;
   let goldCommitted = 0;
   for (const po of orders) {
-    if (!po.enabled || po.market.kind === 'labor') continue;
+    if (!po.enabled || po.market.kind === 'labor' || po.market.kind === 'company') continue; // (shares: the monthly market for companies, agents/invest.ts)
+    if (isHandout(po)) continue; // (handed out before the market: treasuryHandouts)
     if (po.until >= 0 && po.until < s.day) continue;
     let q = po.qty;
     if (po.total >= 0) q = Math.min(q, po.total - po.filled);
@@ -2227,6 +2410,81 @@ export function playerOrders(s: SimState, books: Books): void {
   if (s.policy.lines?.length) lineOrders(s, books, budget);
 }
 
+/** A Treasury goods sell order at a fixed price of 0: the goods are handed out, free, before the market (treasuryHandouts). */
+export function isHandout(o: Pick<PlayerOrder, 'side' | 'market' | 'priceMode' | 'price'>): boolean {
+  return o.side === 'sell' && o.market.kind === 'good' && (o.priceMode ?? 'fixed') === 'fixed' && !(o.price > 0);
+}
+
+const _wants: number[] = new Array(N_GOODS).fill(0);
+
+/**
+ * Morning, before the market (engine): every Treasury sell order at a price of 0 hands its goods out
+ * free in its town — to the people there, up to what each would buy today (households.householdWants),
+ * and to the workplaces there (not the Treasury's own), up to INPUT_BUFFER_DAYS of the material they
+ * make with and the tools their hands lack — equally by need when there is not enough for all. What
+ * they are given they no longer buy: the market there sells less, and its makers feel it.
+ */
+export function treasuryHandouts(s: SimState): void {
+  const t = s.treasury;
+  for (const po of s.policy.orders) {
+    if (!po.enabled || !isHandout(po) || po.market.kind !== 'good') continue;
+    if (po.until >= 0 && po.until < s.day) continue;
+    const { town, good } = po.market;
+    if (!validTown(s, town) || !validGood(good)) continue;
+    let q = Math.max(0, po.qty - po.filledToday);
+    if (po.total >= 0) q = Math.min(q, Math.max(0, po.total - po.filled));
+    q = Math.min(q, Math.max(0, t.goods[town]?.[good] ?? 0));
+    if (!(q > 1e-9)) continue;
+    // who needs it, and how much
+    const refs: number[] = [];
+    const need: number[] = [];
+    let total = 0;
+    if (GOODS[good]?.consumer) {
+      for (const p of s.people) {
+        if (!p || !p.alive || p.town !== town) continue;
+        const w = householdWants(s, p, _wants)[good];
+        if (!(w > 1e-6)) continue;
+        refs.push(p.id);
+        need.push(w);
+        total += w;
+      }
+    }
+    for (const f of s.firms) {
+      if (!f || !f.alive || f.status !== 'active' || f.town !== town || f.owner === STATE || f.sector === 'stateworks') continue;
+      const d = SECTORS[f.sector];
+      if (!d) continue;
+      let w = 0;
+      for (const [j, a] of d.inputs) if (j === good) w += a * Math.max(fin(f.output), 0.5 * d.prodPerWorker * Math.max(1, f.workers.length)) * INPUT_BUFFER_DAYS - Math.max(0, f.inv[j]);
+      if (good === G.tools && d.toolsPerWorker > 0) w += d.toolsPerWorker * Math.max(f.workers.length, fin(f.target)) * 1.1 - Math.max(0, fin(f.tools)) - Math.max(0, f.inv[G.tools]);
+      if (!(w > 1e-6)) continue;
+      refs.push(FIRM_BASE + f.id);
+      need.push(w);
+      total += w;
+    }
+    if (!(total > 1e-9)) continue;
+    const k = Math.min(1, q / total);
+    let given = 0;
+    for (let i = 0; i < refs.length; i++) {
+      const x = need[i] * k;
+      if (!(x > 1e-9)) continue;
+      const r = refs[i];
+      const inv = r >= FIRM_BASE ? s.firms[r - FIRM_BASE]?.inv : s.people[r]?.pantry;
+      if (!inv) continue;
+      inv[good] += x;
+      given += x;
+    }
+    t.goods[town][good] = Math.max(0, t.goods[town][good] - given);
+    if (t.goods[town][good] < 1e-9) t.goods[town][good] = 0;
+    po.filledToday += given;
+    po.filled += given;
+    const acc = s.stats.acc;
+    acc['transfer_goods_' + good] = (acc['transfer_goods_' + good] || 0) + given;
+    const m = s.markets[town * N_GOODS + good];
+    acc.transfer_goods_value = (acc.transfer_goods_value || 0) + given * (m && m.ema > 0 ? m.ema : 0);
+    if (po.total >= 0 && po.filled >= po.total - 1e-9) po.enabled = false;
+  }
+}
+
 /** Credit one order's fills of a session (or, without sessions, of the day) to its record. */
 function creditFill(x: Submitted, f: number, paid: number, netted: number): void {
   const { po } = x;
@@ -2260,7 +2518,7 @@ function resizeTreasurySales(s: SimState, books: Books, sub: Submitted[]): void 
   for (const x of sub) byId.set(x.po.id, x);
   const committed: Record<number, number> = {};
   for (const po of s.policy.orders) {
-    if (!po.enabled || po.side !== 'sell' || po.market.kind !== 'good') continue;
+    if (!po.enabled || po.side !== 'sell' || po.market.kind !== 'good' || isHandout(po)) continue;
     if (po.until >= 0 && po.until < s.day) continue;
     const m = po.market;
     if (!validTown(s, m.town) || !validGood(m.good)) continue;

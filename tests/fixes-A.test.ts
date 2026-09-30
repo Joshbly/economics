@@ -170,10 +170,16 @@ describe('orders that would give things away', () => {
     // Lowering it to nothing later is refused too.
     expect(dispatch(s, { type: 'updateOrder', id: ok.id!, patch: { price: 0 } }).ok).toBe(false);
     s.markets[0 * N_GOODS + G.bread].ema = 2;
-    const cheap = dispatch(s, { type: 'placeOrder', market: { kind: 'good', town: 0, good: G.bread }, side: 'sell', price: 0, qty: 50 });
+    const cheap = dispatch(s, { type: 'placeOrder', market: { kind: 'good', town: 0, good: G.bread }, side: 'sell', price: 0.2, qty: 50 });
     expect(cheap.ok).toBe(true);
     expect(cheap.message).toMatch(/far below today's price/);
     expect(cheap.message).not.toMatch(FORBIDDEN);
+    // at 0 the goods are handed out free (player.treasuryHandouts), not sold for nothing
+    const free = dispatch(s, { type: 'placeOrder', market: { kind: 'good', town: 0, good: G.bread }, side: 'sell', price: 0, qty: 50 });
+    expect(free.ok).toBe(true);
+    expect(free.message).toMatch(/free/);
+    expect(free.message).not.toMatch(/far below today's price/);
+    expect(free.message).not.toMatch(FORBIDDEN);
   });
 });
 

@@ -1179,3 +1179,30 @@ export const GOLD_FALL_FREE = 0.1;
 export const GOLD_FALL_DAYS = 360;
 export const GOLD_REBAL_SPEED = 0.05;
 export const GOLD_BAND = 0.005;
+
+// ---- Treasury works (agents/works.ts) ----
+/**
+ * A workplace the Treasury wholly owns runs as a department: what it makes goes to the Treasury's
+ * stores in its town. It plans to keep them stocked for WORKS_STOCK_DAYS of what leaves them (plus a
+ * season's carry for coal), learnt as a smoothed outflow (WORKS_OUT_EMA a day); a new one, with no
+ * record yet, runs at NEW_FIRM_SCALE of its room for up to NEW_FIRM_RAMP_DAYS. The Purse keeps its
+ * cash at WORKS_FLOAT_DAYS of its running costs (plus the tools it lacks) and takes back what is
+ * beyond twice that. Its books are smoothed at WORKS_BOOK_EMA a day.
+ */
+export const WORKS_STOCK_DAYS = 20;
+export const WORKS_OUT_EMA = 0.05;
+export const WORKS_FLOAT_DAYS = 10;
+export const WORKS_BOOK_EMA = 0.05;
+/** A works' sell order offers what it makes beyond what the Treasury's own works use, × (1 + this) — so it learns what more would sell. */
+export const WORKS_OFFER_SLACK = 0.25;
+/** …priced at this many times firms.fairPrice (wages, materials and tools at today's prices, with the normal margin BASE_MARKUP): 1 / BASE_MARKUP = at cost, no margin. */
+export const WORKS_PRICE_MULT = 1 / BASE_MARKUP;
+/** …and, while the works rests, offers its stock beyond what the Treasury's own works keep in hand over this many days. */
+export const WORKS_SELLDOWN_DAYS = 10;
+/** Smoothing (a day) of MarketState.ownShare; below OWN_ANCHOR_MIN_SHARE, orders that follow the market anchor to the price that trades. */
+export const OWN_SHARE_EMA = 0.1;
+export const OWN_ANCHOR_MIN_SHARE = 0.5;
+/** A Treasury workplace pays the going wage among the town's other employers — this much more while it has posts unfilled — and never bids wages up itself. */
+export const WORKS_WAGE_PREMIUM = 0.05;
+/** …and bids for materials at most this many times what they cost to make (firms.fairPrice). */
+export const WORKS_INPUT_MAX_MULT = 1.5;

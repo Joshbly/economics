@@ -39,6 +39,7 @@ export type Flow =
   | 'recap'
   | 'fee'
   | 'asset' // exchange of assets (IOUs, gold) — no income for the bank
+  | 'works' // the Purse keeping its Treasury works in cash (agents/works.ts), and what they hand back
   | 'misc';
 
 // ---- refs ------------------------------------------------------------------
@@ -115,7 +116,7 @@ const FLOW_KEY: Record<Flow, string> = {
   wage: 'flow_wage', buy: 'flow_buy', levy: 'flow_levy', give: 'flow_give', interest: 'flow_interest',
   coupon: 'flow_coupon', dividend: 'flow_dividend', rent: 'flow_rent', transfer: 'flow_transfer',
   build: 'flow_build', freight: 'flow_freight', fare: 'flow_fare', estate: 'flow_estate', migrate: 'flow_migrate',
-  bailin: 'flow_bailin', recap: 'flow_recap', fee: 'flow_fee', asset: 'flow_asset', misc: 'flow_misc',
+  bailin: 'flow_bailin', recap: 'flow_recap', fee: 'flow_fee', asset: 'flow_asset', works: 'flow_works', misc: 'flow_misc',
 };
 
 function recordFlow(s: SimState, from: Ref, to: Ref, a: number, flow: Flow): void {

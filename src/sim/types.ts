@@ -262,9 +262,33 @@ export interface Firm {
   profitLong: number; // slow EMA (PROFIT_LONG_EMA) of daily profit: a seasonal trade judges losses over the year
   /** Profit summed over its life (¤): what the investors learn from (agents/experience.ts). Absent in old saves. */
   profitLife?: number;
+  /** Set while the firm is a Treasury works — wholly the Treasury's, run as a department (agents/works.ts). */
+  works?: WorksBook;
   // specialisations
   trade: TraderState | null;
   build: BuilderState | null;
+}
+
+/**
+ * A Treasury works (agents/works.ts): a workplace the Treasury wholly owns, run as a department.
+ * What it makes goes to the Treasury's stores in its town; it draws its materials from them first;
+ * the Purse keeps its cash topped up for wages, materials and tools. For the accounts, `profit` and
+ * `profitLong` of the firm hold what it would earn as a company (its output at the going price less
+ * what it costs to run), so buyers of a stake can value it.
+ */
+export interface WorksBook {
+  /** Day it became a works. */
+  since: number;
+  /** Units it plans to make a day (set each morning: what leaves the stores, toward a stock target). */
+  want: number;
+  /** Smoothed ¤ a day: what it costs to run (wages, materials at the going price wherever they came from, tool wear). */
+  cost: number;
+  /** Smoothed ¤ a day: what its output would fetch at the going price in its town. */
+  value: number;
+  /** Smoothed ¤ a day: materials drawn from the Treasury's own stores, at the going price. */
+  inhouse: number;
+  /** Goods for which a carry rule from another town's Treasury works has been added (once each: a rule the player removes is not added again). */
+  linked: number[];
 }
 
 export interface TraderState {
@@ -431,6 +455,16 @@ export interface Treasury {
   flowsLastMonth: Record<string, number>;
   /** What holders remember of the Treasury as a debtor (agents/bonds.ts); absent until first needed. */
   debt?: DebtMemory;
+  /** The Treasury's stores its works deliver to (agents/works.ts), by "town:good": what they held after the morning's deliveries, and a smoothed daily outflow. */
+  storeFlow?: Record<string, StoreFlow>;
+}
+
+/** What leaves one of the Treasury's stores (agents/works.ts). */
+export interface StoreFlow {
+  /** Held just after this morning's deliveries. */
+  prev: number;
+  /** Smoothed units a day that left since (sold, handed out, carried off, drawn by works, spoilt; less what came in). */
+  out: number;
 }
 
 /** The IOU market's memory (agents/bonds.ts). */
@@ -535,6 +569,12 @@ export interface MarketState {
    */
   own?: number;
   ownEma?: number;
+  /**
+   * Smoothed share of the day's trade the market would have had without the Treasury's orders (1 when
+   * it had none): where the Treasury is most of the market, its own price means little, and orders
+   * that follow the market anchor to the price that trades (player.orderRefPrice).
+   */
+  ownShare?: number;
   /** Today's sessions (opening, midday, close): price and volume of each. */
   sess?: number[];
   sessVol?: number[];
@@ -701,7 +741,9 @@ export type OrderMarket =
   | { kind: 'good'; town: TownId; good: GoodId }
   | { kind: 'labor'; town: TownId }
   | { kind: 'iou' }
-  | { kind: 'gold' };
+  | { kind: 'gold' }
+  /** Shares of one company (agents/invest.ts): qty = the share of the whole firm (0 … 1), price = for the whole firm; met at the monthly market for companies. */
+  | { kind: 'company'; firm: number };
 
 export interface PlayerOrder {
   id: number;
@@ -760,6 +802,20 @@ export interface PlayerOrder {
   staff?: 'projects';
   /** 'projects' orders: the number of people wanted today. */
   staffToday?: number;
+  /**
+   * The sell order of a Treasury works (agents/works.ts): each morning its daily quantity is re-set to
+   * what the works makes beyond what the Treasury's own works use, a little more. Cleared (a plain
+   * order from then on) when the player sets the quantity, or the works stops being the Treasury's.
+   */
+  works?: number;
+  /** The works whose order this was, while it runs as a company (it takes the order back if it is wholly the Treasury's again). */
+  worksWas?: number;
+  /**
+   * A Treasury workplace's order priced each morning at what its good costs to make (firms.fairPrice ×
+   * WORKS_PRICE_MULT) — not as much as the market would bear: where the Treasury is the only maker, it
+   * does not wring a monopolist's price out of the town. Cleared when the player sets the price.
+   */
+  atCost?: boolean;
 }
 
 export type OrderPriceMode = 'fixed' | 'follow' | 'any';
@@ -815,6 +871,8 @@ export interface CarryRule {
   carried: number; // lifetime units loaded
   freightToday: number;
   freight: number; // lifetime ¤ of freight paid
+  /** Added to supply this Treasury works with an input the Treasury makes elsewhere (agents/works.ts); removed when it stops being a works. */
+  works?: number;
 }
 
 /** How a Treasury freight line charges for what it carries: a fixed ¤ per unit, its own running cost per unit, or nothing. */
@@ -1010,7 +1068,9 @@ export type PlayerAction =
       sector?: Sector;
     }
   | { type: 'setAutoMint'; value: boolean }
-  | { type: 'setEvents'; value: boolean };
+  | { type: 'setEvents'; value: boolean }
+  /** Close a workplace the Treasury wholly owns (its workers go, its stock is sold off, the building stands empty). */
+  | { type: 'closeFirm'; firm: number };
 
 export interface ActionResult {
   ok: boolean;

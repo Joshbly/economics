@@ -6,8 +6,12 @@
 // three rules side by side, each listed in In force.
 // Treasury orders trade at the base price and are exempt from levies.
 // ============================================================================
-import { IOU_COUPON, IOU_PAR, PLAYER_MAX_PRICE, PLAYER_MAX_QTY, PLAYER_MAX_WORKERS } from '../../../sim/config';
-import { G, N_GOODS } from '../../../sim/goods';
+import { IOU_COUPON, IOU_PAR, MARKET_DAY, OWN_ANCHOR_MIN_SHARE, PLAYER_MAX_MONEY, PLAYER_MAX_PRICE, PLAYER_MAX_QTY, PLAYER_MAX_WORKERS } from '../../../sim/config';
+import { askingPrice } from '../../../sim/agents/invest';
+import { stakeOf } from '../../../sim/agents/ownership';
+import { refName } from '../../../sim/ledger';
+import { STATE } from '../../../sim/types';
+import { G, N_GOODS, SECTORS } from '../../../sim/goods';
 import type { MarketState, OrderMarket, SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
@@ -41,13 +45,14 @@ import {
 import { flowsView } from './flows';
 import { carryForm } from './carry';
 
-type MKind = 'good' | 'carry' | 'labor' | 'iou' | 'gold';
+type MKind = 'good' | 'carry' | 'labor' | 'iou' | 'gold' | 'company';
 type Dur = 'once' | 'days' | 'standing';
 
 export function tradeLever(): Lever {
   let kind: MKind = 'good';
   let town = 0;
   let good: number = G.bread;
+  let firmId = -1; // 'company': the firm whose shares are traded
   let side: 'buy' | 'sell' = 'buy';
   let dur: Dur = 'standing';
   /** How the price limit is set: fixed, following the market within a band, or none. */
@@ -73,6 +78,7 @@ export function tradeLever(): Lever {
       { value: 'labor', label: 'Labour', title: 'Hire Treasury workers in a town' },
       { value: 'iou', label: 'IOUs', title: 'Issue or buy back the Treasury’s IOUs (national market)' },
       { value: 'gold', label: 'Gold', title: 'Buy or sell gold (national market)' },
+      { value: 'company', label: 'Shares', title: 'Buy or sell a stake in a company, at the monthly market for companies' },
     ],
     value: kind,
     full: true,
@@ -119,7 +125,8 @@ export function tradeLever(): Lever {
   const townSel = selectInput<number>({ options: [{ value: 0, label: '—' }], value: 0, onChange: (v) => ((town = v), marketChanged()) });
   const goodSel = selectInput<number>({ options: goodOptions(), value: good, onChange: (v) => ((good = v), marketChanged()) });
   const nationalNote = h('span', { class: 'lv-static' }, 'National market');
-  const marketRow = row('Market', townSel.el, goodSel.el, nationalNote);
+  const firmSel = selectInput<number>({ options: [{ value: -1, label: '—' }], value: -1, onChange: (v) => ((firmId = v), marketChanged()) });
+  const marketRow = row('Market', townSel.el, goodSel.el, firmSel.el, nationalNote);
 
   const sideSeg = segmented<'buy' | 'sell'>({
     options: [
@@ -281,13 +288,18 @@ export function tradeLever(): Lever {
   /** The going price the simulation follows (the market's smoothed clearing price). */
   function goingPrice(s: SimState): number {
     if (kind === 'labor') return 0;
+    if (kind === 'company') return refPrice(s);
     const m = market(s);
-    // the market's own going price: without the Treasury's orders (what following orders anchor to)
-    const own = fin(m?.ownEma);
+    // the market's own going price: without the Treasury's orders (what following orders anchor to) — unless the Treasury is most of it
+    const own = (m?.ownShare ?? 1) >= OWN_ANCHOR_MIN_SHARE ? fin(m?.ownEma) : 0;
     const p = m ? (own > 0 ? own : m.ema > 0 ? m.ema : m.price) : 0;
     return fin(p) > 0 ? p : kind === 'iou' ? IOU_PAR : 0;
   }
   function refPrice(s: SimState): number {
+    if (kind === 'company') {
+      const f = company(s);
+      return f ? askingPrice(s, f) : 0;
+    }
     if (kind === 'labor') {
       const t = s.towns[town];
       const w = fin(t?.avgWage);
@@ -299,7 +311,24 @@ export function tradeLever(): Lever {
     return fin(p) > 0 ? p : kind === 'iou' ? IOU_PAR : 0;
   }
   function sig(): string {
-    return kind === 'good' ? `g${town}:${good}` : kind === 'labor' ? `l${town}` : kind;
+    return kind === 'good' ? `g${town}:${good}` : kind === 'labor' ? `l${town}` : kind === 'company' ? `c${firmId}:${side}` : kind;
+  }
+  /** Companies to trade shares in: for selling, those the Treasury holds a stake in; for buying, every open one. */
+  function companyOptions(s: SimState): { value: number; label: string }[] {
+    const out: { value: number; label: string; key: string }[] = [];
+    for (const f of s.firms) {
+      if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.building < 0) continue;
+      const held = stakeOf(f, STATE);
+      if (side === 'sell' ? !(held > 1e-6) : held > 1 - 1e-6) continue;
+      const tn = townName(s, f.town);
+      out.push({ value: f.id, label: `${f.name} · ${tn}${held > 1e-6 ? ` · yours ${fmtPct(held, 0)}` : ''}`, key: `${tn}|${SECTORS[f.sector]?.name ?? ''}|${f.name}` });
+    }
+    out.sort((a, b) => a.key.localeCompare(b.key));
+    return out.length ? out.map(({ value, label }) => ({ value, label })) : [{ value: -1, label: side === 'sell' ? 'The Treasury holds no shares' : 'No company is open' }];
+  }
+  function company(s: SimState) {
+    const f = firmId >= 0 ? s.firms[firmId] : undefined;
+    return f && f.alive && f.status === 'active' ? f : undefined;
   }
   function stateworksCount(s: SimState, t: number): number {
     let n = 0;
@@ -333,7 +362,11 @@ export function tradeLever(): Lever {
     const r = forcePrice !== undefined && forcePrice > 0 ? forcePrice : refPrice(s);
     price.set(r > 0 ? niceRound(r) : NaN);
     if (kind === 'labor') qty.set(5);
-    else if (kind === 'iou') qty.set(10);
+    else if (kind === 'company') {
+      const f = company(s);
+      const held = f ? stakeOf(f, STATE) : 0;
+      qty.set(Math.round(100 * (side === 'sell' ? held : 1 - held)));
+    } else if (kind === 'iou') qty.set(10);
     else if (kind === 'gold') qty.set(1);
     else {
       const m = market(s);
@@ -351,6 +384,8 @@ export function tradeLever(): Lever {
         return { price: '/IOU', qty: 'IOUs/day', total: 'IOUs' };
       case 'gold':
         return { price: '/oz', qty: 'oz/day', total: 'oz' };
+      case 'company':
+        return { price: ' for the firm', qty: '% of it', total: '%' };
       default:
         return { price: '/' + unitOf(good), qty: unitsOf(good) + '/day', total: unitsOf(good) };
     }
@@ -381,6 +416,19 @@ export function tradeLever(): Lever {
       cells.push(['Vacancies', fmtNum(fin(tw?.vacancies))]);
       cells.push(['Treasury workers', fmtNum(stateworksCount(s, town))]);
       note = 'Treasury workers add their labour to Treasury building projects in this town; with none under way, they wait idle. They are paid from the Purse.';
+      show(spark.el, false);
+    } else if (kind === 'company') {
+      const f = company(s);
+      setText(refTitle, f ? `${f.name} · ${townName(s, f.town)}` : 'Shares');
+      if (f) {
+        const perYear = (0.5 * fin(f.profit) + 0.5 * fin(f.profitLong)) * 360;
+        cells.push(['Holders reckon', fmtM(askingPrice(s, f))]);
+        cells.push([f.works ? 'Would earn a year' : 'Earns a year', fmtM(perYear)]);
+        cells.push(['Treasury holds', fmtPct(stakeOf(f, STATE), 0)]);
+        cells.push(['Run by', f.works ? 'the Treasury' : refName(s, f.owner)]);
+      }
+      note = `The market for companies meets on day ${MARKET_DAY} of each month. Buyers value a firm on what it earns (for one the Treasury runs, what its output would fetch less its costs) and what it holds; holders sell when a price beats what it is worth to them. Selling any part of a firm the Treasury runs makes it an ordinary company; buying all of one makes it the Treasury’s own.`;
+      spark.set(f ? [] : []);
       show(spark.el, false);
     } else if (kind === 'iou') {
       const m = s.iouMarket;
@@ -422,12 +470,36 @@ export function tradeLever(): Lever {
     total.setUnit(u.total);
     show(townSel.el, kind === 'good' || kind === 'labor');
     show(goodSel.el, kind === 'good');
+    show(firmSel.el, kind === 'company');
+    price.el.style.width = kind === 'company' ? '210px' : '132px'; // a whole firm's price runs to five figures
+    if (kind === 'company') {
+      firmSel.setOptions(companyOptions(s), firmId);
+      if (firmSel.value !== firmId) {
+        firmId = firmSel.value;
+        priceFor = '';
+        syncDefaults(s);
+      }
+      if (dur === 'once') {
+        dur = 'standing';
+        durSeg.set('standing');
+      }
+      if (pmode !== 'fixed' && pmode !== 'any') {
+        pmode = 'fixed';
+        modeSeg.set('fixed');
+      }
+    }
+    // shares: a fixed price for the whole firm, or any (the bands in between follow no market price)
+    modeSeg.el.querySelectorAll('button').forEach((b, i, all) => show(b as HTMLElement, kind !== 'company' || i === 0 || i === all.length - 1));
+    show(totalRow, kind !== 'company');
+    const onceBtn = durSeg.el.querySelector('button');
+    if (onceBtn) show(onceBtn as HTMLElement, kind !== 'company');
     show(nationalNote, kind === 'iou' || kind === 'gold');
     show(sideSeg.el, kind !== 'labor');
     show(employNote, kind === 'labor');
     show(days.el, dur === 'days');
     setText(sideRow.lab, kind === 'labor' ? 'Order' : 'Side');
-    setText(priceRow.lab, kind === 'labor' ? 'Daily wage' : side === 'buy' ? 'Pay at most' : 'Accept at least');
+    setText(priceRow.lab, kind === 'labor' ? 'Daily wage' : kind === 'company' ? (side === 'buy' ? 'For the whole firm, at most' : 'For the whole firm, at least') : side === 'buy' ? 'Pay at most' : 'Accept at least');
+    setText(qtyRow.lab, kind === 'company' ? 'Stake' : 'Per day');
     // side labels for IOUs
     const btns = sideSeg.el.querySelectorAll('button');
     if (btns.length === 2) {
@@ -441,7 +513,9 @@ export function tradeLever(): Lever {
     const rel = r > 0 && p > 0 ? p / r - 1 : NaN;
     setText(
       priceHint,
-      !(r > 0)
+      kind === 'good' && side === 'sell' && pmode === 'fixed' && p === 0
+        ? 'At 0 the Treasury hands it out free: every morning the people and workplaces of the town take what they need of it, and buy that much less.'
+        : !(r > 0)
         ? 'No market price yet.'
         : Number.isFinite(rel)
           ? `Market ${fmtPrice(r)}${u.price} · yours is ${Math.abs(rel) < 0.0005 ? 'at the market' : fmtPct(Math.abs(rel)) + (rel > 0 ? ' above' : ' below')}`
@@ -461,7 +535,7 @@ export function tradeLever(): Lever {
     const sign = side === 'buy' ? '+' : '−';
     const banded = canFollow && pmode !== 'fixed' && pmode !== 'any';
     show(paceRow.el, banded);
-    show(whenRow.el, kind !== 'labor');
+    show(whenRow.el, kind !== 'labor' && kind !== 'company');
     setText(
       whenHint,
       when < 0
@@ -498,6 +572,10 @@ export function tradeLever(): Lever {
     } else if (kind === 'labor') {
       const tw = s.towns[town];
       setText(qtyHint, `Jobless in ${townName(s, town)}: ${fmtNum(fin(tw?.unemployed))} · Treasury workers now: ${fmtNum(stateworksCount(s, town))}`);
+    } else if (kind === 'company') {
+      const f = company(s);
+      const held = f ? stakeOf(f, STATE) : 0;
+      setText(qtyHint, side === 'sell' ? `The Treasury holds ${fmtPct(held, 0)}: offer up to that.` : `Up to ${fmtPct(1 - held, 0)} (what it does not hold). All of it makes the firm the Treasury’s own.`);
     } else if (kind === 'iou') setText(qtyHint, side === 'buy' ? `In public hands: ${fmtNum(fin(t.iouOutstanding))}.` : 'New IOUs are created as they sell.');
     else setText(qtyHint, `The Treasury holds ${fmtQ(fin(t.gold))} oz.`);
 
@@ -520,6 +598,14 @@ export function tradeLever(): Lever {
     } else if (kind === 'good') {
       const have = fin(t.goods[town]?.[good]);
       bits.push('Sells from your holdings in ', townName(s, town), ': ', B(`${fmtQ(have)} available`), have > 0 ? `, raising at least ${fmtM(perDay)} a day if all ${q === 1 ? 'of it sells' : 'sell'}` : ' — buy some there, or carry some in (Carry)', '.');
+    } else if (kind === 'company') {
+      const f = company(s);
+      const name = f ? f.name : 'the company';
+      const stake = pmode === 'any' ? NaN : (p * q) / 100;
+      if (!f) bits.push(side === 'sell' ? 'The Treasury holds no shares to sell.' : 'Choose a company.');
+      else if (side === 'sell')
+        bits.push('Offers ', B(`${fmtNum(q)} %`), ` of ${name} at the monthly market for companies`, ...(pmode === 'any' ? [' to whoever values it most, at what they would pay'] : [', for at least ', B(fmtM(stake)), ' for the stake']), span, '.', f.works ? ' Once any of it sells it runs as an ordinary company (its own prices; the Treasury paid its share of the dividends).' : '');
+      else bits.push('Bids for up to ', B(`${fmtNum(q)} %`), ` of ${name} from its holders`, ...(pmode === 'any' ? [', paying what they ask and a little over'] : [', paying at most ', B(fmtM(stake)), ' for the stake']), ' from the Purse', span, '.');
     } else if (kind === 'iou' && side === 'sell') {
       bits.push('Issues up to ', B(plural(q, 'new IOU')), ' a day, each paying ', B(fmtM(IOU_COUPON) + ' a year'), ' forever: raises at least ', B(fmtM(perDay)), ' a day if all sell, and adds up to ', B(fmtM(q * IOU_COUPON)), ' a year to what the Purse pays out.');
     } else if (kind === 'iou') {
@@ -535,7 +621,7 @@ export function tradeLever(): Lever {
       bits.push(h('span', { class: 'warn' }, ` The Purse holds ${fmtM(fin(t.purse))}, so purchases are capped by what it can pay.`));
     }
     preview.replaceChildren(...bits);
-    const okPrice = pmode !== 'fixed' ? going > 0 : kind !== 'labor' && side === 'sell' ? p >= 0 : p > 0;
+    const okPrice = kind === 'company' ? (pmode === 'any' || (side === 'sell' ? p >= 0 : p > 0)) && !!company(s) && q > 0 && q <= 100 : pmode !== 'fixed' ? going > 0 : kind !== 'labor' && side === 'sell' ? p >= 0 : p > 0;
     place.disabled = !(okPrice && q > 0 && (dur !== 'days' || n > 0) && !total.error);
     setText(place, kind === 'labor' ? 'Hire' : kind === 'iou' && side === 'sell' ? 'Issue' : 'Place order');
   }
@@ -547,6 +633,22 @@ export function tradeLever(): Lever {
     if (pmode === 'fixed' && !Number.isFinite(p)) return msg.err(price.error ?? 'Set a price limit.');
     if (!(q > 0)) return msg.err(qty.error ?? 'Set a quantity per day.');
     if (total.error) return msg.err(total.error);
+    if (kind === 'company') {
+      run(
+        {
+          type: 'placeOrder',
+          market: { kind: 'company', firm: firmId },
+          side,
+          price: pmode === 'any' ? 0 : p,
+          qty: Math.min(1, q / 100),
+          days: dur === 'days' ? Math.max(1, Math.round(days.value)) : undefined,
+          priceMode: pmode === 'any' ? 'any' : 'fixed',
+        },
+        msg,
+        '✓ Order placed — it is listed under In force, and meets the market for companies this month.',
+      );
+      return;
+    }
     const m: OrderMarket = kind === 'good' ? { kind: 'good', town, good } : kind === 'labor' ? { kind: 'labor', town } : { kind: kind === 'iou' ? 'iou' : 'gold' };
     const qq = kind === 'labor' ? Math.min(PLAYER_MAX_WORKERS, Math.max(1, Math.round(q))) : q;
     run(
@@ -634,6 +736,7 @@ export function tradeLever(): Lever {
       last = s;
       const m = req.market;
       kind = m.kind;
+      if (m.kind === 'company') firmId = m.firm;
       if (m.kind === 'good') {
         town = m.town;
         good = m.good;

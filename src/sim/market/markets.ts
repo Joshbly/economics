@@ -36,6 +36,7 @@ import {
   MARKET_HIST_DAYS,
   MARKET_BALANCE_DAYS,
   MARKET_VOL_EMA,
+  OWN_SHARE_EMA,
   PRICE_MIN,
   WEDGE_BPCT_MIN,
   WEDGE_SPCT_MAX,
@@ -905,6 +906,7 @@ function finalizeDay(s: SimState, d: DayMarket): void {
   for (const side of [book.bids, book.asks]) for (let i = 0; i < side.length; i++) side[i].qty = side[i].dayQty ?? side[i].qty;
   let pOwn = NaN;
   let ownTraded = false;
+  let ownVol = 0;
   if (hasOrders) {
     const so = (book as PooledBook).stateOrders;
     let anyState = false;
@@ -919,6 +921,7 @@ function finalizeDay(s: SimState, d: DayMarket): void {
         const rx = clearBook(book, t.ref);
         pOwn = rx.price > 0 && Number.isFinite(rx.price) ? rx.price : NaN;
         ownTraded = rx.volume > 0;
+        ownVol = rx.volume > 0 && Number.isFinite(rx.volume) ? rx.volume : 0;
       }
       for (let i = 0; i < so.length; i++) so[i].qty = _ownQty[i];
     }
@@ -941,6 +944,10 @@ function finalizeDay(s: SimState, d: DayMarket): void {
   const ob = (m.ownEma ?? 0) > 0 && Number.isFinite(m.ownEma) ? (m.ownEma as number) : base;
   m.own = own;
   m.ownEma = Math.max(PRICE_MIN, ob + ((hadState ? ownTraded : traded) ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (own - ob));
+  // how much of the day's trade the market would have had without the Treasury (1 without its orders)
+  const shareNow = !hadState ? 1 : t.vol > 1e-9 ? Math.min(1, ownVol / t.vol) : ownTraded ? 1 : 0;
+  const s0 = Number.isFinite(m.ownShare) ? (m.ownShare as number) : 1;
+  m.ownShare = s0 + OWN_SHARE_EMA * (shareNow - s0);
   m.ema = Math.max(PRICE_MIN, base + (traded ? MARKET_EMA_TRADED : MARKET_EMA_INDICATIVE) * (p - base));
   m.volume = t.vol;
   m.volEma = (Number.isFinite(m.volEma) ? m.volEma : 0) + MARKET_VOL_EMA * (t.vol - (Number.isFinite(m.volEma) ? m.volEma : 0));
