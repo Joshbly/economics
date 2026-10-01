@@ -70,7 +70,7 @@ await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
 
 // New realm with each scenario
-const scen = ['founding', 'longwinter', 'creditboom', 'isolated'];
+const scen = ['founding', 'longwinter', 'creditboom', 'golden', 'isolated']; // (the order of the scenario list)
 for (const id of scen) {
   await menu('Found a new realm');
   const modal = page.locator('.modal-backdrop.on');

@@ -2073,7 +2073,7 @@ function transfer(s: SimState, a: Extract<PlayerAction, { type: 'transfer' }>): 
   const sector = a.group === 'firms' ? (a.sector ?? undefined) : undefined;
   const t = s.treasury;
   if (a.dir === 1 && !t.autoMint && !(t.purse > 0)) return fail('The Purse is empty. Create money first, or turn on auto-mint.');
-  if (a.group === 'bank' && a.dir === -1 && !(bankClaimRoom(s) > 0)) return fail('The Bank has no capital of its own to spare, so there is nothing to take.');
+  if (a.group === 'bank' && a.dir === -1 && !(bankClaimRoom(s) >= 1)) return fail('The Bank has no capital of its own to spare, so there is nothing to take.');
   const n = a.group === 'bank' ? 1 : countRecipients(s, a.group, a.town, sector);
   const who = a.group === 'firms' ? firmsText(sector) : a.group === 'councils' ? 'town councils' : (GROUP_PLURAL[a.group as Group] ?? 'recipients');
   if (n === 0) return fail(`Nobody matches: there are no ${a.group === 'bank' ? 'recipients' : who}${a.town >= 0 ? ' in ' + townName(s, a.town) : ''}.`);

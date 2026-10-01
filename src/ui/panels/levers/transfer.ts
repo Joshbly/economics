@@ -401,7 +401,10 @@ export function transferLever(): Lever {
     }
     const act: Extract<PlayerAction, { type: 'transfer' }> = { type: 'transfer', group, town: group === 'bank' ? -1 : town, amount: a, dir };
     if (group === 'firms' && sector !== 'any') act.sector = sector;
-    run(act, msg, dir === 1 ? '✓ Paid out.' : '✓ Collected.');
+    // the realm's own account of what moved (all the Purse or the Bank could spare, if less)
+    const r = run(act, null);
+    if (r.ok) msg.ok('✓ ' + r.message);
+    else msg.err(r.message || 'That could not be done.');
     key = '';
   }
 

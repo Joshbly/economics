@@ -239,13 +239,15 @@ const topPurse = () => page.locator('.ind[aria-label="The Purse"] .ind-val').tex
   await submit(T);
   const p1 = await q.s('s.treasury.purse');
   check('transfer take from everyone', p1 > p0, `${p0.toFixed(2)} -> ${p1.toFixed(2)} ${await msg(T)}`);
-  await sel.selectOption(String(opts.length - 1));
+  await sel.selectOption({ label: 'The Bank’s own capital' });
   await page.waitForTimeout(120);
   const p2 = await q.s('s.treasury.purse');
   const dis = await page.locator(`${T} .lv-submit`).isDisabled();
   if (!dis) await submit(T);
   const p3 = await q.s('s.treasury.purse');
-  check('transfer take from the bank', dis || p3 > p2, `disabled=${dis} ${p2.toFixed(2)} -> ${p3.toFixed(2)} ${await msg(T)}`);
+  const m3 = await msg(T);
+  // it takes something, or says plainly that the Bank has nothing to spare (never claims to have taken nothing)
+  check('transfer take from the bank', dis || p3 > p2 + 0.5 || /nothing to take/.test(m3), `disabled=${dis} ${p2.toFixed(2)} -> ${p3.toFixed(2)} ${m3}`);
   await q.shot('lv-transfer');
 }
 
