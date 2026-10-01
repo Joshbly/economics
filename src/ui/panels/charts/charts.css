@@ -1,0 +1,93 @@
+/* ==========================================================================
+   Charts panel
+   ========================================================================== */
+.ch-panel { display: flex; flex-direction: column; }
+.ch-panel .panel-head { margin-bottom: 10px; }
+
+/* group selector: a 4 × 2 grid of segmented buttons */
+.ch-groups {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: #0f1318;
+  border: 1px solid var(--line-2);
+}
+.ch-group {
+  height: 26px;
+  min-width: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.12s, color 0.12s;
+}
+.ch-group:hover { color: var(--ink-0); background: var(--bg-3); }
+.ch-group.on { background: var(--bg-4); color: var(--ink-0); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--line-2) inset; }
+.ch-group-custom { color: var(--gold); }
+.ch-group-custom.on { color: var(--gold-hi); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--gold-line) inset; }
+
+.ch-opts { display: flex; align-items: center; gap: 10px; margin: 10px 0 8px; }
+.ch-opts .switch-lab { font-size: 12px; color: var(--ink-1); }
+
+.ch-caption { display: flex; flex-direction: column; gap: 2px; margin: 0 0 12px; padding: 0 1px; }
+.ch-blurb { font: italic 13px/1.4 var(--serif); color: var(--ink-1); }
+.ch-meta { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ch-marks { margin-left: 8px; color: var(--gold); cursor: help; white-space: nowrap; border-bottom: 1px dotted var(--gold-line); }
+.ch-marks:hover { color: var(--gold-hi); }
+
+.ch-body { display: flex; flex-direction: column; gap: 10px; }
+
+/* chart card */
+.ch-card { padding: 10px 12px 10px; transition: border-color 0.3s, box-shadow 0.3s; }
+.ch-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; min-height: 30px; }
+.ch-titles { flex: 1; min-width: 0; }
+.ch-titles .card-title { font-size: 12.5px; line-height: 1.3; }
+.ch-subrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 1px; }
+.ch-subrow .card-sub { font-size: 11px; }
+.ch-chip { height: 17px; padding: 0 6px; font-size: 10px; color: var(--ink-2); }
+.ch-now { display: flex; flex-direction: column; align-items: flex-end; flex: none; line-height: 1.15; }
+.ch-now-val { font: 600 16px/1.2 var(--font-display); color: var(--ink-0); letter-spacing: -0.01em; white-space: nowrap; }
+.ch-now-chg { font-size: 10.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ch-now-arr { font-size: 7.5px; margin-right: 3px; vertical-align: 1px; }
+.ch-fig-btn {
+  flex: none;
+  height: 20px;
+  margin-top: 1px;
+  padding: 0 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ch-fig-btn:hover { color: var(--ink-0); background: var(--bg-3); border-color: var(--line-3); }
+.ch-fig-btn.on { color: var(--gold-hi); border-color: var(--gold-line); background: var(--gold-wash); }
+.ch-card .chart-legend { margin-bottom: 4px; }
+.ch-card .lg-item { height: 20px; font-size: 11px; padding: 0 6px; }
+.ch-figs { margin-top: 8px; }
+.ch-fig-lab { display: inline-flex; align-items: center; gap: 2px; }
+.ch-note { margin-top: 6px; font-size: 11px; line-height: 1.45; color: var(--ink-3); }
+.ch-flash { border-color: var(--gold-line); box-shadow: 0 0 0 3px var(--gold-wash), var(--shadow-card); }
+
+/* custom builder */
+.ch-custom { display: flex; flex-direction: column; gap: 10px; }
+.ch-builder .card-head { margin-bottom: 6px; }
+.ch-slots { display: flex; flex-direction: column; gap: 5px; }
+.ch-slot { display: flex; align-items: center; gap: 7px; }
+.ch-slot-key { width: 12px; height: 3px; border-radius: 2px; flex: none; }
+.ch-slot-sel { flex: 1; min-width: 0; display: flex; }
+.ch-slot-sel .select-wrap { width: 100%; }
+.ch-slot .btn { width: 24px; padding: 0; font-size: 15px; color: var(--ink-3); }
+.ch-slot .btn:hover { color: var(--ink-0); }
+.ch-builder-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.ch-custom-hint { margin-top: 8px; font-size: 11.5px; line-height: 1.45; color: var(--ink-2); padding: 7px 9px; border-radius: var(--r-sm); background: var(--bg-3); border-left: 2px solid var(--gold-lo); }

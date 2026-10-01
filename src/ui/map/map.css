@@ -1,0 +1,86 @@
+/* ==========================================================================
+   Map renderer: canvas, floating control strip, legend. OWNER: renderer.
+   ========================================================================== */
+.map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+.map-canvas.grab { cursor: grab; }
+.map-canvas.grabbing { cursor: grabbing; }
+.map-canvas.pointer { cursor: pointer; }
+.map-canvas.place { cursor: crosshair; }
+
+.mapc {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+  font-size: 12px;
+}
+.mapc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+.mapc-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--bg-glass, rgba(17, 21, 26, 0.86));
+  border: 1px solid var(--line-2, rgba(236, 224, 199, 0.12));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+.mapc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-1, #cfc5b0);
+}
+.mapc-btn:hover { background: var(--bg-4, #262e39); color: var(--ink-0, #f1e9d8); }
+.mapc-btn:active { transform: translateY(0.5px); }
+.mapc-ovl { gap: 4px; padding: 3px 4px; }
+.mapc-ovl .select { height: 26px; font-size: 12px; background-color: transparent; border-color: transparent; }
+.mapc-ovl .select:hover { background-color: var(--bg-3, #1d232c); }
+.mapc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2, #948b7a);
+  font-size: 12px;
+}
+.mapc-chip:hover { background: var(--bg-3, #1d232c); color: var(--ink-1, #cfc5b0); }
+.mapc-chip .mapc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3, #6b6558); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35); }
+.mapc-chip.on { color: var(--ink-0, #f1e9d8); }
+.mapc-chip.on .mapc-dot { background: var(--gold, #d8ab4e); }
+
+.mapc-legend {
+  pointer-events: auto;
+  min-width: 190px;
+  padding: 8px 10px 7px;
+  border-radius: 9px;
+  background: var(--bg-glass, rgba(17, 21, 26, 0.86));
+  border: 1px solid var(--line-2, rgba(236, 224, 199, 0.12));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.mapc-leg-t { font-weight: 600; color: var(--ink-0, #f1e9d8); margin-bottom: 6px; }
+.mapc-leg-bar { height: 6px; border-radius: 3px; background: linear-gradient(90deg, #57b8a5, #d6ccb4 50%, #e8845a); }
+.mapc-leg-ends { display: flex; justify-content: space-between; margin-top: 4px; color: var(--ink-2, #948b7a); font-size: 11px; }
+
+.mapc-tip { min-width: 180px; }
+/* two-line title: "Treasury: 40 bread → Saltmere" over "arrives in 1.4 days" */
+.mapc-tip .tip-title.mapc-tt2 .tip-sub { display: block; margin: 1px 0 0; }

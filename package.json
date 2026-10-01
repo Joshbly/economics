@@ -1,0 +1,23 @@
+{
+  "name": "econsim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Realm Ledger — an agent-based economic simulation where you are the treasury and central bank of a small realm.",
+  "type": "module",
+  "scripts": {
+    "dev": "node build.mjs --serve",
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "sim": "tsx scripts/headless.ts",
+    "experiments": "tsx scripts/experiments.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
