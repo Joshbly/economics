@@ -129,9 +129,10 @@ A scenario changes how the realm is founded, never the rules it runs by. It acts
 `founding`, 1,800 days after the warm-up). Each piece answers a failure seen
 in the plain founding:
 * **Homes to spare** (SCEN_GOLDEN_VACANCY = 30 %). Newcomers come only where there is both work and
-  a free home; private builders put up houses only once rents pay the loan rate + HOUSE_HURDLE,
-  which at founding rents takes years. With few spare homes the realm stops growing, labour runs
-  short and wages (then prices) ratchet up.
+  a free home. Landlords build when homes run short (§3.2: a mortgage on each house), but one house
+  a town a month, each some months in the building — growth would wait on them. With spare homes
+  the realm grows from the first year while the landlords catch up (about five private houses in
+  five years); with few, labour runs short and wages (then prices) ratchet up.
 * **Roomy workshops** (SCEN_GOLDEN_ROOM = 1.5 × the usual headroom): firms hire newcomers without
   first enlarging, which the idle builders are slow to do.
 * **Paved roads and six piers**: cheaper, quicker freight between the towns, and ships enough to
