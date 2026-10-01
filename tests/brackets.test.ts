@@ -1,7 +1,7 @@
 // Price brackets (policy/brackets.ts): the Treasury buys a good below a floor and sells it above a ceiling, town by
 // town, every day — fixed prices, each town's own going price, or the realm's; one price a side or a ladder.
 import { describe, expect, it } from 'vitest';
-import { bracketBand, bracketLegs, checkBracket, describeBracket } from '../src/sim/policy/brackets';
+import { bracketBand, bracketLegs, bracketRef, checkBracket, describeBracket } from '../src/sim/policy/brackets';
 import { stepDay } from '../src/sim/engine';
 import { G, N_GOODS } from '../src/sim/goods';
 import { checkLedger } from '../src/sim/ledger';
@@ -57,6 +57,15 @@ describe('brackets: the band', () => {
     expect(sells.map((L) => L.po.price.toFixed(2))).toEqual(['6.00', '6.60', '7.20']);
     expect(sells.map((L) => L.po.qty)).toEqual([4, 8, 12]);
     for (const L of legs) expect(L.town).toBe(0);
+  });
+
+  it('the going price is the median of recent days: a spike does not drag the band after it', () => {
+    const s = grown();
+    const m = s.markets[0 * N_GOODS + G.grain];
+    m.hist = [...Array(170).fill(2), ...Array(10).fill(10)]; // half a year at ¤2, then ten days at ¤10
+    const b = add(s, { good: G.grain, mode: 'local', low: 0.1, high: 0.15, buyQty: 10, sellQty: 10, towns: [0] });
+    expect(bracketRef(s, b, 0)).toBeCloseTo(2, 6);
+    expect(bracketBand(s, b, 0).ceiling).toBeCloseTo(2.3, 6);
   });
 
   it('refuses nonsense', () => {

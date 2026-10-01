@@ -288,11 +288,13 @@ The Carry form shows the good **town by town**: what each town makes and uses a 
 
 The floor and ceiling can be:
 
-- **Each town's price** — a share below and above that town's own going price. The going price is a slow average (about 90 days) of the market's, so the band holds still while a spike or a glut passes. This leans against each town's swings.
-- **The realm's price** — a share below and above the average of the towns' going prices: one band for the whole realm. It buys in the towns where the good is cheap and sells in those where it is dear.
+- **Each town's price** — a share below and above that town's own going price. The going price is the middle of the town's daily prices over the last half-year, so the band holds still while a spike or a glut passes, and does not follow it afterwards. This leans against each town's swings.
+- **The realm's price** — a share below and above the average of the towns' going prices: one band for the whole realm. It buys in the towns where the good is cheap and sells in those where it is dear — but only what the store there holds, so its stock piles up in the cheap towns. To steady each town's price, *each town's price* works better.
 - **Fixed prices** — the same two prices in every town.
 
 Each day it bids for so many units at the floor, until the store there holds the most you allow, and offers so many at the ceiling. A **ladder** adds steps: each further step bids lower (and offers higher) for more, so the further the price runs, the harder the bracket leans on it. A bracket's orders are the Treasury's like any other: they pay from the Purse, are not charged by levies, and never trade with your own orders.
+
+A bracket sells only from the store in each town, and carries nothing: what it buys in a farm town's harvest glut stays there. A carry rule moves it like any of your goods — but feeding the dear towns' stores to a bracket that sells at the realm's ceiling there every day tends to make their prices swing more, not less.
 
 What it does to the realm is what any order does. Its bids raise the price where it buys — good for the farmers selling into a glut, dearer for those who buy there — and its offers lower the price where it sells. Goods that spoil go on spoiling in store, so a bracket on bread loses more than one on grain. Taking in a glut in one town does nothing for another unless the goods are carried there.
 

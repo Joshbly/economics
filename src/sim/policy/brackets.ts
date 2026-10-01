@@ -6,9 +6,9 @@
 //
 // Floor and ceiling (Bracket.mode):
 //   'fixed'  low / high are prices (¤), the same in every town;
-//   'local'  low / high are fractions below / above each town's own going price — a slow average
-//            (an EMA over BRACKET_REF_DAYS of the market's smoothed price, Bracket.ref), so the band
-//            holds still while a spike or a glut passes;
+//   'local'  low / high are fractions below / above each town's own going price — the median of
+//            its daily prices over the last BRACKET_REF_DAYS (Bracket.ref), so the band holds still
+//            while a spike or a glut passes, and does not follow it afterwards;
 //   'realm'  the same fractions around the mean of the towns' going prices: one band for the realm,
 //            so the cheap towns' gluts are bought and the dear towns' spikes are sold into.
 // A ladder (rungs > 1): rung k bids `step` × k further below the floor — and offers that much above the
@@ -21,10 +21,10 @@
 // session to what the store then holds. What fills is tallied on the bracket (bought, spent, sold,
 // earned) after the close. Goods it buys sit in the town's store (Treasury.goods) with any other.
 // ============================================================================
-import { BRACKET_BAND_MAX, BRACKET_MAX_RUNGS, BRACKET_REF_DAYS, BRACKET_STEP_MAX } from '../config';
+import { BRACKET_BAND_MAX, BRACKET_MAX_RUNGS, BRACKET_REF_DAYS, BRACKET_REF_MIN_DAYS, BRACKET_STEP_MAX } from '../config';
 import { GOODS, N_GOODS } from '../goods';
 import type { Bracket, BracketInput, BracketMode, GoodId, PlayerOrder, SimState, TownId } from '../types';
-import { clamp, ema, fin } from '../util';
+import { clamp, fin } from '../util';
 
 /** The towns a bracket trades in. */
 export function bracketTowns(s: SimState, b: Pick<Bracket, 'towns'>): TownId[] {
@@ -39,7 +39,7 @@ function goingPrice(s: SimState, town: TownId, good: GoodId): number {
   return p > 0 && Number.isFinite(p) ? p : 0;
 }
 
-/** The going price of the bracket's good in a town, as it reckons it (its slow average; today's if none yet). */
+/** The going price of the bracket's good in a town, as it reckons it (the median of its recent prices; today's if none yet). */
 export function bracketRef(s: SimState, b: Bracket, town: TownId): number {
   const r = b.ref?.[town];
   return r !== undefined && r > 0 ? r : goingPrice(s, town, b.good);
@@ -65,12 +65,33 @@ export function bracketBand(s: SimState, b: Bracket, town: TownId): { floor: num
   return { floor: ref * (1 - clamp(b.low, 0, BRACKET_BAND_MAX)), ceiling: ref * (1 + clamp(b.high, 0, 10)), ref };
 }
 
-/** A new bracket (or one switched to another good) starts from today's going prices. */
-export function primeBracketRef(s: SimState, b: Bracket): void {
-  b.ref = s.towns.map((t) => Math.round(goingPrice(s, t.id, b.good) * 1e4) / 1e4);
+/**
+ * The going price a bracket reckons with in a town: the median of the market's daily prices over the last
+ * BRACKET_REF_DAYS (a spike or a glut moves a median little, where it would drag an average after it, and the
+ * bracket would then take a normal price for a cheap one); with less history than BRACKET_REF_MIN_DAYS, the
+ * market's smoothed price.
+ */
+function referencePrice(s: SimState, town: TownId, good: GoodId): number {
+  const m = s.markets[town * N_GOODS + good];
+  const h = m?.hist;
+  if (h && h.length >= BRACKET_REF_MIN_DAYS) {
+    const xs: number[] = [];
+    for (let i = Math.max(0, h.length - BRACKET_REF_DAYS); i < h.length; i++) if (h[i] > 0 && Number.isFinite(h[i])) xs.push(h[i]);
+    if (xs.length >= BRACKET_REF_MIN_DAYS) {
+      xs.sort((a, b) => a - b);
+      const k = xs.length >> 1;
+      return xs.length % 2 ? xs[k] : (xs[k - 1] + xs[k]) / 2;
+    }
+  }
+  return goingPrice(s, town, good);
 }
 
-/** Morning: brackets past their day lapse; each town's going price moves a day toward the market's. */
+/** Today's going prices for a bracket (set each morning, and when it is set up or moved to another good). */
+export function primeBracketRef(s: SimState, b: Bracket): void {
+  b.ref = s.towns.map((t) => Math.round(referencePrice(s, t.id, b.good) * 1e4) / 1e4);
+}
+
+/** Morning: brackets past their day lapse; each town's going price is reckoned again. */
 export function bracketsBeginDay(s: SimState): string[] {
   const list = s.policy.brackets;
   if (!list || list.length === 0) return [];
@@ -85,13 +106,7 @@ export function bracketsBeginDay(s: SimState): string[] {
     b.boughtToday = 0;
     b.soldToday = 0;
     b.today = s.towns.map(() => 0);
-    if (!Array.isArray(b.ref) || b.ref.length !== s.towns.length) b.ref = s.towns.map((t) => Math.round(goingPrice(s, t.id, b.good) * 1e4) / 1e4);
-    for (const t of s.towns) {
-      const p = goingPrice(s, t.id, b.good);
-      if (!(p > 0)) continue;
-      const r = b.ref[t.id];
-      b.ref[t.id] = Math.round((r > 0 ? ema(r, p, 1 / BRACKET_REF_DAYS) : p) * 1e4) / 1e4;
-    }
+    primeBracketRef(s, b);
   }
   if (keep.length !== list.length) s.policy.brackets = keep;
   return lapsed;

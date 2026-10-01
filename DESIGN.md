@@ -961,11 +961,18 @@ that pay ¤5 per year each, forever). Seven primitives:
      each morning a bracket posts, in each town, a bid at the floor (`buyQty` a day, while the
      store there holds less than `maxStock`) and an ask at the ceiling (`sellQty` a day, from what
      the store holds). Floor and ceiling by `mode`: `fixed` prices (the same everywhere); `local`,
-     fractions below / above each town's own going price — a slow average (EMA over
-     BRACKET_REF_DAYS of the market's smoothed price, `Bracket.ref`), so the band holds still while
-     a spike passes; `realm`, the same fractions around the mean of the towns' going prices — one
-     band, so the cheap towns' gluts are bought and the dear towns' spikes sold into (the
-     straddle across markets). A ladder (`rungs` ≤ BRACKET_MAX_RUNGS): rung k bids `step` × k further
+     fractions below / above each town's own going price — the median of its daily prices over the
+     last BRACKET_REF_DAYS (at least BRACKET_REF_MIN_DAYS of them; `Bracket.ref`, reckoned each
+     morning), so the band holds still while a spike passes and does not follow it afterwards (with
+     a 90-day average instead, a spike dragged the band up and the bracket then bought normal prices
+     as cheap ones, to its stock cap); `realm`, the same fractions around the mean of the towns' going
+     prices — one band, so it buys in the towns where the good goes cheap and sells in those where it
+     goes dear, from what the store there holds: it carries nothing itself. (Carrying a realm
+     bracket's stock from its cheap towns to where it runs short was tried and dropped: the dear
+     towns' prices sit above the realm's ceiling, so the bracket there sold every day whatever the
+     wagons brought, in lumps, and grain's price swung more than with no bracket at all — in one realm
+     of four more than twice as much. A carry rule still moves bracket stock like any of the
+     Treasury's goods, to a town the player names.) A ladder (`rungs` ≤ BRACKET_MAX_RUNGS): rung k bids `step` × k further
      below the floor and offers that much above the ceiling, for (k + 1) × the day's quantity — the
      further the price runs, the harder it leans. The rungs are the Treasury's orders of the day
      (playerOrders: exempt from levies, within what the Purse pays, never crossing its own orders;
@@ -974,7 +981,13 @@ that pay ¤5 per year each, forever). Seven primitives:
      fills are tallied on the bracket after the close (`bought`/`spent`/`sold`/`earned`, today's by
      town in `today`). What it buys sits in the town's store with any other goods (and spoils as they
      do); pausing or removing a bracket leaves it there — a carry rule moves it, a sell order sells
-     it. Lapses after `days`. It counts against PLAYER_MAX_RULES.
+     it. Lapses after `days`. It counts against PLAYER_MAX_RULES. (In runs, a grain bracket in every
+     town at each town's price — 10 % below / 15 % above, 40 a day, three steps 8 % apart, at most
+     2000 a store — cut the days grain cost 30 % over its month's average from 17–27 to 0–10 over two
+     years in four realms, and the spread of its price in three of them; it spent ¤22–31k and took
+     back ¤11–31k, the rest still in its stores. The same at the realm's price narrowed the spread in
+     all four but left the spikes as they were in one, its stock piling up to the cap in the cheap
+     towns.)
    * **The trading desk** (ui/panels/desk.ts; Trade → "Open the trading desk", Markets → "Trading
      desk"): a floating window over the map (the realm keeps running; drag it, resize it) on one
      good across every town — each town's daily price on one chart with the floor and ceiling of the

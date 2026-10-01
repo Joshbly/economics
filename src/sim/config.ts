@@ -1073,12 +1073,14 @@ export const CARRY_MAX_HOLD_DAYS = 7;
 export const ORDER_BANDS = [0.05, 0.1, 0.2, 0.3];
 export const ORDER_BAND_MAX = 1; // at most 100 % above/below the going price
 /**
- * Price brackets (policy/brackets.ts): each town's going price as a bracket reckons it is an EMA of the market's
- * smoothed price over BRACKET_REF_DAYS (slow, so the band holds still while a spike or glut passes); a ladder has at
+ * Price brackets (policy/brackets.ts): each town's going price as a bracket reckons it is the median of the market's
+ * daily prices over BRACKET_REF_DAYS (at least BRACKET_REF_MIN_DAYS of them; before that the smoothed price), so the
+ * band holds still while a spike or glut passes and does not follow it afterwards; a ladder has at
  * most BRACKET_MAX_RUNGS rungs a side, BRACKET_STEP_MAX apart at most; a relative floor/ceiling at most
  * BRACKET_BAND_MAX from the going price.
  */
-export const BRACKET_REF_DAYS = 90;
+export const BRACKET_REF_DAYS = 180;
+export const BRACKET_REF_MIN_DAYS = 20;
 export const BRACKET_MAX_RUNGS = 4;
 export const BRACKET_STEP_MAX = 0.5;
 export const BRACKET_BAND_MAX = 0.9;

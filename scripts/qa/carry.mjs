@@ -19,7 +19,7 @@ await q.lever('trade');
 
 // the Trade kinds: no Route composer, a Carry form; no separate Move goods form
 const kinds = await page.locator(`${T} .lv-kindrow .seg-btn`).allTextContents();
-check('Trade kinds are Goods · Carry · Labour · IOUs · Gold', kinds.join('|') === 'Goods|Carry|Labour|IOUs|Gold', kinds.join('|'));
+check('Trade kinds are Goods · Carry · Labour · IOUs · Gold · Shares', kinds.join('|') === 'Goods|Carry|Labour|IOUs|Gold|Shares', kinds.join('|'));
 check('no Move goods form', (await page.locator(`${T} .lv-subform`).count()) === 0);
 
 // 1) buy bread in the farm town, patiently within +10 %

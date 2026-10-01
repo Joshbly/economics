@@ -3,7 +3,7 @@
 //
 //   chart     the good's price in each town over the last 90 / 180 / 360 days, with the
 //             floor and ceiling of the bracket being drawn up (or the one being edited)
-//   towns     today's price, the going price a bracket reckons with (a slow average), the
+//   towns     today's price, the going price a bracket reckons with (a half-year median), the
 //             floor and ceiling there, what the Treasury holds there, today's bracket trade
 //   bracket   buy below a floor and sell above a ceiling — fixed prices, each town's own
 //             going price, or the realm's — in some or all towns, a set quantity a day, a
@@ -39,8 +39,8 @@ interface TownRow {
 }
 
 const MODES: { value: BracketMode; label: string; title: string }[] = [
-  { value: 'local', label: 'Each town’s price', title: 'Floor and ceiling a share below / above each town’s own going price (a slow average): each town’s gluts and spikes' },
-  { value: 'realm', label: 'The realm’s price', title: 'One floor and ceiling for every town, a share below / above the mean of the towns’ going prices: buys where it is cheap, sells where it is dear' },
+  { value: 'local', label: 'Each town’s price', title: 'Floor and ceiling a share below / above each town’s own going price (the middle of its daily prices over half a year): each town’s gluts and spikes' },
+  { value: 'realm', label: 'The realm’s price', title: 'One floor and ceiling for every town, a share below / above the mean of the towns’ going prices: buys where it is cheap, sells where it is dear (from what the store there holds)' },
   { value: 'fixed', label: 'Fixed prices', title: 'Floor and ceiling as prices (¤), the same in every town' },
 ];
 
@@ -66,7 +66,7 @@ export function openDesk(good?: number): void {
     columns: [
       { key: 'name', label: 'Town', align: 'left', width: '20%', value: (r) => r.name, format: (_v: never, r: TownRow) => h('span', { class: 'desk-town' + (chosen.has(r.town) ? '' : ' off') + (r.town === focus ? ' focus' : '') }, r.name) },
       { key: 'price', label: 'Today', title: 'Today’s price in the market', value: (r) => r.price, format: (v: number) => fmtPrice(v) },
-      { key: 'ref', label: 'Going', title: 'The going price a bracket reckons with: a slow average (about 90 days) of the market’s', value: (r) => r.ref, format: (v: number) => fmtPrice(v) },
+      { key: 'ref', label: 'Going', title: 'The going price a bracket reckons with: the middle of the market’s daily prices over the last half-year', value: (r) => r.ref, format: (v: number) => fmtPrice(v) },
       { key: 'floor', label: 'Floor', title: 'Buys below this (the draft bracket)', value: (r) => r.floor, format: (v: number) => (v > 0 ? fmtPrice(v) : '—') },
       { key: 'ceiling', label: 'Ceiling', title: 'Sells above this (the draft bracket)', value: (r) => r.ceiling, format: (v: number) => (v > 0 ? fmtPrice(v) : '—') },
       { key: 'held', label: 'Held', title: 'What the Treasury’s store there holds', value: (r) => r.held, format: (v: number) => fmtQ(v) },
@@ -410,6 +410,7 @@ export function openDesk(good?: number): void {
         h('div', { class: 'desk-row' }, qGo),
         qMsg.el,
         h('h3', null, 'Brackets on this good'),
+        h('p', { class: 'note' }, 'A bracket sells only what the store in each town holds: what it buys in one town it sells there.'),
         list,
       ),
     ),
