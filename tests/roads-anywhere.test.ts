@@ -3,7 +3,8 @@
 // wagons and walkers use.
 import { describe, expect, it } from 'vitest';
 import { needCost, roadNeed, roadTileNeed } from '../src/sim/agents/construction';
-import { TRACK_CLEAR_FACTOR } from '../src/sim/config';
+import { ROAD_INVALIDATE_TILES, TRACK_CLEAR_FACTOR } from '../src/sim/config';
+import { stepDay } from '../src/sim/engine';
 import { Game } from '../src/sim/game';
 import { BRIDGE_TILE_COST, ROAD_TILE_COST, TRACK_TILE_COST } from '../src/sim/goods';
 import { checkLedger } from '../src/sim/ledger';
@@ -97,6 +98,38 @@ describe('a Treasury road between any two places', () => {
     expect(pp.need.labor).toBeCloseTo(ROAD_TILE_COST.labor * pp.tiles.length, 6);
     expect(Math.abs(checkLedger(s))).toBeLessThan(1e-6);
   });
+
+  it('a road being built goes onto the map in runs, and a game saved half-way goes on exactly as one never saved', () => {
+    const g = Game.create({ seed: 1, warmup: false });
+    const s = g.s;
+    s.treasury.autoMint = true;
+    const st = openStretch(s, 16);
+    expect(st).not.toBeNull();
+    const r = dispatch(s, { type: 'build', kind: 'track', a: st!.a, b: st!.b, grade: 1 });
+    expect(r.ok, r.message).toBe(true);
+    const p = s.projects.find((x) => x.id === r.id)!;
+    expect(dispatch(s, { type: 'placeOrder', market: { kind: 'labor', town: p.town }, side: 'buy', price: 0, qty: 6, priceMode: 'follow', band: 0.1, staff: 'projects' }).ok).toBe(true);
+    const laid = () => p.tiles.filter((i) => s.map.road[i] >= 1).length;
+    const done = (): boolean => p.status === 'done';
+    let saved: SimState | null = null;
+    for (let d = 0; d < 200 && !done(); d++) {
+      stepDay(s);
+      if (saved) stepDay(saved);
+      const n = laid();
+      // whole runs only, until the last
+      if (!done()) expect(n % ROAD_INVALIDATE_TILES).toBe(0);
+      if (!saved && n > 0 && n < p.tiles.length) saved = deserialize(serialize(s));
+    }
+    expect(p.status).toBe('done');
+    expect(laid()).toBe(p.tiles.length);
+    expect(saved).not.toBeNull();
+    for (let d = 0; d < 10; d++) {
+      stepDay(s);
+      stepDay(saved!);
+    }
+    const plain = (x: SimState) => JSON.stringify({ ...x, news: [] });
+    expect(plain(saved!)).toBe(plain(s));
+  }, 120_000);
 
   it('refuses nonsense and open water', () => {
     const g = Game.create({ seed: 1, warmup: false });

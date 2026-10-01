@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { DAYS_PER_MONTH, STATS_DAILY_CAP, STRIKE_DAYS, UNREST_CONTENT, UNREST_DAYS } from '../src/sim/config';
 import { steadyStateDemand } from '../src/sim/agents/demandModel';
+import { closeFirm } from '../src/sim/agents/firms';
 import { newBuilding, newFirm, newLoan, newMarket, newPerson, newSimState, newTown, newTreasury } from '../src/sim/factory';
 import { CONSUMER_GOODS, G, N_GOODS } from '../src/sim/goods';
 import { checkLedger, mint, reconcileBank } from '../src/sim/ledger';
@@ -335,7 +336,8 @@ describe('daily indicators and town fields', () => {
     const { s, firms } = world();
     initStats(s);
     statDay(s);
-    firms[1].status = 'liquidating';
+    closeFirm(s, firms[1], 'bankrupt'); // counted where it stops trading (carried into the day), so a loaded game counts as one never saved
+    expect(firms[1].status).toBe('liquidating');
     statDay(s);
     expect(s.stats.latest.bankrupt).toBe(1);
     statDay(s);

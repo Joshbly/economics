@@ -284,7 +284,9 @@ without this brake a hiring realm would draw people until wages fell to
 subsistence) and there is housing; the wage a newcomer weighs is what a worker
 there takes home — after worker-side wage levies, plus any per-head payments a
 worker receives — never the posted gross, so who hands a wage levy over does not
-change who comes), emigration (long unemployment, hunger,
+change who comes; how strongly it drew them is kept, town.pull, and those it would have
+drawn but had no home for, town.housingWait — house builders count them as demand),
+emigration (long unemployment, hunger,
 misery), internal migration between towns. Emigrants take their money abroad
 (it moves to the foreign desk, which converts it to gold → capital flight).
 
@@ -326,6 +328,12 @@ dividends to their owner, invest, and can go bankrupt.
   unemployment is above WAGE_CUT_UNEMP and the firm has no vacancy (at
   WAGE_DOWN_DAY for a losing firm, scaled by the slack for any other: the
   downward side of the Phillips curve); partially indexed to expected inflation.
+  A firm whose vacancy is urgent (urgency ≥ WAGE_MATCH_URGENCY) and pays less than the
+  best wage posted in its town jumps toward it (to WAGE_MATCH_PREMIUM above it, at most
+  WAGE_MATCH_MAX_STEP a day): a well losing its hands to a better payer outbids it at once
+  rather than creeping up while the realm runs out of oil. Carters and builders, whose
+  output is a service, value a hand at SERVICE_MARGINAL_SHARE of (profit + wage bill) per
+  hand, so they too bid when they cannot staff their wagons and crews.
   Clamped by any wage Limit. Every labour-*cost* judgement (planning, the
   urgency of a vacancy, fair prices, entry, freight, the wage-based exchange
   parity) prices a hand at its employer cost — the posted wage plus any
@@ -376,6 +384,29 @@ dividends to their owner, invest, and can go bankrupt.
   holds the share of the firm its stake bought. Without syndicates entry was held back
   mostly by nobody holding the equity (248 misses in two years against 6 ventures);
   with them, 10–20 ventures a year.
+  **Houses: a landlord and a mortgage.** A house has one owner, so no syndicate builds
+  one (co-investors would pay in for a share nobody could give them). A lone landlord
+  (pickEntrepreneur, `house`) puts up HOUSE_OWNER_EQUITY (15 %) of the cost — works,
+  plot and track — and borrows the rest from the bank, secured on the house itself
+  (§3.5: judged on the loan's share of the cost, up to houseMaxLtv). A landlord keeps a
+  living reserve of ENTRY_OWNER_RESERVE_DAYS of their income, counted at no more than a
+  wage (investableCash `house`), not of a fortune's whole income. A town wants houses
+  when its vacancy falls below HOUSE_VACANCY_TRIGGER or when more households wait for a
+  home — the homeless, and the newcomers it turned away last month for want of one
+  (town.housingWait, §3.1 Demography) — than homes stand empty. The rents must pay the
+  mortgage rate less expected inflation + HOUSE_HURDLE. One house a town a month, within
+  the builders' queue (BUILDER_MAX_PRIVATE_QUEUE). Without this nobody built a house in
+  five years (a syndicate bug, a reserve of a year of a rich man's income, and newcomers
+  turned away never counted as demand); with it, a few a year in a growing realm, where
+  rents and the waiting list call for them.
+  **Real rates.** Every investor (workshops, houses, roads, councils, investors' NPVs)
+  screens at the nominal screening rate less expected inflation (households' mean
+  expInfl, within INVEST_INFL_MIN…INVEST_INFL_MAX): with prices rising 10 % a year, a
+  12 % loan costs 2 % in real terms — inflation spurs building, as it does. The bank's
+  term curve (§3.5) charges for that same expected inflation on long loans.
+  **Hands to come**: freeHands counts the newcomers a town is likely to draw within
+  ENTRY_HANDS_MONTHS (demography.likelyNewcomers: as far as homes stand free or are
+  being built, times how strongly it drew them last month, town.pull).
   **Several owners** (`agents/ownership.ts`): `Firm.owner` is the controlling holder
   (the largest share: it runs the firm, tops up its cash, decides its ventures);
   `Firm.partners` the other holders and their shares. Dividends, what is left when it
@@ -437,7 +468,7 @@ dividends to their owner, invest, and can go bankrupt.
   network takes one gradient step on (actual − promised) at EXP_LEARN_RATE. The monthly
   screen adds EXP_TRUST × its answer (within ±EXP_MAX_ADJ) to each candidate's expected return:
   it begins knowing nothing and learns only from this realm.
-  Developers build houses when rent yields beat loan rate + hurdle.
+  Landlords build houses when rents beat the mortgage rate less expected inflation + hurdle (above).
   **Where** (`agents/sites.ts`): a workshop on a natural resource looks at every
   free site of the right ground within VENTURE_REACH of its town's centre that
   would count as the town's own (belonging), and values each a year ahead —
@@ -529,10 +560,20 @@ One commercial bank (owned by a wealthy person). Balance sheet:
 `equity = assets − liabilities` (tracked explicitly and reconciled).
 
 * Funding cost = Treasury reserve rate if reserves ≥ requirement, else the
-  window lending rate. A loan's rate when made = funding cost + base spread + risk
-  premium (leverage-based), raised to any rate floor Limit (`rateMin`) and capped by
+  window lending rate. A loan's rate when made = funding cost + base spread + the
+  expected loss on it (credit judgement, below) + premiums (a person, a startup, the
+  stance), raised to any rate floor Limit (`rateMin`) and capped by
   any rate ceiling Limit (`rateMax`; then risky loans are rationed instead; a floor
-  above the ceiling is cut to it). Working credit (credit lines, LOAN_FLOATING_PURPOSES)
+  above the ceiling is cut to it). **Fixed loans are priced on the term curve**
+  (`bank.termBaseRate`): the funding cost of a loan of term T is the short rate expected
+  over its life — today's reserve rate for a share (1 − e^(−T/τ))/(T/τ) of it
+  (τ = LOAN_RATE_PERSIST_DAYS, how long a rate change is expected to last) and the
+  long-run expectation (the IOU view below: rate memory and where inflation should take it)
+  for the rest — plus the bank's margin over the reserve rate today. So a one-year loan
+  follows a cut or a hike closely, while a twenty-year mortgage mostly prices where rates
+  should settle, and rises with expected inflation before the Treasury moves: money
+  repaid in twenty years is worth less. Refinancing compares a loan's rate with the curve
+  at the term it has left. Working credit (credit lines, LOAN_FLOATING_PURPOSES)
   then floats daily at those terms; term credit (invest, startup, house, project:
   `Loan.fixed`) keeps its agreed rate for life — later Window changes and rate Limits
   do not reach it — except that a borrower in good standing refinances at the day's
@@ -544,20 +585,50 @@ One commercial bank (owned by a wealthy person). Balance sheet:
   into, they can only spend, or hold IOUs or gold). **No floor at zero**: when reserves earn
   less than nothing, funding costs less than nothing, and loans priced at funding + spread
   follow it below zero — the bank pays the borrower the interest (a loan agreed at −4 %
-  keeps −4 % for life like any fixed rate). Borrowers' appetite (creditAppetite), the debt
+  keeps −4 % for life like any fixed rate; on the term curve, short loans follow a deep
+  cut below zero, long ones only if it is expected to last). Borrowers' appetite (creditAppetite), the debt
   they size to their income (desiredFirmDebt, desiredHouseDebt: when interest is paid to
   them only the leverage bound is left) and firms' cost of holding tools (never below their
   wear) all read the rate as it is. A refusal is `NO_QUOTE` (test with `quoted`), never a
   rate. What does stay above zero is maths: IOUs are perpetual, so the bank never bids them
   above the price of a 0.5 % yield.
-* Lending standards: debt-service coverage, leverage, capital ratio ≥ the capital
+* Lending standards: debt-service coverage, leverage, the default probability it
+  reckons (below), capital ratio ≥ the capital
   rule in force (`bank.minCapital`): the realm's standing rule BANK_MIN_CAPITAL
   (8 %) — or, while a `capitalMin` Limit is in force, the Limit in its place,
   higher or lower, but never below the bank's own prudence BANK_OWN_MIN_CAPITAL
-  (2 %) — and a stance that tightens after defaults and when capital runs thin
-  relative to that rule (pro-cyclical credit). A lower rule matters only when
+  (2 %) — and a stance (pro-cyclical credit). A lower rule matters only when
   capital is scarce: a well-capitalised bank is held back by its borrowers'
   leverage and coverage, not by the rule.
+* **Credit judgement** (`agents/credit.ts`, state `bank.credit`). A loan officer's rule of
+  thumb gives a yearly default probability (priorPd): debt against assets — for a house
+  being built, the loan's share of the house's cost — the cover the borrower's cash flow
+  gives the interest, a firm's youth and distress, payments already missed. A small neural
+  network corrects it in the logit of the monthly hazard, learned from the bank's own
+  loans: at each month's end, each loan held when the month began is a loan-month that
+  defaulted (it ended in a loss: a bank default, a firm wound up, an estate without heir)
+  or did not. The direct weight on each fact is a Bayesian online logistic regression
+  (its covariance shares a surprise among the facts by how much is already known of each,
+  so losses among startups do not also make it doubt established firms; some doubt returns
+  each month — times change); hidden tanh units learn how facts combine (gradient
+  descent); the correction is softly bounded (±CREDIT_MAX_ADJ). It starts at ≈ 0, so a
+  young realm is judged by the rule alone. The share of the principal lost in a default
+  is learned too (houses apart). The bank prices the expected loss (PD × LGD ×
+  BANK_EL_MULT) into the rate and refuses borrowers above pdLimit = BANK_PD_MAX × (1 −
+  BANK_STANCE_PD × stance) (reason `risk`). Its starting weights are stateless draws, so
+  creating it leaves the realm's random stream untouched.
+* **House loans are judged on the house**: a house being built secures its own loan
+  (`LoanRequest.security` = works + plot + track). The bank lends up to houseMaxLtv =
+  HOUSE_MAX_LTV − HOUSE_LTV_STANCE × stance of that, as secured credit; the developer's
+  income and the rents must still cover the interest.
+* **Stance** (0 loose … 1 tight): heads for BANK_STANCE_BASE + BANK_STANCE_CAP_W × how far
+  capital has fallen into the BANK_CAP_BUFFER above the rule + **wariness**; it tightens at
+  most BANK_STANCE_UP a day and loosens BANK_STANCE_DOWN × (1 + BANK_STANCE_RECOVER ×
+  capital headroom). Wariness is what it has lost over about the last three months (every
+  write-off) beyond what its book was expected to lose in that time (the credit model's
+  expected loss), against its capital × BANK_FEAR_SENS — a third of its capital lost
+  unexpectedly within a quarter is as wary as it gets; it rises fast and fades over about
+  BANK_FEAR_DAYS. Losses it expected, and charged for, do not frighten it.
   Coverage is judged on interest, counting the yield of what the new money
   finances (term credit: the capital's yield; working capital:
   BANK_WORKING_YIELD on the stock and payroll it turns over) — and a working
@@ -595,14 +666,20 @@ would fetch from the day's bids (`bondsAfterMarket`; the founding quote is the b
 * Dividends: a share of the month's profit while capital is comfortable, the
   capital ratio measured on at least BANK_DIVIDEND_BOOK_SHARE of deposits as a
   loan book (a bank whose old loans are being repaid keeps the capital to lend
-  again).
+  again). Comfortable means above what term lending needs at today's stance plus
+  BANK_DIVIDEND_HEADROOM — and BANK_DIVIDEND_RETAIN more for BANK_DIVIDEND_RETAIN_DAYS
+  after it last turned a borrower away for want of capital: a bank short of capital
+  keeps its profits to lend.
 
 ### 3.6 The outside world (Port at Saltmere)
 World prices are quoted in **gold** and drift slowly (plus scenario shocks).
 Foreign ships post, every day, in Saltmere's markets:
 sell orders at `E·w_g·(1 + IMPORT_MARKUP)` and buy orders at
 `E·w_g·(1 − EXPORT_DISCOUNT)`, each up to the ship capacity for that good
-(Pier projects raise capacity). `E` = gold price in ¤ (the exchange rate).
+(Pier projects raise capacity). More ships call while it pays: each day the capacity
+offered is × (1 + SHIP_PULL_MULT × pull), the pull an EMA (SHIP_PULL_EMA) of how far the
+port's price stands above the ships' import price (imports) or below their export price
+(exports), at most SHIP_PULL_MAX — a realm short of oil draws cargoes in within weeks. `E` = gold price in ¤ (the exchange rate).
 Coin that foreigners earn is converted in the national **Gold market**:
 the foreign desk bids for gold with its surplus coin or sells gold when it
 needs coin. Foreign dealers provide liquidity around a valuation that drifts
@@ -937,7 +1014,10 @@ that pay ¤5 per year each, forever). Seven primitives:
      road-builder would (planTrack: 4-neighbour, buildings avoided, rivers crossed
      straight over, an existing road reused when roughly on the way — it plans at
      half the cost of new ground). Only tiles below the grade are built (a project,
-     `Project.grade`, tiles in order along the way, built progressively). Each tile's
+     `Project.grade`, tiles in order along the way, built progressively: they go onto
+     the map in runs of ROAD_INVALIDATE_TILES as the work advances, the wagons' routes
+     recomputed with each run, so map and routes always agree and follow from the
+     project's progress alone — a saved game goes on exactly as one never saved). Each tile's
      materials (construction.roadTileNeed): new ground is cleared for a track first —
      TRACK_TILE_COST × TRACK_CLEAR_FACTOR of its terrain (forest felled, hills cut,
      marsh drained, mountain sides worst), a river tile takes a timber bridge

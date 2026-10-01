@@ -80,7 +80,7 @@ export function news(s: SimState, text: string, kind: NewsKind = 'info', town = 
 
 // ---------------------------------------------------------------------------
 // Runtime bookkeeping for news (cooldowns, streaks). Rebuildable: after a load the
-// cooldowns simply restart, which can only delay a news item, never change the economy.
+// cooldowns simply restart, which may repeat or delay a news item, never change the economy.
 // ---------------------------------------------------------------------------
 interface EventsCache {
   last: Record<string, number>; // news key → day last reported

@@ -485,29 +485,28 @@ function projectToolsSoon(active: Project[]): number {
   return r;
 }
 
-/** Build the first `frac` of a road project's tiles (to its grade); recompute routes every few tiles. */
+/**
+ * Build the first `frac` of a road project's tiles (to its grade). Tiles go onto the map in runs of
+ * ROAD_INVALIDATE_TILES (the last run on completion) and routes are recomputed with each run, so the map
+ * and the wagons' routes always agree — and both follow from the project's progress alone (a saved game
+ * goes on exactly as one never saved).
+ */
 function pave(s: SimState, p: Project, frac: number): void {
   const map = s.map;
   const n = p.tiles.length;
   const grade = p.grade === 1 ? 1 : 2;
   const upto = frac >= 1 - EPS ? n : Math.floor(clamp(frac, 0, 1) * n);
+  const run = Math.max(1, ROAD_INVALIDATE_TILES);
+  const lay = upto >= n ? n : Math.floor(upto / run) * run;
   let newly = 0;
-  for (let i = 0; i < upto; i++) {
+  for (let i = 0; i < lay; i++) {
     const t = p.tiles[i];
     if (t >= 0 && t < map.road.length && map.road[t] < grade && map.occ[t] < 0) {
       map.road[t] = grade;
       newly++;
     }
   }
-  if (!newly && upto < n) return;
-  const bag = rt(s).bag;
-  let pend = bag.roadPending as Record<number, number> | undefined;
-  if (!pend) bag.roadPending = pend = {};
-  const c = (pend[p.id] || 0) + newly;
-  if (c >= ROAD_INVALIDATE_TILES || upto >= n) {
-    if (c > 0 || upto >= n) invalidateRoutes(s);
-    delete pend[p.id];
-  } else pend[p.id] = c;
+  if (newly > 0) invalidateRoutes(s);
 }
 
 /**

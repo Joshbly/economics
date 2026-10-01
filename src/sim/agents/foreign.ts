@@ -61,6 +61,9 @@ const {
   PPP_EMA,
   SHIP_CAP_FLOOR,
   SHIP_CAP_SMOOTH,
+  SHIP_PULL_MULT,
+  SHIP_PULL_EMA,
+  SHIP_PULL_MAX,
   INIT_GOLD_PRICE,
   PRICE_MIN,
   BASE_WAGE,
@@ -243,8 +246,8 @@ export function foreignOrders(s: SimState, books: Books): void {
       const cap = Math.max(0, fo.shipCap[g]);
       if (!(w > 0) || !(cap > 0)) continue;
       const wp = w * E;
-      // imports
-      let qi = cap;
+      // imports (more ships while the harbour has lately paid above their price)
+      let qi = cap * (1 + SHIP_PULL_MULT * clamp(fin(fo.pullIn?.[g] ?? 0), 0, SHIP_PULL_MAX));
       if (hasLimits) {
         const lim = quota(s, 'importMax', g, port, -1);
         if (lim >= 0) qi = Math.min(qi, lim);
@@ -258,8 +261,8 @@ export function foreignOrders(s: SimState, books: Books): void {
         importBase = (lim0 * IMPORT_TRANCHES[0][0] + d.xUnit) / Math.max(0.05, 1 - d.xPct);
         for (const [m, share] of IMPORT_TRANCHES) addAsk(book, FOREIGN, lim0 * m, qi * share, opts);
       }
-      // exports (collected; posted below)
-      let qe = cap;
+      // exports (collected; posted below — more ships while the harbour has lately asked below what they pay)
+      let qe = cap * (1 + SHIP_PULL_MULT * clamp(fin(fo.pullOut?.[g] ?? 0), 0, SHIP_PULL_MAX));
       if (hasLimits) {
         const lim = quota(s, 'exportMax', g, port, -1);
         if (lim >= 0) qe = Math.min(qe, lim);
@@ -385,9 +388,27 @@ function wagePPP(s: SimState): number {
   return (INIT_GOLD_PRICE * (wSum / wN / BASE_WAGE)) / Math.max(1e-6, worldIndex);
 }
 
-/** Monthly ship capacity from national use; piers take effect at once. */
+/** Monthly ship capacity from national use; piers take effect at once; the price pull is followed daily. */
 function updateShipCap(s: SimState): void {
   const fo = s.foreign;
+  // how far the harbour's price stands from the ships' prices (more ships call while it pays)
+  const port = portTown(s);
+  if (!Array.isArray(fo.pullIn) || fo.pullIn.length !== N_GOODS) fo.pullIn = new Array(N_GOODS).fill(0);
+  if (!Array.isArray(fo.pullOut) || fo.pullOut.length !== N_GOODS) fo.pullOut = new Array(N_GOODS).fill(0);
+  for (let g = 0; g < N_GOODS; g++) {
+    let gi = 0;
+    let ge = 0;
+    if (port >= 0 && fo.world[g] > 0) {
+      const m = marketOf(s, port, g);
+      const p = m.ema > 0 ? m.ema : m.price;
+      const ip = importPrice(s, g);
+      const ep = exportPrice(s, g);
+      if (p > 0 && ip > 0) gi = clamp(p / ip - 1, 0, SHIP_PULL_MAX);
+      if (p > 0 && ep > 0) ge = clamp(ep / p - 1, 0, SHIP_PULL_MAX);
+    }
+    fo.pullIn[g] = Math.round(fin(ema(fin(fo.pullIn[g]), gi, SHIP_PULL_EMA)) * 1e6) / 1e6;
+    fo.pullOut[g] = Math.round(fin(ema(fin(fo.pullOut[g]), ge, SHIP_PULL_EMA)) * 1e6) / 1e6;
+  }
   const bag = rt(s).bag;
   const mult = 1 + fo.piers * PIER_CAP_BONUS;
   const last = bag.foreignPiers as number | undefined;

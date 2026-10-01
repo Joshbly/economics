@@ -172,6 +172,10 @@ export const INFL_EXP_EMA = 0.01; // per day
  */
 export const INFL_EXP_MIN = -0.03;
 export const INFL_EXP_MAX = 0.3;
+/** Investors weigh a venture's returns — rents, profits, savings at today's prices — against the real cost of money:
+ *  the rate less the inflation they expect (the realm's households' expectation), counted within these bounds. */
+export const INVEST_INFL_MIN = -0.05;
+export const INVEST_INFL_MAX = 0.25;
 /** Portfolio (IOUs, gold) */
 export const PORTFOLIO_SURPLUS_MULT = 2.0; // only savings above m* × this are invested
 export const IOU_MARGIN = 0.005; // IOU yield must beat deposit rate by this
@@ -266,6 +270,13 @@ export const WAGE_UP_DAY = 0.002;
  * hands (the whole realm's carting and fishing stop without oil).
  */
 export const WAGE_URGENCY_FROM = 1.5;
+/** A firm whose hands are worth this much urgency or more (value / wage ≥ WAGE_URGENCY_FROM + this) and that still cannot fill its
+ *  posts matches the best wage in town × (1 + WAGE_MATCH_PREMIUM) at once (at most WAGE_MATCH_MAX_STEP more in a day). */
+export const WAGE_MATCH_URGENCY = 1.5;
+export const WAGE_MATCH_PREMIUM = 0.03;
+export const WAGE_MATCH_MAX_STEP = 0.25;
+/** A carting house or builders' yard values its marginal hand at this share of what an average hand earns it (profit + pay, a day). */
+export const SERVICE_MARGINAL_SHARE = 0.8;
 export const WAGE_URGENCY_MAX = 4;
 export const WAGE_DOWN_DAY = 0.0015;
 export const WAGE_VACANCY_DAYS = 3;
@@ -421,6 +432,12 @@ export const ENTRY_HURDLE = 0.12; // required return above the loan rate (risk +
 export const ENTRY_MAX_PROB = 0.5;
 export const ENTRY_OWNER_EQUITY = 0.25; // owner must fund this share of cost
 export const HOUSE_HURDLE = 0.04;
+/** Houses are financed like mortgages: the developers put down this share of the works and the plot together, … */
+export const HOUSE_OWNER_EQUITY = 0.15;
+/** … the bank lends against the house itself — up to HOUSE_MAX_LTV of its cost, less HOUSE_LTV_STANCE × its stance — and judges
+ *  the loan on the rents it will earn and the developer's income, not on whatever else the developer owns … */
+export const HOUSE_MAX_LTV = 0.9;
+export const HOUSE_LTV_STANCE = 0.15;
 // -- added by firms engineer --
 /** Entry decisions are taken on this day of the month. */
 export const ENTRY_DAY = 15;
@@ -485,7 +502,7 @@ export const AUTO_CREW_DAYS = 30;
 export const AUTO_CREW_MAX = 60;
 /** Builders hire at most this many workers beyond those their tools can equip (construction.ts constructionPlan). */
 export const BUILDER_TOOLLESS_HANDS = 2;
-/** Routes are recomputed after this many newly paved tiles (and on completion). */
+/** A road project lays its tiles onto the map in runs of this many (the rest on completion); routes are recomputed with each run. */
 export const ROAD_INVALIDATE_TILES = 5;
 /**
  * Clearing new ground for a track, × TRACK_TILE_COST, by terrain (DeepWater, Water, Sand,
@@ -554,9 +571,10 @@ export const TRADE_ASK_RUNGS = [1.06, 1.0, 0.95];
 export const TRADE_ASK_WEIGHTS = [0.3, 0.4, 0.3];
 /** Unsold stock may be offered this far below its landed cost after STOCK_AGE_DISCOUNT_DAYS. */
 export const TRADE_AGE_MAX_DISCOUNT = 0.4;
-/** Traders keep fuel for TRADER_FUEL_DAYS of expected use, and never less than TRADER_OIL_TRIPS trips. */
-export const TRADER_FUEL_DAYS = 6;
-export const TRADER_OIL_TRIPS = 3;
+/** Traders keep fuel for TRADER_FUEL_DAYS of expected use, and never less than TRADER_OIL_TRIPS trips (oil keeps, and a
+ *  house whose oil runs out stops every wagon it has: the reserve rides out a few weeks of short supply). */
+export const TRADER_FUEL_DAYS = 12;
+export const TRADER_OIL_TRIPS = 5;
 /** Traders pay up to this multiple of oil's value at home for fuel, plus up to EXTRA more as their fuel runs out
  *  (never more than the oil price at which their best trip still breaks even). */
 export const TRADER_OIL_BID_MULT = 1.1;
@@ -632,6 +650,9 @@ export const WORKING_LOAN_TERM = 360;
 export const LOAN_FLOATING_PURPOSES: readonly string[] = ['working'];
 /** A fixed-rate borrower in good standing refinances when the day's rate for its loan is at least this much lower (annual). */
 export const LOAN_REFI_GAP = 0.01;
+/** How long (days, on average) the bank expects a change in the reserve rate to last: a fixed loan of term T is priced on
+ *  today's rate for a share (1 − e^(−T/τ))/(T/τ) of its life and on the long-run expected rate (bondView) for the rest. */
+export const LOAN_RATE_PERSIST_DAYS = 360;
 export const INVEST_LOAN_TERM = 1440;
 export const STARTUP_LOAN_TERM = 2880;
 export const HOUSE_LOAN_TERM = 7200;
@@ -675,10 +696,8 @@ export const BANK_RESERVE_BUFFER = 0.01;
 export const BANK_REPAY_HYST = 0.005;
 /** Window debt (+ reserve shortfall) of this share of deposits makes the window rate the full marginal funding cost. */
 export const BANK_TIGHT_SCALE = 0.02;
-/** Lending stance: resting level, sensitivity to the annualised loss rate and to thin capital, daily speeds. */
+/** Lending stance: resting level, daily speeds (the rest: BANK_STANCE_CAP_W, BANK_FEAR_*). */
 export const BANK_STANCE_BASE = 0.2;
-export const BANK_STANCE_LOSS_SENS = 25;
-export const BANK_STANCE_CAP_SENS = 6;
 export const BANK_STANCE_UP = 0.03; // per day, when tightening
 export const BANK_STANCE_DOWN = 0.003; // per day, when loosening
 /** Extra annual spread charged on new loans at stance 1. */
@@ -690,6 +709,50 @@ export const BANK_STANCE_LEVERAGE = 0.3;
 export const BANK_STANCE_CAPITAL = 0.03;
 /** EMA speed of the daily default-loss rate. */
 export const BANK_DEFAULT_EMA = 1 / 90;
+// ---- The bank's credit judgement (agents/credit.ts) ----
+/** The loan officer's rule of thumb, a yearly default probability: a floor, + CREDIT_PRIOR_LEV × leverage² (a house being
+ *  built: CREDIT_PRIOR_HOUSE × its loan-to-cost²), + CREDIT_PRIOR_COVER as cover falls from CREDIT_COVER_SAFE to 0, + a young
+ *  firm, + distress, + CREDIT_PRIOR_LATE as payments fall LOAN_DEFAULT_OVERDUE_DAYS behind. With CREDIT_LGD0 it charges
+ *  about what BANK_RISK_PREMIUM × leverage² used to. */
+export const CREDIT_PRIOR_BASE = 0.005;
+export const CREDIT_PRIOR_LEV = 0.12;
+export const CREDIT_PRIOR_HOUSE = 0.06;
+export const CREDIT_PRIOR_COVER = 0.1;
+export const CREDIT_COVER_SAFE = 2;
+export const CREDIT_PRIOR_YOUNG = 0.03;
+export const CREDIT_PRIOR_DISTRESS = 0.3;
+export const CREDIT_PRIOR_LATE = 0.8;
+/** The net: hidden units, their learning rate (per loan-month), and the most it may correct the rule (logit, a soft bound). */
+export const CREDIT_HIDDEN = 6;
+export const CREDIT_LEARN_RATE = 0.02;
+export const CREDIT_MAX_ADJ = 5;
+/** The direct weight per fact is learned as a Bayesian logistic regression: how far (variance, logit per unit of the fact)
+ *  the bank believes the rule of thumb may be off before it has seen a loan, and how much that doubt returns a month
+ *  (times change), never above where it began. */
+export const CREDIT_PRIOR_VAR = 0.3;
+export const CREDIT_DRIFT_VAR = 0.002;
+/** Share of the principal lost in a default before experience (other credit, houses), and how fast experience moves it. */
+export const CREDIT_LGD0 = 0.5;
+export const CREDIT_LGD_HOUSE0 = 0.3;
+export const CREDIT_LGD_EMA = 0.1;
+/** The bank refuses a borrower whose yearly default probability it reckons above BANK_PD_MAX × (1 − BANK_STANCE_PD × stance). */
+export const BANK_PD_MAX = 0.3;
+export const BANK_STANCE_PD = 0.6;
+/** Expected loss is charged at this multiple in the spread (it is the price of the risk, not a profit on it). */
+export const BANK_EL_MULT = 1;
+/** Stance: the capital it wants above the rule in force; thin capital tightens it by up to BANK_STANCE_CAP_W … */
+export const BANK_CAP_BUFFER = 0.04;
+export const BANK_STANCE_CAP_W = 0.6;
+/** … and losses over the last three months beyond what it expected to lose in them, as a share of its capital ×
+ *  BANK_FEAR_SENS, make it wary (a third of its capital lost unexpectedly: as wary as it gets); wariness fades over about BANK_FEAR_DAYS. It loosens faster the more capital it has to spare (× (1 + BANK_STANCE_RECOVER × headroom)). */
+export const BANK_FEAR_SENS = 3;
+export const BANK_FEAR_DAYS = 120;
+export const BANK_STANCE_RECOVER = 2;
+/** Dividends wait until capital is this far above what term lending needs, and BANK_DIVIDEND_RETAIN more for
+ *  BANK_DIVIDEND_RETAIN_DAYS after the bank last turned a borrower away for want of capital. */
+export const BANK_DIVIDEND_HEADROOM = 0.02;
+export const BANK_DIVIDEND_RETAIN = 0.03;
+export const BANK_DIVIDEND_RETAIN_DAYS = 90;
 /** Extra spreads by borrower type (annual). */
 export const BANK_STARTUP_PREMIUM = 0.01;
 export const BANK_PERSON_PREMIUM = 0.005;
@@ -829,6 +892,12 @@ export const PPP_EMA = 0.02;
 /** Ship capacity floor per good (units/day) and monthly smoothing toward the use-based level. */
 export const SHIP_CAP_FLOOR = 3;
 export const SHIP_CAP_SMOOTH = 0.4;
+/** Merchants abroad answer prices: while the harbour pays more than the ships' landed price (or asks less than they
+ *  pay), more of them call — capacity × (1 + SHIP_PULL_MULT × the gap, an EMA at SHIP_PULL_EMA a day, at most
+ *  SHIP_PULL_MAX). A shortage of oil or coal at five times the world price draws ships within weeks. */
+export const SHIP_PULL_MULT = 2;
+export const SHIP_PULL_EMA = 0.1;
+export const SHIP_PULL_MAX = 2;
 
 // ---- Demography (agents/demography.ts) --------------------------------------
 export const BIRTH_RATE = 0.012; // per person per year (healthy, housed)
@@ -1040,6 +1109,8 @@ export const SYNDICATE_MAX = 8;
 export const WAGE_POACH_PREMIUM = 0.35;
 /** A venture goes ahead only if its town has free hands (jobless less open posts and the ventures being built) for at least this share of what it needs. */
 export const ENTRY_MIN_HANDS_SHARE = 0.5;
+/** … counting, besides the town's jobless, the newcomers it could draw over this many months while the workshop is built (demography.likelyNewcomers). */
+export const ENTRY_HANDS_MONTHS = 3;
 /** A firm that has been losing money plans to grow again once its price is this many times the marginal cost of serving its sales (a glut turned shortage). */
 export const LOSS_RECOVER_GAP = 1.5;
 /**

@@ -71,7 +71,7 @@ import type { Firm, Ref, SimState } from '../types';
 import { STATE } from '../types';
 import { clamp, fin } from '../util';
 import { debtOf } from './bank';
-import { investableCash, screenRate } from './entry';
+import { investableCash, realScreenRate } from './entry';
 import { temperament } from './temperament';
 import { holders, isWorks, setHoldings, stakeOf, transferStake, type Holding } from './ownership';
 import { releaseWorks } from './works';
@@ -139,7 +139,7 @@ export function firmWorth(s: SimState, f: Firm, ref: Ref, withSynergy = true): n
   const h = holdings(s, f);
   const debt = debtOf(s, firmRef(f.id));
   const perYear = (0.5 * fin(f.profit) + 0.5 * fin(f.profitLong)) * DAYS_PER_YEAR * (1 + T.optimism) + (withSynergy ? synergy(s, f, ref) : 0);
-  const rate = Math.max(0.01, screenRate(s) + T.premium);
+  const rate = Math.max(0.01, realScreenRate(s) + T.premium);
   const going = perYear * annuity(rate, T.horizon) + h.liquid + h.goods - debt;
   const breakUp = h.liquid + 0.7 * h.goods + 0.3 * h.building - debt;
   return Math.max(going, breakUp);

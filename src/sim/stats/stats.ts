@@ -142,8 +142,6 @@ const num = (x: number | undefined): number => (typeof x === 'number' && Number.
 // Runtime cache (rebuildable; never serialised)
 // ---------------------------------------------------------------------------
 interface StatsCache {
-  /** Per firm id: 1 trading last statsStep, 0 not, −1 unknown (bankruptcy detection). */
-  prevActive: Int8Array;
   prevDay: number;
   // per-town scratch
   pop: Float64Array;
@@ -172,7 +170,6 @@ function statsCache(s: SimState): StatsCache {
   if (!c || c.pop.length !== nT) {
     const z = () => new Float64Array(nT);
     c = {
-      prevActive: new Int8Array(0),
       prevDay: -2,
       pop: z(),
       employed: z(),
@@ -485,7 +482,7 @@ interface Tally {
  * employed, unemployed, vacancies, homeless, vacantSlots, avgWage, avgRent,
  * contentment, health — cpi is set by statsStep/initStats) and returns national tallies.
  */
-function tallyTowns(s: SimState, c: StatsCache, detectClosures: boolean): Tally {
+function tallyTowns(s: SimState, c: StatsCache): Tally {
   const nT = s.towns.length;
   for (const a of [c.pop, c.employed, c.homeless, c.content, c.health, c.vac, c.wageSum, c.wageN, c.slots, c.vacSlots, c.occRent, c.occN, c.askRent]) a.fill(0);
   const tl: Tally = {
@@ -535,20 +532,11 @@ function tallyTowns(s: SimState, c: StatsCache, detectClosures: boolean): Tally 
 
   // ---- firms ----
   const firms = s.firms;
-  if (detectClosures && c.prevActive.length < firms.length) {
-    const grown = new Int8Array(Math.max(firms.length + 32, c.prevActive.length * 2)).fill(-1);
-    grown.set(c.prevActive);
-    c.prevActive = grown;
-  }
   const secIndex = sectorIndex();
   for (let i = 0; i < firms.length; i++) {
     const f = firms[i];
-    const active = !!f && f.alive && f.status === 'active';
-    if (detectClosures) {
-      if (c.prevActive[i] === 1 && !active && f && f.sector !== 'stateworks') tl.closures++;
-      c.prevActive[i] = active ? 1 : 0;
-    }
     if (!f || !f.alive) continue;
+    const active = f.status === 'active';
     const t = f.town;
     const nW = f.workers.length;
     const inTown = t >= 0 && t < nT;
@@ -677,7 +665,7 @@ function setBase(s: SimState): void {
   for (let g = 0; g < N_GOODS; g++) if (!(bp[g] > 0)) bp[g] = fp[g];
   st.basePrices = bp.map((x) => roundSig(x, 8));
   // wage & rent from the agents (tallyTowns also refreshes the town fields)
-  const tl = tallyTowns(s, c, false);
+  const tl = tallyTowns(s, c);
   st.baseWage = tl.wageN > 0 ? tl.wageSum / tl.wageN : fin(st.baseWage) > 1 ? st.baseWage : BASE_WAGE;
   let slots = 0;
   let rentSum = 0;
@@ -827,9 +815,9 @@ function computeDaily(s: SimState, c: StatsCache, v: Record<string, number>): Re
   const b = s.bank;
   const nT = s.towns.length;
 
-  const detect = c.prevDay === s.day - 1;
-  const tl = tallyTowns(s, c, true);
-  if (!detect) tl.closures = 0;
+  const tl = tallyTowns(s, c);
+  // counted where a firm stops trading (firms.closeFirm), so a loaded game counts as one never saved
+  tl.closures = Math.max(0, num(st.acc.closures));
   c.prevDay = s.day;
 
   // ---- prices ----

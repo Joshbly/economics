@@ -17,9 +17,12 @@
 //    private jobs per town per month, and none while the builder has a backlog.
 //  * Cheapest capacity first: reopen a vacant building of the trade, else enlarge a
 //    profitable firm that is at capacity (the firm borrows to invest), else build new.
-//  * Developers build houses when a town is short of homes (vacancy under
-//    HOUSE_VACANCY_TRIGGER, or more homeless than empty slots) and the rent yield
-//    beats the loan rate + HOUSE_HURDLE.
+//  * Landlords build houses when a town is short of homes (vacancy under
+//    HOUSE_VACANCY_TRIGGER, or more people wanting a home — the homeless, and the
+//    newcomers last turned away for want of one, town.housingWait — than empty slots)
+//    and the rent yield beats the loan rate + HOUSE_HURDLE. A house has one owner and is
+//    financed like a mortgage: HOUSE_OWNER_EQUITY down on the works and the plot, the
+//    rest lent against the house itself; a landlord keeps back only living costs.
 //  * Exit: firms whose profit EMA has been negative for EXIT_LOSS_DAYS close.
 //
 // Financing flow (the bank decides requests in bankEndDay, which runs before this
@@ -55,6 +58,7 @@ import {
   FINANCING_WAIT_DAYS,
   HOUSE_HURDLE,
   HOUSE_LOAN_TERM,
+  HOUSE_OWNER_EQUITY,
   HOUSE_VACANCY_TRIGGER,
   INVEST_LOAN_TERM,
   MAX_BUILDING_LEVEL,
@@ -66,6 +70,9 @@ import {
   ENTRY_DEMAND_ELASTICITY,
   ENTRY_PRICE_FLOOR_SHARE,
   ENTRY_MIN_HANDS_SHARE,
+  ENTRY_HANDS_MONTHS,
+  INVEST_INFL_MIN,
+  INVEST_INFL_MAX,
   WAGE_POACH_PREMIUM,
   SYNDICATE_APPETITE,
   SYNDICATE_LEAD_SHARE,
@@ -98,17 +105,25 @@ import { temperament } from './temperament';
 import { experienceAdjust, learnFromVentures, noteVenture, type VentureFacts } from './experience';
 import { closeFirm, defaultWage, firmDailyCost, isEssentialFirm, typicalDailyCost } from './firms';
 import { laborForOutput, materialCostPerUnit, potentialOutput, toolCostPerUnit } from './production';
+import { likelyNewcomers } from './demography';
 
 // ---------------------------------------------------------------------------
 // Money of would-be investors
 // ---------------------------------------------------------------------------
 
-/** Cash an owner can put into a project without going short. */
-export function investableCash(s: SimState, ref: Ref): number {
+/**
+ * Cash an owner can put into a project without going short. A person keeps ENTRY_OWNER_RESERVE_DAYS of their
+ * income back — for a workshop, all of it (a venture's owner lives off it while it finds its feet, and its
+ * losses are theirs); for a house (`house`), only what they live on, at most a wage a day: a let house is a
+ * steady earner, and a landlord puts the rest of their savings into it.
+ */
+export function investableCash(s: SimState, ref: Ref, house = false): number {
   if (isPerson(ref)) {
     const p = s.people[ref];
     if (!p || !p.alive) return 0;
-    const keep = ENTRY_OWNER_RESERVE_DAYS * Math.max(fin(p.income), 0.5 * defaultWage(s, p.town));
+    const wage = defaultWage(s, p.town);
+    const inc = house ? Math.min(fin(p.income), wage) : fin(p.income);
+    const keep = ENTRY_OWNER_RESERVE_DAYS * Math.max(inc, 0.5 * wage);
     return Math.max(0, p.cash - keep);
   }
   if (isFirm(ref)) {
@@ -129,11 +144,36 @@ function financing(kind: Project['kind'], owner: Ref): { purpose: LoanPurpose; t
   return { purpose: 'startup', term: STARTUP_LOAN_TERM };
 }
 
-/** Annual rate used to screen investments before a borrower is chosen. */
+/** Annual (nominal) rate used to screen investments before a borrower is chosen. */
 export function screenRate(s: SimState): number {
   const q = quoteRate(s, -1, 0);
   const base = fin(s.bank.baseRate, 0.045) + ENTRY_SCREEN_SPREAD;
   return quoted(q) ? Math.max(q, fin(s.bank.depositRate, 0)) : base;
+}
+
+/**
+ * The inflation investors expect a year (the mean of the households' own expectation, households.ts), within
+ * INVEST_INFL_MIN … INVEST_INFL_MAX. A venture's returns are reckoned at today's prices; a loan is repaid in money that
+ * buys that much less (and the house or workshop is worth that much more), so its real cost is the rate less this.
+ */
+export function expectedInflation(s: SimState): number {
+  const bag = rt(s).bag as { investInfl?: { day: number; v: number } };
+  if (bag.investInfl && bag.investInfl.day === s.day) return bag.investInfl.v;
+  let sum = 0;
+  let n = 0;
+  for (const p of s.people) {
+    if (!p || !p.alive) continue;
+    sum += fin(p.expInfl);
+    n++;
+  }
+  const v = clamp(n > 0 ? sum / n : 0, INVEST_INFL_MIN, INVEST_INFL_MAX);
+  bag.investInfl = { day: s.day, v };
+  return v;
+}
+
+/** The real rate investors screen ventures with: screenRate less expectedInflation. */
+export function realScreenRate(s: SimState): number {
+  return screenRate(s) - expectedInflation(s);
 }
 
 /** Total money a project needs: the works plus, for a new workshop, its tools and start-up working capital. */
@@ -175,9 +215,13 @@ export function settleFinancing(s: SimState): void {
         cancelProject(s, p.id);
         continue;
       }
-      // Advance everything the owner can spare, at least the loan itself, up to the project's needs.
-      const total = Math.max(worksCost(s, p) - fin(p.prepaid), fin(p.loanWanted));
-      const avail = p.owner === STATE ? cashOf(s, STATE) : Math.max(investableCash(s, p.owner), Math.min(fin(p.loanWanted), cashOf(s, p.owner)));
+      // Advance everything the owner can spare, at least the loan itself, up to the project's needs. (A house's
+      // mortgage also finances its plot, which the owner paid the council when the works started: what is advanced
+      // is what the works still need.)
+      const house = p.kind === 'house';
+      const left = Math.max(0, worksCost(s, p) - fin(p.prepaid));
+      const total = house ? left : Math.max(left, fin(p.loanWanted));
+      const avail = p.owner === STATE ? cashOf(s, STATE) : Math.max(investableCash(s, p.owner, house), Math.min(fin(p.loanWanted), cashOf(s, p.owner)));
       const amt = Math.min(total, avail);
       const paid = amt > 0 ? pay(s, p.owner, firmRef(b.id), amt, 'asset') : 0;
       p.prepaid = fin(p.prepaid) + paid;
@@ -189,7 +233,7 @@ export function settleFinancing(s: SimState): void {
       // Refused: an owner who can pay for the whole works goes ahead on their own means.
       const b = s.firms[p.builder];
       const need = worksCost(s, p) - fin(p.prepaid);
-      if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner) >= need) {
+      if (p.owner !== STATE && b && b.alive && need > 0 && investableCash(s, p.owner, p.kind === 'house') >= need) {
         p.prepaid = fin(p.prepaid) + pay(s, p.owner, firmRef(b.id), need, 'asset');
         p.loanWanted = 0;
         continue;
@@ -286,7 +330,11 @@ function handsFor(sector: Sector): number {
   return d ? Math.max(1, Math.min(d.capacityPerLevel, d.typicalSize)) : 1;
 }
 
-/** A town's jobless, less the posts already open there and the hands the ventures being built will want. */
+/**
+ * Hands a town can offer a new venture without luring them from other employers: its jobless and the newcomers
+ * it could draw while the venture is built (demography.likelyNewcomers over ENTRY_HANDS_MONTHS), less the posts
+ * already open there and the hands the ventures being built will want.
+ */
 export function freeHands(s: SimState, town: TownId): number {
   const t = s.towns[town];
   if (!t) return 0;
@@ -295,7 +343,7 @@ export function freeHands(s: SimState, town: TownId): number {
     if (p.town !== town || p.status === 'done' || p.status === 'cancelled' || (p.kind !== 'firm' && p.kind !== 'reopen' && p.kind !== 'expand')) continue;
     if (p.sector) coming += handsFor(p.sector as Sector);
   }
-  return Math.max(0, fin(t.unemployed) - fin(t.vacancies) - coming);
+  return Math.max(0, fin(t.unemployed) + likelyNewcomers(s, town, ENTRY_HANDS_MONTHS) - fin(t.vacancies) - coming);
 }
 
 export function sectorSignal(s: SimState, town: TownId, sector: Sector): SectorSignal | null {
@@ -406,10 +454,12 @@ function houseSignal(s: SimState, town: TownId): number | null {
   for (const p of s.projects) if (p.kind === 'house' && p.town === town && p.status !== 'done' && p.status !== 'cancelled') pipeline += HOUSE_SLOTS;
   let homeless = 0;
   for (const p of s.people) if (p && p.alive && p.town === town && p.home < 0) homeless++;
+  const t = s.towns[town];
+  // who wants a home here: the homeless, and the newcomers last turned away for want of one (demography.immigration)
+  const wanting = homeless + Math.max(0, fin(t?.housingWait ?? 0));
   const empty = Math.max(0, slots - occupied) + pipeline;
   const vacancy = slots > 0 ? empty / slots : 0;
-  if (!(vacancy < HOUSE_VACANCY_TRIGGER || homeless > empty + 1)) return null;
-  const t = s.towns[town];
+  if (!(vacancy < HOUSE_VACANCY_TRIGGER || wanting > empty + 1)) return null;
   const bw = fin(s.stats?.baseWage, 0);
   const rent = t && t.avgRent > 0 ? t.avgRent : BASE_RENT_SHARE * (bw > 2 ? bw : defaultWage(s, town));
   const cost = estimateCost(s, 'house', town);
@@ -421,8 +471,8 @@ function houseSignal(s: SimState, town: TownId): number | null {
 // Monthly: launching projects
 // ---------------------------------------------------------------------------
 
-/** A person with at least `minFree` to invest and no project already under way, weighted by wealth (same town counts double). */
-function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: number): Ref | null {
+/** A person with at least `minFree` to invest (in a house: `house`) and no project already under way, weighted by wealth (same town counts double). */
+function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: number, house = false): Ref | null {
   // One venture at a time: whoever still has a project under way (or awaiting its loan)
   // keeps their means for it — it may cost more than planned.
   const busy = new Set<number>();
@@ -432,7 +482,7 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: numbe
   const weights: number[] = [];
   for (const p of s.people) {
     if (!p || !p.alive || p.owns.length >= ENTRY_MAX_OWNED || busy.has(p.id)) continue;
-    const free = investableCash(s, p.id);
+    const free = investableCash(s, p.id, house);
     if (free < minFree) continue;
     const w = free * (p.town === town ? 2 : 1);
     cands.push(p.id);
@@ -452,12 +502,18 @@ function pickEntrepreneur(s: SimState, town: TownId, minFree: number, key: numbe
  * Fund and start a private project: self-funded if the owner can, else equity +
  * a loan request sized so the bank's quote is positive; the expected return must
  * beat the owner's actual borrowing rate + hurdle. Returns true if started.
+ * A house is financed like a mortgage: HOUSE_OWNER_EQUITY down on the works and the plot together, the rest
+ * lent against the house itself (bank.quoteRate / decide with its cost as security).
  */
 function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurdle: number, syn: readonly Contribution[] = [], land = 0): boolean {
   const owner = spec.owner;
-  // the plot (the council's land in a town's core, agents/council.ts) is bought outright when the works start
-  const free = Math.max(0, investableCash(s, owner) - Math.max(0, land));
+  const house = spec.kind === 'house';
+  // the plot (the council's land in a town's core, agents/council.ts) is bought when the works start: outright
+  // for a workshop, as part of what the mortgage finances for a house
+  const plot = Math.max(0, land);
+  const free = Math.max(0, investableCash(s, owner, house) - (house ? 0 : plot));
   if (!(total > 0)) return false;
+  const cost = house ? total + plot : total; // what the loan finances its share of
   // co-investors' stakes (a syndicate, pickSyndicate): paid into the works when they start
   let pooled = 0;
   for (const c of syn) pooled += Math.max(0, Math.min(c.amount, investableCash(s, c.ref)));
@@ -465,25 +521,27 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
   // is cheap enough for the venture (return ≥ this borrower's rate + hurdle) and keeps their own
   // cash for other ventures; when credit is refused or too dear, one who can pay for the whole
   // works does so. So new capital creates credit while money is cheap, and much less when dear.
-  let equity = ENTRY_OWNER_EQUITY * total;
+  let equity = (house ? HOUSE_OWNER_EQUITY : ENTRY_OWNER_EQUITY) * cost;
   if (free + pooled < equity) return false;
-  let loan = total - equity;
-  let q = quoteRate(s, owner, loan, pooled);
+  let loan = cost - equity;
+  const security = house ? cost : 0;
+  let q = quoteRate(s, owner, loan, pooled, security);
   while (!quoted(q) && equity < free + pooled - 1e-6) {
-    equity = Math.min(free + pooled, equity + 0.1 * total);
-    loan = total - equity;
-    q = loan > 1 ? quoteRate(s, owner, loan, pooled) : 0;
+    equity = Math.min(free + pooled, equity + 0.1 * cost);
+    loan = cost - equity;
+    q = loan > 1 ? quoteRate(s, owner, loan, pooled, security) : 0;
   }
-  const debtOk = quoted(q) && (loan <= 1 || roc >= q + hurdle);
+  // (the loan's real cost: its rate less the inflation the investor expects)
+  const debtOk = quoted(q) && (loan <= 1 || roc >= q - expectedInflation(s) + hurdle);
   if (!debtOk) {
-    if (free + pooled < total) return false; // this borrower's money is too dear (or refused)
+    if (free + pooled < cost) return false; // this borrower's money is too dear (or refused)
     loan = 0;
   }
   if (loan <= 1) loan = 0;
   const r = startProject(s, spec);
   if (typeof r === 'string') return false;
   const { purpose, term } = financing(spec.kind, owner);
-  const freeNow = Math.min(free, investableCash(s, owner)); // (after the plot)
+  const freeNow = Math.min(free, investableCash(s, owner, house)); // (after the plot)
   // the access track to the road is part of the works: the bank's share grows with it
   const track = accessCost(s, r);
   let inE = 0;
@@ -500,9 +558,9 @@ function launch(s: SimState, spec: ProjectSpec, total: number, roc: number, hurd
     if (got.length) r.partners = got.map((g) => ({ ref: g.ref, share: Math.min(0.95, g.paid / eq), paid: g.paid }));
   }
   if (loan > 0) {
-    loan += track * (loan / total);
+    loan += track * (loan / cost);
     r.loanWanted = loan;
-    requestLoan(s, { borrower: owner, amount: loan, term, purpose, project: r.id });
+    requestLoan(s, { borrower: owner, amount: loan, term, purpose, project: r.id, ...(house ? { security: cost + track } : {}) });
   } else {
     const paid = pay(s, owner, firmRef(r.builder), Math.max(0, Math.min(total + track - inE, freeNow)), 'asset');
     r.prepaid = fin(r.prepaid) + paid;
@@ -630,9 +688,11 @@ function tryCandidate(s: SimState, town: TownId, c: Candidate): boolean {
     const land = plotPrice(s, xy.x, xy.y, 1, 1).price;
     const roc = c.roc * (total / Math.max(1, total + land));
     if (!(roc > c.req)) return miss(s, 'site');
-    const syn = pickSyndicate(s, town, ENTRY_OWNER_EQUITY * total + land, ventureKey(c.sector));
-    if (syn === null) return miss(s, 'noowner');
-    return launch(s, { kind: 'house', town, owner: syn.lead, x: xy.x, y: xy.y, label: `Houses in ${tn}` }, total, roc, HOUSE_HURDLE, [], land) || miss(s, 'finance');
+    // A house has one owner (its landlord; a building has no shares to split among co-investors): someone who can
+    // put down HOUSE_OWNER_EQUITY of the works and the plot, the rest on a mortgage.
+    const lead = pickEntrepreneur(s, town, HOUSE_OWNER_EQUITY * (total + land), ventureKey(c.sector) * 16 + 1, true);
+    if (lead === null) return miss(s, 'noowner');
+    return launch(s, { kind: 'house', town, owner: lead, x: xy.x, y: xy.y, label: `Houses in ${tn}` }, total, roc, HOUSE_HURDLE, [], land) || miss(s, 'finance');
   }
   const sector = c.sector;
   const d = SECTORS[sector];
@@ -758,7 +818,7 @@ function bump(s: SimState, key: string, v = 1): void {
  * screening rate + ROAD_HURDLE, with the entry probability; financed like any venture.
  */
 export function roadVentures(s: SimState): void {
-  const r0 = screenRate(s);
+  const r0 = realScreenRate(s);
   const busy = new Set<number>();
   const busyTiles = new Set<number>();
   for (const p of s.projects) {
@@ -836,7 +896,7 @@ export function entryStep(s: SimState): void {
   learnFromVentures(s);
   if (dayOfMonth(s.day) !== ENTRY_DAY) return;
   voluntaryExit(s);
-  const r = screenRate(s);
+  const r = realScreenRate(s);
   for (let t = 0; t < s.towns.length; t++) {
     const b = builderFor(s, t);
     if (!b || !b.build) continue;
@@ -845,8 +905,12 @@ export function entryStep(s: SimState): void {
       const p = s.projects.find((x) => x.id === id);
       if (p && p.owner !== STATE && p.status !== 'done' && p.status !== 'cancelled') privQ++;
     }
-    let budget = Math.min(ENTRY_MAX_PER_TOWN, BUILDER_MAX_PRIVATE_QUEUE - privQ);
-    if (budget <= 0) continue;
+    // Workshop founders and landlords are different investors: up to ENTRY_MAX_PER_TOWN new workshops and one
+    // house a month, all within the room in the builders' private queue.
+    let room = BUILDER_MAX_PRIVATE_QUEUE - privQ;
+    if (room <= 0) continue;
+    let budget = Math.min(ENTRY_MAX_PER_TOWN, room);
+    let houseBudget = 1;
     const cands: Candidate[] = [];
     for (const k of PRODUCER_SECTORS) {
       const sig = sectorSignal(s, t, k);
@@ -863,14 +927,17 @@ export function entryStep(s: SimState): void {
     }
     cands.sort((a, c) => c.rel - a.rel);
     for (const c of cands) {
-      if (budget <= 0) break;
+      if (room <= 0) break;
+      if (c.sector === null ? houseBudget <= 0 : budget <= 0) continue;
       const prob = Math.min(ENTRY_MAX_PROB, ENTRY_PROB_SLOPE * c.rel);
       if (!(decisionRand(decisionSeed(s), s.day, t, ventureKey(c.sector)) < prob)) continue;
       const ok = tryCandidate(s, t, c);
       const trace = rt(s).bag.entryTrace;
       if (Array.isArray(trace)) trace.push({ day: s.day, town: t, sector: c.sector ?? 'house', roc: c.roc, req: c.req, ok });
       if (ok) {
-        budget--;
+        if (c.sector === null) houseBudget--;
+        else budget--;
+        room--;
         bump(s, 'entry_projects');
       }
     }

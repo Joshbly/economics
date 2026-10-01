@@ -95,7 +95,7 @@ import { removeBuilding, townCentreTile } from '../world/layout';
 import { roadPlan, routeBetweenTowns, trackPlan } from '../world/paths';
 import { daysAlong, freightAfter } from '../world/roadEffect';
 import { builderFor, estimateCost, needCost, roadNeed, startProject } from './construction';
-import { screenRate, vacantPrice } from './entry';
+import { realScreenRate, vacantPrice } from './entry';
 import { temperament, type Temperament } from './temperament';
 import { freightPerUnit } from './traders';
 
@@ -382,7 +382,7 @@ export function councilRoadPlan(s: SimState, town: TownId): { tiles: number[]; g
   const c = councilOf(s, town);
   if (!c) return null;
   const T = mind(s, c);
-  const rate = Math.max(0.01, screenRate(s) + COUNCIL_PREMIUM_SHARE * T.premium);
+  const rate = Math.max(0.01, realScreenRate(s) + COUNCIL_PREMIUM_SHARE * T.premium);
   const worth = annuity(rate, T.horizon) * (1 + T.optimism);
   const busy = new Set<number>();
   for (const p of s.projects) if (p.kind === 'road' && p.status !== 'done' && p.status !== 'cancelled') for (const i of p.tiles) busy.add(i);
@@ -445,7 +445,7 @@ export function councilHousePlan(s: SimState, town: TownId): { cost: number; npv
   const cost = Math.max(0, fin(estimateCost(s, 'house', town)));
   if (!(cost > 0)) return null;
   const T = mind(s, c);
-  const rate = Math.max(0.01, screenRate(s) + COUNCIL_PREMIUM_SHARE * T.premium);
+  const rate = Math.max(0.01, realScreenRate(s) + COUNCIL_PREMIUM_SHARE * T.premium);
   const rent = Math.max(0, fin(t.avgRent));
   const slots = Math.min(HOUSE_SLOTS, Math.max(1, Math.round(fin(t.homeless))));
   const perYear = rent * (HOUSE_SLOTS + COUNCIL_HOUSE_CIVIC * slots) * DAYS_PER_YEAR;

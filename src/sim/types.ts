@@ -95,6 +95,10 @@ export interface Town {
   droughtDays: number; // > 0 while a drought hits farms here
   /** > 0 while farms here enjoy a bumper season (EVENT_BUMPER_BOOST more grain). Absent in old saves. */
   bumperDays?: number;
+  /** Newcomers turned away at the last monthly arrivals for want of a free home (jobs were waiting); house builders count them as demand. */
+  housingWait?: number;
+  /** How strongly the town drew newcomers at the last monthly arrivals (0..1: contentment and take-home pay; demography.immigration). */
+  pull?: number;
   evictions?: number; // households turned out for unpaid rent so far this month (for the month's news)
   /** The town's council (agents/council.ts): absent only in saves from before councils. */
   council?: Council;
@@ -411,6 +415,8 @@ export interface LoanRequest {
   term: number; // days
   purpose: LoanPurpose;
   project: number; // project id or -1
+  /** What the loan is secured on (¤): for a house being built, the cost of its works and plot (bank.decide judges the loan against it). */
+  security?: number;
 }
 
 export interface Bank {
@@ -433,6 +439,38 @@ export interface Bank {
   profitMonth: number; // ¤ earned this month (for dividends)
   interestIn: number; // today
   interestOut: number; // today
+  /** The bank's credit judgement, learned from its own loans (agents/credit.ts); absent until first needed. */
+  credit?: BankCredit;
+}
+
+/** agents/credit.ts: a small neural network correcting a rule of thumb for the chance a loan defaults, and what it has learned. */
+export interface BankCredit {
+  /** The correction to the rule of thumb (logit of the monthly default probability): a direct weight per input (v, with
+   *  its covariance P, CREDIT_INPUTS² row-major: a Bayesian logistic regression) plus CREDIT_INPUTS → CREDIT_HIDDEN tanh
+   *  units (w1, b1) → output (w2, b2), which learn how facts combine. */
+  net: { v: number[]; P: number[]; w1: number[]; b1: number[]; w2: number[]; b2: number };
+  /** The loans held when the month began: features then, the rule of thumb's yearly default probability, principal. */
+  watch: { loan: number; x: number[]; prior: number; principal: number; house: boolean }[];
+  /** Loans that ended in a loss this month (loan id, ¤ lost). */
+  lost: { loan: number; lost: number }[];
+  /** Loan-months learned from, and how many of them defaulted. */
+  seen: number;
+  defaults: number;
+  /** Share of the principal lost when a loan defaults (learned): other credit, houses. */
+  lgd: number;
+  lgdHouse: number;
+  /** Wariness (0..1) after losses the bank did not expect, against its capital; it fades. */
+  fear: number;
+  /** What the book is expected to lose a year (¤), reckoned at the month's start. */
+  expLoss: number;
+  /** What it has actually been losing a day (¤, EMA over about three months; every write-off counts). */
+  lossDaily: number;
+  /** bank.writeoffs as it stood at the last evening (today's write-offs are the rise since; absent in older saves). */
+  woSeen?: number;
+  /** Mean absolute error of the last month's predictions (monthly default probability). */
+  err: number;
+  /** Last day a loan was refused for want of capital (the bank then keeps its profits to lend). */
+  capShortDay: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +538,10 @@ export interface Foreign {
   exportValue: number; // today ¤
   shocks: WorldShock[];
   piers: number; // pier count (raises shipCap)
+  /** How far the harbour's price has lately stood above what ships sell at (imports) / below what they pay (exports),
+   *  per good (EMA, 0 … SHIP_PULL_MAX): more ships call while it lasts (foreign.updateShipCap). Absent in old saves. */
+  pullIn?: number[];
+  pullOut?: number[];
   tradeEma: number; // EMA of daily port trade (¤, (imports + exports) / 2) — sets the desk's working-coin target; 0 = not yet known // added by finance-trade
 }
 

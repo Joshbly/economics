@@ -31,7 +31,7 @@
 //    without new capital every deposit is cut pro rata to restore it.
 // ============================================================================
 import { stakeOf } from './ownership';
-import { bankIouWorth, noteCouponCut, postIouSchedule } from './bonds';
+import { bankIouWorth, bondView, noteCouponCut, postIouSchedule } from './bonds';
 import * as CFG from '../config';
 import { isMonthEnd } from '../calendar';
 import { newLoan } from '../factory';
@@ -61,6 +61,7 @@ import type { Firm, Loan, LoanPurpose, LoanRequest, Person, Ref, SimState } from
 import { clamp, ema, fin } from '../util';
 import { materialsValue } from './production';
 import { firmAssets } from './firms';
+import { creditLgd, creditMonthEnd, creditPd, creditState, noteLoss, type CreditFacts } from './credit';
 
 // Local copies of constants read in hot loops (imported bindings may be getters under some loaders).
 const {
@@ -71,7 +72,6 @@ const {
   LOAN_REFI_GAP,
   BANK_MIN_CAPITAL,
   BANK_OWN_MIN_CAPITAL,
-  BANK_RISK_PREMIUM,
   BANK_DSCR,
   BANK_MAX_LEVERAGE,
   BANK_IOU_MARGIN,
@@ -83,8 +83,6 @@ const {
   BANK_REPAY_HYST,
   BANK_TIGHT_SCALE,
   BANK_STANCE_BASE,
-  BANK_STANCE_LOSS_SENS,
-  BANK_STANCE_CAP_SENS,
   BANK_STANCE_UP,
   BANK_STANCE_DOWN,
   BANK_STANCE_SPREAD,
@@ -120,6 +118,24 @@ const {
   INIT_BANK_EQUITY_MIN,
   WORKING_LOAN_TERM,
   BANK_RESERVE_PAY_DAYS,
+  HOUSE_MAX_LTV,
+  HOUSE_LTV_STANCE,
+  BANK_PD_MAX,
+  BANK_STANCE_PD,
+  BANK_EL_MULT,
+  BANK_CAP_BUFFER,
+  BANK_STANCE_CAP_W,
+  BANK_FEAR_SENS,
+  BANK_FEAR_DAYS,
+  BANK_STANCE_RECOVER,
+  BANK_DIVIDEND_HEADROOM,
+  BANK_DIVIDEND_RETAIN,
+  BANK_DIVIDEND_RETAIN_DAYS,
+  CREDIT_COVER_SAFE,
+  HOUSE_LOAN_TERM,
+  INVEST_LOAN_TERM,
+  STARTUP_LOAN_TERM,
+  LOAN_RATE_PERSIST_DAYS,
 } = CFG;
 
 /** The most requests kept in the daily queue (protects against a runaway requester). */
@@ -237,10 +253,88 @@ function rateFor(base: number, spread: number, cap: number, floor = -1): number 
   return fin(r, base);
 }
 
-/** Risk spread from post-loan leverage (0..1+). */
-function riskSpread(leverage: number): number {
-  const l = clamp(fin(leverage), 0, 1.5);
-  return BANK_RISK_PREMIUM * l * l;
+/** The most the bank lends against a house being built, as a share of its cost, at a given stance. */
+export function houseMaxLtv(stance: number): number {
+  return Math.max(0, HOUSE_MAX_LTV - HOUSE_LTV_STANCE * clamp(fin(stance), 0, 1));
+}
+
+/**
+ * The funding cost a fixed-rate loan of `termDays` is priced on: the short rate expected over its life plus the bank's
+ * spread over the reserve rate today. Today's reserve rate is expected to hold for about LOAN_RATE_PERSIST_DAYS, then
+ * give way to the long-run expectation (bonds.bondView — its memory, and where inflation should take it). So a
+ * one-year loan follows a cut or a rise closely; a twenty-year one mostly prices where rates are expected to settle,
+ * and rises with expected inflation before the Treasury moves (money repaid in twenty years will be worth less).
+ */
+export function termBaseRate(s: SimState, termDays: number): number {
+  const rr = fin(s.treasury.reserveRate);
+  const over = fin(s.bank.baseRate) - rr;
+  const T = Math.max(1, fin(termDays, 1)) / Math.max(1, LOAN_RATE_PERSIST_DAYS);
+  const now = (1 - Math.exp(-T)) / T; // share of the loan's life today's rate is expected to last
+  return fin(now * rr + (1 - now) * bondView(s).expRate + over, fin(s.bank.baseRate));
+}
+
+/** The most likely to default (yearly probability) a borrower may look for the bank still to lend, at a stance. */
+export function pdLimit(stance: number): number {
+  return BANK_PD_MAX * (1 - BANK_STANCE_PD * clamp(fin(stance), 0, 1));
+}
+
+/**
+ * What the bank knows of `who` for a credit judgement (agents/credit.ts), were it to lend `extra` more at `rate`
+ * for new capital that earns `yieldNew` a year (`committed`: what others have already paid into the works;
+ * `ltv`: for a house being built, the loan's share of its cost).
+ */
+export function borrowerFacts(s: SimState, who: Ref, purpose: LoanPurpose, extra: number, committed: number, rate: number, yieldNew: number, ltv: number, overdue = 0): CreditFacts {
+  const f = firmOf(s, who);
+  const p = f ? undefined : personOf(s, who);
+  let debt0 = 0;
+  let interest0 = 0;
+  for (const ln of s.loans) {
+    if (!ln.active || ln.borrower !== who) continue;
+    debt0 += ln.principal;
+    interest0 += (ln.principal * Math.max(0, fin(ln.rate))) / DAYS_PER_YEAR;
+  }
+  const a = Math.max(0, fin(extra));
+  const assets = assetsOf(s, who) + a + Math.max(0, fin(committed));
+  const interest = interest0 + (a * Math.max(0, fin(rate))) / DAYS_PER_YEAR;
+  let cf = 0;
+  let margin = 0;
+  let young = false;
+  let distress = 0;
+  let town = -1;
+  if (f) {
+    cf = Math.max(0, fin(f.profit) + interest0);
+    young = s.day - f.founded < BANK_YOUNG_FIRM_DAYS;
+    if (young) cf = Math.max(cf, (assets * BANK_PROJECT_YIELD) / DAYS_PER_YEAR);
+    distress = clamp(fin(f.distress) / Math.max(1, DISTRESS_BANKRUPT_DAYS), 0, 1);
+    margin = clamp(fin(f.profit) / Math.max(1, fin(f.unitCost) * Math.max(1, fin(f.sales))), -1, 1);
+    town = f.town;
+  } else if (p) {
+    cf = BANK_INCOME_DEBT_SHARE * Math.max(0, fin(p.income));
+    town = p.town;
+    const w = town >= 0 && s.towns[town] && s.towns[town].avgWage > 0 ? s.towns[town].avgWage : fin(s.stats.baseWage, BASE_WAGE) || BASE_WAGE;
+    margin = clamp(fin(p.income) / Math.max(0.1, w) - 1, -1, 1);
+  }
+  const cover = interest > 1e-12 ? (cf + (a * Math.max(0, yieldNew)) / DAYS_PER_YEAR) / interest : 2 * CREDIT_COVER_SAFE;
+  const t = town >= 0 ? s.towns[town] : undefined;
+  return {
+    person: !!p,
+    young,
+    purpose,
+    leverage: assets > 0 ? (debt0 + a) / assets : debt0 + a > 0 ? 1.5 : 0,
+    ltv: Math.max(0, fin(ltv)),
+    cover,
+    overdue: Math.max(0, fin(overdue)),
+    distress,
+    margin,
+    unemp: t && t.pop > 0 ? clamp(fin(t.unemployed) / t.pop, 0, 1) : 0.05,
+    infl: clamp(fin((s.stats.latest as Record<string, number>)?.inflYoY), -0.5, 1),
+  };
+}
+
+/** The spread the bank charges for its expected loss on a loan with these facts (and the yearly default probability it reckons). */
+function lossSpread(s: SimState, c: CreditFacts): { spread: number; pd: number } {
+  const pd = creditPd(s, c);
+  return { spread: BANK_EL_MULT * pd * creditLgd(s, c.purpose), pd };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +460,7 @@ const TYPICAL_LEVERAGE = 0.4;
  * `extraDebt` is the size of the loan being considered (assumed to finance assets of the same value).
  * borrower < 0 → the rate for a typical sound borrower (e.g. for sector-wide entry decisions).
  */
-export function quoteRate(s: SimState, borrower: Ref, extraDebt: number, committed = 0): number {
+export function quoteRate(s: SimState, borrower: Ref, extraDebt: number, committed = 0, houseCost = 0): number {
   const b = s.bank;
   if (b.failed) return NO_QUOTE;
   const extra = Math.max(0, fin(extraDebt));
@@ -376,6 +470,20 @@ export function quoteRate(s: SimState, borrower: Ref, extraDebt: number, committ
   if (fin(b.equity) / Math.max(1, L + extra) < capNeed) return NO_QUOTE;
   let lev = TYPICAL_LEVERAGE;
   let premium = 0;
+  if (houseCost > 0) {
+    // a house being built: the loan is secured on the house (its works and plot), judged on its share of the cost
+    if (borrower >= 0 && !borrowerAlive(s, borrower)) return NO_QUOTE;
+    const ltv = extra / houseCost;
+    if (ltv > houseMaxLtv(stance)) return NO_QUOTE;
+    premium = (isPerson(borrower) ? BANK_PERSON_PREMIUM : 0) + BANK_STANCE_SPREAD * stance;
+    const facts = borrower >= 0 ? borrowerFacts(s, borrower, 'house', extra, committed, termBaseRate(s, HOUSE_LOAN_TERM) + premium, houseRentYield(s, borrower, houseCost), ltv) : null;
+    const el = facts ? lossSpread(s, facts) : { spread: 0, pd: 0 };
+    if (el.pd > pdLimit(stance)) return NO_QUOTE;
+    const raw = termBaseRate(s, HOUSE_LOAN_TERM) + premium + el.spread;
+    const { cap, floor } = rateLimits(s);
+    if (cap >= 0 && raw > cap) return NO_QUOTE;
+    return floor >= 0 ? Math.max(raw, floor) : raw;
+  }
   if (borrower >= 0) {
     if (!borrowerAlive(s, borrower)) return NO_QUOTE;
     // (`committed`: equity others have already put into the works the loan would finance)
@@ -386,8 +494,16 @@ export function quoteRate(s: SimState, borrower: Ref, extraDebt: number, committ
     if (lev > maxLev) return NO_QUOTE;
     if (isPerson(borrower)) premium += BANK_PERSON_PREMIUM;
   }
-  const spread = riskSpread(lev) + BANK_STANCE_SPREAD * stance + premium;
-  const raw = fin(b.baseRate) + spread;
+  // the expected loss on it: this borrower's (term credit for new capital), or a typical borrower's
+  const term = isPerson(borrower) ? STARTUP_LOAN_TERM : INVEST_LOAN_TERM;
+  const facts: CreditFacts =
+    borrower >= 0
+      ? borrowerFacts(s, borrower, isPerson(borrower) ? 'startup' : 'invest', extra, committed, termBaseRate(s, term) + premium, BANK_PROJECT_YIELD, 0)
+      : { person: false, young: false, purpose: 'invest', leverage: lev, ltv: 0, cover: CREDIT_COVER_SAFE, overdue: 0, distress: 0, margin: 0, unemp: 0.05, infl: 0 };
+  const el = lossSpread(s, facts);
+  if (el.pd > pdLimit(stance)) return NO_QUOTE;
+  const spread = el.spread + BANK_STANCE_SPREAD * stance + premium;
+  const raw = termBaseRate(s, term) + spread;
   const { cap, floor } = rateLimits(s);
   if (cap >= 0 && raw > cap) return NO_QUOTE;
   return floor >= 0 ? Math.max(raw, floor) : raw;
@@ -431,7 +547,10 @@ function defaultLoan(s: SimState, ln: Loan): number {
   const rec = avail > 0 ? repayPrincipal(s, who, Math.min(ln.principal, avail)) : 0;
   ln.principal = Math.max(0, ln.principal - rec);
   const loss = ln.principal;
-  if (loss > 0) writeOff(s, loss);
+  if (loss > 0) {
+    writeOff(s, loss);
+    noteLoss(s, ln, loss);
+  }
   ln.principal = 0;
   ln.active = false;
   const f = firmOf(s, who);
@@ -467,15 +586,18 @@ function serviceLoans(s: SimState, cap: number, floor: number): void {
     if (!borrowerAlive(s, who)) {
       // Nobody left to collect from (estates normally pass debts on first).
       writeOff(s, ln.principal);
+      noteLoss(s, ln, ln.principal);
       bump(s, 'defaults', ln.principal);
       ln.principal = 0;
       ln.active = false;
       continue;
     }
-    // Today's terms for this borrower: base rate + its own spread, within any legal bounds.
-    const offer = rateFor(base, fin(ln.spread), cap, floor);
+    // Today's terms for this borrower: base rate + its own spread, within any legal bounds (fixed-rate credit:
+    // on the expected rate, as it would be priced today).
+    const fixedLoan = ln.fixed ?? !LOAN_FLOATING_PURPOSES.includes(ln.purpose);
+    const offer = rateFor(fixedLoan ? termBaseRate(s, ln.left) : base, fin(ln.spread), cap, floor);
     let r = offer;
-    if (ln.fixed ?? !LOAN_FLOATING_PURPOSES.includes(ln.purpose)) {
+    if (fixedLoan) {
       // A fixed-rate loan keeps the rate agreed when it was made (later rules and rate changes do
       // not reach it) — unless the day's terms have fallen far enough below it that a borrower in
       // good standing refinances at them.
@@ -780,6 +902,7 @@ export function requestLoan(s: SimState, req: LoanRequest): void {
     term: clamp(Math.round(fin(req.term, WORKING_LOAN_TERM)), 1, BANK_MAX_TERM),
     purpose: req.purpose,
     project: Number.isFinite(req.project) ? req.project : -1,
+    ...(fin(req.security ?? 0) > 0 ? { security: fin(req.security ?? 0) } : {}),
   });
 }
 
@@ -847,6 +970,15 @@ function projectValue(s: SimState, projectId: number): number {
     return fin(materialsValue(pr.need, prices, wage, BUILD_MARGIN));
   }
   return 0;
+}
+
+/** The rent yield a landlord's new house costing `cost` would earn (rents × slots a year / cost), at the going rent where they live. */
+function houseRentYield(s: SimState, who: Ref, cost: number): number {
+  const p = personOf(s, who);
+  const f = firmOf(s, who);
+  const t = p ? s.towns[p.town] : f ? s.towns[f.town] : undefined;
+  const rent = t && t.avgRent > 0 ? t.avgRent : BASE_RENT_SHARE * (fin(s.stats.baseWage, BASE_WAGE) || BASE_WAGE);
+  return clamp((rent * HOUSE_SLOTS * DAYS_PER_YEAR) / Math.max(1, cost), 0.02, 0.3);
 }
 
 /** Annual cash yield the bank expects on the capital a loan finances. */
@@ -933,13 +1065,29 @@ function decide(s: SimState, req: LoanRequest, loansNow: number, cap: number, fl
   const dscrNeed = BANK_DSCR * (1 + BANK_STANCE_DSCR * stance);
   const maxLev = BANK_MAX_LEVERAGE * (1 - BANK_STANCE_LEVERAGE * stance);
   const premium = (p ? BANK_PERSON_PREMIUM : 0) + (req.purpose === 'startup' ? BANK_STARTUP_PREMIUM : 0) + BANK_STANCE_SPREAD * stance;
-  const base = fin(b.baseRate);
+  // fixed-rate term credit is priced on the short rate expected over the years ahead; a credit line floats on today's
+  const base = LOAN_FLOATING_PURPOSES.includes(req.purpose) ? fin(b.baseRate) : termBaseRate(s, fin(req.term, WORKING_LOAN_TERM));
 
+  // A house being built is security for its own loan: judged on its share of the house's cost (works + plot),
+  // priced as secured credit; the developer's income and the rents still have to cover the interest (below).
+  const house = req.purpose === 'house' && req.project >= 0 && fin(req.security ?? 0) > 0 ? fin(req.security ?? 0) : 0;
+  const houseLtvMax = houseMaxLtv(stance);
+  const pdMax = pdLimit(stance);
   const test = (a: number): string => {
     if (a > capRoom) return 'capital';
-    const lev = (debt0 + a) / Math.max(1e-6, assets0 + a);
-    if (lev > maxLev) return 'leverage';
-    const spread = riskSpread(lev) + premium;
+    let ltv = 0;
+    if (house > 0) {
+      ltv = a / house;
+      if (ltv > houseLtvMax) return 'leverage';
+    } else {
+      const lev = (debt0 + a) / Math.max(1e-6, assets0 + a);
+      if (lev > maxLev) return 'leverage';
+    }
+    // the expected loss, from the bank's own judgement of this borrower (agents/credit.ts); a borrower it
+    // thinks too likely to default is refused whatever it would pay
+    const el = lossSpread(s, borrowerFacts(s, who, req.purpose, a, committed, base + premium, asset ? yieldNew : BANK_WORKING_YIELD, ltv));
+    if (el.pd > pdMax) return 'risk';
+    const spread = el.spread + premium;
     const raw = base + spread;
     if (cap >= 0 && raw > cap) return 'ratecap';
     const r = floor >= 0 ? Math.max(raw, floor) : raw;
@@ -1028,7 +1176,10 @@ function processRequests(s: SimState): void {
     const d = decide(s, req, loansNow, cap, floor);
     item.reason = d.reason;
     if (d.reason === 'ratecap') rationed++;
-    if (d.reason === 'capital') capitalShort++;
+    if (d.reason === 'capital') {
+      capitalShort++;
+      creditState(s).capShortDay = s.day;
+    }
     if (!(d.amount >= BANK_MIN_LOAN)) {
       if (!item.reason) item.reason = 'small';
       b.rejected++;
@@ -1056,28 +1207,58 @@ function processRequests(s: SimState): void {
   }
 }
 
-/** Stance drifts toward a target set by recent losses and capital headroom: tightens fast, loosens slowly. */
+/**
+ * The bank's mood. Its stance drifts toward a target: a resting level, tighter as capital thins toward the rule in
+ * force (BANK_STANCE_CAP_W as its BANK_CAP_BUFFER of headroom is used up), and tighter still while it is wary
+ * after losses it did not expect (credit.fear). It tightens fast and loosens slowly — the faster, the more capital
+ * it has to spare.
+ */
 function updateStance(s: SimState): void {
   const b = s.bank;
-  const lossAnnual = Math.max(0, fin(b.defaultEma)) * DAYS_PER_YEAR;
   const cr = capitalRatio(s);
-  let target = BANK_STANCE_BASE + BANK_STANCE_LOSS_SENS * lossAnnual + BANK_STANCE_CAP_SENS * Math.max(0, minCapital(s) + 0.04 - cr);
+  const minC = minCapital(s);
+  const thin = clamp((minC + BANK_CAP_BUFFER - cr) / BANK_CAP_BUFFER, 0, 1);
+  const headroom = clamp((cr - minC - BANK_CAP_BUFFER) / Math.max(0.01, BANK_CAP_BUFFER), 0, 3);
+  let target = BANK_STANCE_BASE + BANK_STANCE_CAP_W * thin + clamp(fin(creditState(s).fear), 0, 1);
   if (b.failed) target = 1;
   target = clamp(target, 0, 1);
   const st = clamp(fin(b.stance, 0.3), 0, 1);
   const diff = target - st;
-  b.stance = clamp(st + (diff > 0 ? Math.min(diff, BANK_STANCE_UP) : Math.max(diff, -BANK_STANCE_DOWN)), 0, 1);
+  const down = BANK_STANCE_DOWN * (1 + BANK_STANCE_RECOVER * headroom);
+  b.stance = clamp(st + (diff > 0 ? Math.min(diff, BANK_STANCE_UP) : Math.max(diff, -down)), 0, 1);
 }
 
-/** Today's write-offs from every source (bank defaults, bankruptcies, estates): delta of the cumulative counter. */
+/**
+ * Wariness: what the bank has lost over about the last three months (every write-off: credit.lossDaily over
+ * 1/BANK_DEFAULT_EMA days) beyond what it expected its book to lose in that time (credit.expLoss, a year's worth,
+ * scaled), against its capital × BANK_FEAR_SENS — losing a third of its capital unexpectedly within a quarter is as
+ * wary as it gets. It rises quickly to that and fades over about BANK_FEAR_DAYS once losses are back to what was
+ * expected — and charged for.
+ */
+function updateFear(s: SimState): void {
+  const c = creditState(s);
+  const b = s.bank;
+  const window = 1 / BANK_DEFAULT_EMA;
+  const lost = Math.max(0, fin(c.lossDaily)) * window;
+  const expected = (Math.max(0, fin(c.expLoss)) * window) / DAYS_PER_YEAR;
+  const target = clamp((BANK_FEAR_SENS * Math.max(0, lost - expected)) / Math.max(1, fin(b.equity)), 0, 1);
+  const f = fin(c.fear);
+  c.fear = clamp(f + (target - f) * (target > f ? 0.1 : 1 / BANK_FEAR_DAYS), 0, 1);
+}
+
+/** What the bank knows of an outstanding loan's borrower today (for learning, and the book's expected loss). */
+function loanFacts(s: SimState, ln: Loan): CreditFacts | null {
+  if (!borrowerAlive(s, ln.borrower)) return null;
+  return borrowerFacts(s, ln.borrower, ln.purpose, 0, 0, 0, 0, 0, ln.overdue);
+}
+
+/** Today's write-offs from every source (bank defaults, bankruptcies, estates): the rise in the cumulative counter since the last evening. */
 function todaysWriteoffs(s: SimState): number {
-  const bag = rt(s).bag;
-  const mem = bag.bankWriteoffs as { day: number; total: number } | undefined;
+  const c = creditState(s);
   const total = fin(s.bank.writeoffs);
-  let wo: number;
-  if (mem && mem.day === s.day - 1 && total >= mem.total) wo = total - mem.total;
-  else wo = Math.max(0, fin(s.stats.acc.writeoffs)); // first day (or after a load)
-  bag.bankWriteoffs = { day: s.day, total };
+  const seen = c.woSeen;
+  const wo = seen !== undefined && Number.isFinite(seen) && total >= seen ? total - seen : Math.max(0, fin(s.stats.acc.writeoffs)); // (older saves: today's tally)
+  c.woSeen = total;
   return wo;
 }
 
@@ -1090,14 +1271,19 @@ function payDividends(s: SimState): void {
   // Capital is judged against the loan book the bank should be able to carry, not only the one it has.
   const L = Math.max(loansOutstanding(s), BANK_DIVIDEND_BOOK_SHARE * Math.max(0, deposits(s)));
   const cr = fin(b.equity) / Math.max(1, L);
-  if (!(cr > BANK_DIVIDEND_CAPITAL)) return;
+  // what term lending needs at today's stance, a margin over it, and more while borrowers have lately been turned away for want of capital
+  const stance = clamp(fin(b.stance, 0.3), 0, 1);
+  const lendNeed = minCapital(s) + BANK_STANCE_CAPITAL * stance + BANK_TERM_CAPITAL_EXTRA + BANK_DIVIDEND_HEADROOM;
+  const retain = s.day - fin(creditState(s).capShortDay, -9999) < BANK_DIVIDEND_RETAIN_DAYS ? BANK_DIVIDEND_RETAIN : 0;
+  const floorCap = Math.max(BANK_DIVIDEND_CAPITAL, lendNeed) + retain;
+  if (!(cr > floorCap)) return;
   // Payout share rises from BANK_DIVIDEND_SHARE to 1 as capital goes from 1× to 2× the dividend floor;
   // a bank with far more capital than it needs also hands back part of the excess.
-  const share = BANK_DIVIDEND_SHARE + (1 - BANK_DIVIDEND_SHARE) * clamp((cr - BANK_DIVIDEND_CAPITAL) / BANK_DIVIDEND_CAPITAL, 0, 1);
+  const share = BANK_DIVIDEND_SHARE + (1 - BANK_DIVIDEND_SHARE) * clamp((cr - floorCap) / floorCap, 0, 1);
   let div = share * Math.max(0, profit);
-  const ample = Math.max(2 * BANK_DIVIDEND_CAPITAL * L, INIT_BANK_EQUITY_MIN);
+  const ample = Math.max(2 * floorCap * L, INIT_BANK_EQUITY_MIN);
   if (b.equity > ample) div += 0.05 * (b.equity - ample);
-  div = Math.min(div, b.equity - BANK_DIVIDEND_CAPITAL * L);
+  div = Math.min(div, b.equity - floorCap * L);
   if (!(div > 0.5)) return;
   const owner = s.bank.owner;
   const op = owner >= 0 ? s.people[owner] : undefined;
@@ -1153,7 +1339,7 @@ function failureStep(s: SimState): void {
  * capital ratio after loan ≥ minCapital (BANK_MIN_CAPITAL, or a capitalMin Limit in its place,
  * never below BANK_OWN_MIN_CAPITAL), stance; a rate cap below the risk-adjusted rate → reject;
  * a rate floor raises the rate the borrower's coverage is judged at); approved → Loan record + ledger.disburse.
- * Stance tightens with defaultEma, loosens slowly. Monthly dividends to the owner when
+ * Stance tightens with capital thinness and unexpected losses (updateFear), loosens faster with headroom. Monthly dividends to the owner when
  * capital ratio > 12 %. Failure: equity < 0 → failed (no new loans, news 'crisis');
  * after BANK_FAIL_GRACE_DAYS still < 0 → bailIn to restore capital (to the minimum ratio +
  * the full stance buffer + BANK_BAILIN_TARGET, so the bank can lend again), news.
@@ -1167,11 +1353,17 @@ export function bankEndDay(s: SimState): void {
   const wo = todaysWriteoffs(s);
   const L = loansOutstanding(s);
   b.defaultEma = ema(fin(b.defaultEma), wo / Math.max(1, L + wo), BANK_DEFAULT_EMA); // share of the book lost today
+  const cr = creditState(s);
+  cr.lossDaily = ema(fin(cr.lossDaily), wo, BANK_DEFAULT_EMA); // ¤ lost a day, whatever is left of the book
   b.profitMonth = fin(b.profitMonth) + b.interestIn - b.interestOut - wo;
   failureStep(s);
+  updateFear(s);
   updateStance(s);
   processRequests(s);
-  if (isMonthEnd(s.day)) payDividends(s);
+  if (isMonthEnd(s.day)) {
+    payDividends(s);
+    creditMonthEnd(s, (ln) => loanFacts(s, ln));
+  }
   manageReserves(s, deposits(s));
   pruneLoans(s);
   // IOUs are carried at cost; report the unrealised gain (+) / loss (−) at today's price.

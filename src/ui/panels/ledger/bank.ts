@@ -6,12 +6,15 @@
 //   balance      T-account: reserves, loans, IOUs | deposits, window debt, equity
 //   lending      stance meter, today's decisions (with reasons), defaults,
 //                write-offs, interest in / out
+//   judgement    what it has learned of who defaults (agents/credit.ts), the losses it
+//                expects against those it took, its wariness
 //   rates        the window's two rates and the Bank's own
 //   borrowers    the largest debtors (click → inspect)
 //   history      loans and the Bank's own capital
 // ============================================================================
-import { BANK_FAIL_GRACE_DAYS, BANK_MIN_CAPITAL, BANK_OWN_MIN_CAPITAL } from '../../../sim/config';
-import { capitalRuleSource, lastLoanDecisions, requiredReserves, minCapital } from '../../../sim/agents/bank';
+import { BANK_DEFAULT_EMA, BANK_FAIL_GRACE_DAYS, BANK_MIN_CAPITAL, BANK_OWN_MIN_CAPITAL, DAYS_PER_YEAR, HOUSE_LOAN_TERM, INVEST_LOAN_TERM, WORKING_LOAN_TERM } from '../../../sim/config';
+import { capitalRuleSource, houseMaxLtv, lastLoanDecisions, requiredReserves, minCapital, termBaseRate } from '../../../sim/agents/bank';
+import { creditPd, type CreditFacts } from '../../../sim/agents/credit';
 import { refName } from '../../../sim/ledger';
 import { FIRM_BASE, type LoanPurpose, type SimState } from '../../../sim/types';
 import { h, replace, setText } from '../../dom';
@@ -46,6 +49,7 @@ const REASONS: Record<string, string> = {
   leverage: 'borrower too indebted',
   coverage: 'income too thin to repay',
   ratecap: 'rate limit too low for the risk',
+  risk: 'too likely to default',
   overdue: 'already behind on payments',
   gone: 'borrower gone',
   small: 'too small',
@@ -82,7 +86,9 @@ export function createBankView(): LedgerView {
   const bs = tAccount('Assets', 'Liabilities & equity', fmtMoneyShort);
   const bsNote = h('p', { class: 'note ldg-foot' });
 
-  const stance = meter('Lending stance', 'How strict the Bank is when it judges a loan request. It tightens quickly after losses or when capital runs thin, and relaxes slowly.');
+  const stance = meter('Lending stance', 'How strict the Bank is when it judges a loan request. It tightens quickly when its capital runs thin or after losses it did not expect, and relaxes the faster the more capital it has to spare.');
+  const fear = meter('Wariness', 'How shaken the Bank is by what it has lost over the last three months beyond what it expected its loans to lose, against its capital. Losses it expected — and charged borrowers for — do not shake it. It fades over a few months.');
+  const judgeKv = h('div');
   const capMeter = meter(
     'Capital vs its minimum',
     `Equity as a share of loans, against the minimum in force: the standing ${fmtPct(BANK_MIN_CAPITAL)} unless a Limit sets another (the Bank never goes below ${fmtPct(BANK_OWN_MIN_CAPITAL)} of its own accord).`,
@@ -122,6 +128,7 @@ export function createBankView(): LedgerView {
     tag(kpiGrid(Object.values(tiles), 4), 'ldg-k4'),
     card('Balance sheet', 'assets = liabilities + equity', null, bs.el, bsNote),
     card('Lending', 'today', null, h('div', { class: 'ldg-meters' }, stance.el, capMeter.el, resMeter.el), todayKv, reasonsEl),
+    card('Credit judgement', 'learned from its own loans', null, h('div', { class: 'ldg-meters' }, fear.el), judgeKv),
     card('Rates', 'annual', null, ratesKv),
     card('Largest borrowers', borrowSub, null, borrowers.el),
     card('Loans and capital', 'end of each day', rangeCtl.el, chart.el),
@@ -265,6 +272,34 @@ export function createBankView(): LedgerView {
       reasonsEl.hidden = false;
     } else reasonsEl.hidden = true;
 
+    // credit judgement
+    const c = b.credit;
+    const fr = Math.max(0, Math.min(1, fin(c?.fear)));
+    fear.set(fr, { max: 1, text: !c ? '—' : fr < 0.1 ? 'Calm' : fr < 0.4 ? 'Uneasy' : fr < 0.75 ? 'Shaken' : 'Alarmed', tone: fr >= 0.4 ? 'warn' : null });
+    if (c) {
+      const pd = (f: CreditFacts) => fmtPct(safe(() => creditPd(s, f), NaN), 1);
+      const base: CreditFacts = { person: false, young: false, purpose: 'invest', leverage: 0.3, ltv: 0, cover: 3, overdue: 0, distress: 0, margin: 0.1, unemp: fin(L(s, 'unemp'), 0.05), infl: 0 };
+      const lost = fin(c.lossDaily) / BANK_DEFAULT_EMA;
+      const expected = (fin(c.expLoss) / DAYS_PER_YEAR) / BANK_DEFAULT_EMA;
+      replace(
+        judgeKv,
+        kvList([
+          ['Expects its loans to lose, a year', fmtMoneyShort(c.expLoss)],
+          ['Lost in the last three months', `${fmtMoneyShort(lost)} (expected ${fmtMoneyShort(expected)})`, lost > expected * 1.5 + 1 ? 'bad' : undefined],
+          ['Learned from', `${fmtNum(c.seen)} loan-months · ${fmtNum(c.defaults)} defaulted`],
+          ['Lost when a loan defaults', `${fmtPct(c.lgd, 0)} of what is owed · houses ${fmtPct(c.lgdHouse, 0)}`],
+          ['Lends against a house being built', `up to ${fmtPct(houseMaxLtv(st), 0)} of its cost`],
+        ]),
+        h('p', { class: 'note ldg-foot' }, 'The chance it now reckons that a borrower defaults within a year:'),
+        kvList([
+          ['An established firm', pd(base)],
+          ['A young firm', pd({ ...base, young: true })],
+          ['A new firm on a loan', pd({ ...base, person: true, purpose: 'startup', leverage: 0.7, cover: 1.5 })],
+          ['A house, borrowing 85 % of its cost', pd({ ...base, person: true, purpose: 'house', leverage: 0.85, ltv: 0.85, cover: 1.5 })],
+        ]),
+      );
+    } else replace(judgeKv, h('p', { class: 'note' }, 'The Bank judges its first loans by rule of thumb; what its loans do teaches it from the first month.'));
+
     replace(
       ratesKv,
       kvList([
@@ -273,7 +308,8 @@ export function createBankView(): LedgerView {
         ['Bank’s base rate', fmtRate(b.baseRate)],
         ['Average loan rate', fmtRate(avgLoan)],
         ['At a fixed rate', loans > 0 ? `${fmtPct(fixedP / loans, 0)} of loans, averaging ${fmtRate(fixedP > 0 ? fixedR / fixedP : NaN)}` : '—'],
-        ['New loans and credit lines', `base ${fmtRate(b.baseRate)} + each borrower’s risk margin`],
+        ['Credit lines', `base ${fmtRate(b.baseRate)} + each borrower’s expected loss and margin`],
+        ['Fixed loans, before margins', `1 yr ${fmtRate(safe(() => termBaseRate(s, WORKING_LOAN_TERM), NaN))} · 4 yr ${fmtRate(safe(() => termBaseRate(s, INVEST_LOAN_TERM), NaN))} · 20 yr ${fmtRate(safe(() => termBaseRate(s, HOUSE_LOAN_TERM), NaN))}`],
         ['Paid on deposits', fmtRate(b.depositRate)],
         ['Interest on loans, a year', fmtMoneyShort(wRate)],
       ]),

@@ -29,6 +29,7 @@ import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { personName } from '../world/names';
 import { debtOf } from './bank';
+import { noteLoss } from './credit';
 import { firmAssets } from './firms';
 import { findHome, leaveHome } from './housing';
 import { hasLevyBase, leaveJob, netWage, wageCtx } from './labor';
@@ -39,7 +40,7 @@ import { hasLevyBase, leaveJob, netWage, wageCtx } from './labor';
 const { lognormal, rand, randInt, randRange } = RNG;
 const { firmRef, pay, personRef, writeOff } = LEDGER;
 const { ADULT_AGE, BASE_WAGE, BIRTH_GIFT_MAX_DAYS, BIRTH_GIFT_SHARE, BIRTH_MIN_HEALTH, BIRTH_RATE, DAYS_PER_MONTH, DAYS_PER_YEAR, DEATH_AGE_BASE, DEATH_AGE_PIVOT, DEATH_AGE_SCALE, DEATH_RATE, EMIGRATE_PROB_DAY, EMIGRATE_UNEMP_DAYS, HUNGER_DEATH_DAY, HUNGRY_BELOW, IMMIGRANT_CASH_DAYS, IMMIGRANT_COIN_SHARE, IMMIGRATION_DAY, IMMIGRATION_MAX_SHARE, IMMIGRATION_QUEUE_SHARE, IMMIGRATION_WAGE_FLOOR, MIGRATE_MIN_GAIN, MIGRATE_PROB_DAY, MIGRATE_UNEMP_DAYS, OWNER_EMIGRATE_MULT, POOR_HEALTH_MORT, STARVING_HEALTH, UNREST_CONTENT } = CFG;
-const { N_GOODS } = GOODS_M;
+const { HOUSE_SLOTS, N_GOODS } = GOODS_M;
 const { clamp, fin } = UTIL;
 const { dayOfMonth } = CAL;
 const { FOREIGN, STATE } = TYPES;
@@ -141,7 +142,8 @@ function pull(t: Tallies, town: number): number {
  * (MIGRATE_PROB_DAY for unemployed > 30 days toward towns with vacancies & housing).
  * Monthly: immigration while a town is hiring and its job seekers number fewer than its
  * vacancies + IMMIGRATION_QUEUE_SHARE of its people (Harris–Todaro), and vacant slots exist
- * (≤ IMMIGRATION_MAX_SHARE × town pop), arriving with small savings (minted? NO —
+ * (≤ IMMIGRATION_MAX_SHARE × town pop; those turned away for want of a home are kept in
+ * town.housingWait, which house builders count as demand), arriving with small savings (minted? NO —
  * immigrants bring coin from abroad: pay(FOREIGN → person) capped by foreign.coin).
  * Accumulates stats.acc births/deaths/immigrants/emigrants.
  */
@@ -236,7 +238,8 @@ function immigration(s: SimState): void {
   for (let t = 0; t < s.towns.length; t++) {
     const gap = tl.vacancies[t] - tl.unemployed[t] + IMMIGRATION_QUEUE_SHARE * Math.max(tl.pop[t], 10);
     const slots = tl.vacantSlots[t];
-    if (!(tl.vacancies[t] >= 1) || gap <= 0 || slots <= 0) continue;
+    const town = s.towns[t];
+    delete town.housingWait;
     let attract = clamp((tl.content[t] - 0.3) / 0.3, 0, 1);
     const cpi = s.towns[t].cpi > 1 ? s.towns[t].cpi : 100;
     const base = fin(s.stats.baseWage) > 0.5 ? s.stats.baseWage : BASE_WAGE;
@@ -245,7 +248,13 @@ function immigration(s: SimState): void {
     // worker hands over leaves the posted wage high; one the employer pays lowers it).
     const rel = (tl.wage[t] + tl.head[t]) / (cpi / 100) / base;
     attract *= clamp((rel - IMMIGRATION_WAGE_FLOOR) / Math.max(0.01, 1 - IMMIGRATION_WAGE_FLOOR), 0, 1);
+    town.pull = Math.round(fin(attract) * 1000) / 1000; // (entrepreneurs read it: likelyNewcomers)
+    if (!(tl.vacancies[t] >= 1) || gap <= 0) continue;
     const cap = IMMIGRATION_MAX_SHARE * Math.max(tl.pop[t], 10);
+    // those who would have come for the work but found no free home (house builders count them: entry.houseSignal)
+    const turned = Math.max(0, Math.min(gap, cap) - Math.max(0, slots)) * attract;
+    if (turned > 1e-6) town.housingWait = Math.round(turned * 100) / 100;
+    if (slots <= 0) continue;
     const x = Math.min(gap, slots, cap) * attract;
     const n = Math.floor(x + rand(s));
     let arrived = 0;
@@ -260,6 +269,20 @@ function immigration(s: SimState): void {
     if (arrived > 0) bump(s, 'immigrants', arrived);
     if (arrived >= 3) news(s, `${arrived} newcomers arrived in ${s.towns[t].name} from abroad, drawn by work.`, 'good', t);
   }
+}
+
+/**
+ * Newcomers a town could draw over the next `months` if it took on hands: at most IMMIGRATION_MAX_SHARE of its
+ * people a month, as far as there are homes for them (free slots and houses being built), times how strongly it
+ * drew them at the last arrivals (town.pull). Entrepreneurs count them among the hands they can hire.
+ */
+export function likelyNewcomers(s: SimState, town: number, months: number): number {
+  const t = s.towns[town];
+  if (!t || !(months > 0)) return 0;
+  let homes = Math.max(0, fin(t.vacantSlots));
+  for (const p of s.projects) if (p.kind === 'house' && p.town === town && p.status !== 'done' && p.status !== 'cancelled') homes += HOUSE_SLOTS;
+  const cap = IMMIGRATION_MAX_SHARE * Math.max(fin(t.pop), 10) * months;
+  return Math.min(homes, cap) * clamp(fin(t.pull ?? 0), 0, 1);
 }
 
 /**
@@ -360,6 +383,7 @@ function passAssets(s: SimState, p: Person, heir: Person | null): void {
     if (heir) ln.borrower = to;
     else {
       writeOff(s, ln.principal);
+      noteLoss(s, ln, ln.principal);
       ln.principal = 0;
       ln.active = false;
     }

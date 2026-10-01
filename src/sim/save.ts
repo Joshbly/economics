@@ -467,6 +467,8 @@ function fillCouncils(s: SimState): void {
     if (!t) continue;
     if (t.evictions !== undefined && !isNum(t.evictions)) delete t.evictions;
     if (t.bumperDays !== undefined && !(isNum(t.bumperDays) && t.bumperDays > 0)) delete t.bumperDays;
+    if (t.housingWait !== undefined && !(isNum(t.housingWait) && t.housingWait > 0)) delete t.housingWait;
+    if (t.pull !== undefined && !(isNum(t.pull) && t.pull >= 0 && t.pull <= 1)) delete t.pull;
     const c = t.council as unknown;
     if (!isObj(c)) {
       t.council = blankCouncil();
@@ -500,7 +502,13 @@ function fillDefaults(s: SimState): void {
   t.flowsLastMonth = isObj(t.flowsLastMonth) ? t.flowsLastMonth : {};
   if (typeof t.autoMint !== 'boolean') t.autoMint = false;
   if (!Array.isArray(s.foreign.shocks)) s.foreign.shocks = [];
+  for (const k of ['pullIn', 'pullOut'] as const) {
+    const v = s.foreign[k];
+    if (v !== undefined && !(Array.isArray(v) && v.length === N_GOODS && v.every((x) => isNum(x) && x >= 0))) delete s.foreign[k];
+  }
   if (!Array.isArray(s.bank.requests)) s.bank.requests = [];
+  for (const r of s.bank.requests) if (r.security !== undefined && !(isNum(r.security) && r.security > 0)) delete r.security;
+  fillCredit(s);
   for (const f of s.firms) {
     if (!f) continue;
     if (!isNum(f.salesLong)) f.salesLong = 0;
@@ -541,4 +549,28 @@ export function deserialize(json: string): SimState {
   if (!Number.isFinite(err)) throw new Error('This save cannot be loaded: the bank ledger does not add up.');
   if (Math.abs(err) > 1e-6 * Math.max(1, deposits(s))) reconcileBank(s);
   return s;
+}
+
+/** The bank's credit judgement (agents/credit.ts): dropped if malformed (it is rebuilt from scratch on first use). */
+function fillCredit(s: SimState): void {
+  const c = s.bank.credit;
+  if (c === undefined) return;
+  const nums = (a: unknown): boolean => Array.isArray(a) && a.every((x) => isNum(x));
+  if (isObj(c) && c.lossDaily === undefined) c.lossDaily = 0; // saves from before it was kept
+  if (isObj(c) && c.woSeen !== undefined && !isNum(c.woSeen)) delete c.woSeen;
+  const ok =
+    isObj(c) &&
+    isObj(c.net) &&
+    (c.net.v === undefined || nums(c.net.v)) &&
+    (c.net.P === undefined || nums(c.net.P)) &&
+    nums(c.net.w1) &&
+    nums(c.net.b1) &&
+    nums(c.net.w2) &&
+    isNum(c.net.b2) &&
+    Array.isArray(c.watch) &&
+    c.watch.every((w) => isObj(w) && isNum(w.loan) && nums(w.x) && isNum(w.prior) && isNum(w.principal) && typeof w.house === 'boolean') &&
+    Array.isArray(c.lost) &&
+    c.lost.every((l) => isObj(l) && isNum(l.loan) && isNum(l.lost)) &&
+    [c.seen, c.defaults, c.lgd, c.lgdHouse, c.fear, c.expLoss, c.lossDaily, c.err, c.capShortDay].every((x) => isNum(x));
+  if (!ok) delete s.bank.credit;
 }

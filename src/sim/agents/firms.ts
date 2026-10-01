@@ -139,6 +139,10 @@ import {
   WAGE_RESERVE_DAYS,
   WAGE_UP_DAY,
   WAGE_URGENCY_FROM,
+  SERVICE_MARGINAL_SHARE,
+  WAGE_MATCH_URGENCY,
+  WAGE_MATCH_PREMIUM,
+  WAGE_MATCH_MAX_STEP,
   WAGE_URGENCY_MAX,
   WAGE_VACANCY_DAYS,
   WAGON_CAPACITY,
@@ -164,6 +168,7 @@ import { clamp, ema, fin } from '../util';
 import { siteMultiplier as layoutSiteMultiplier } from '../world/layout';
 import { firmName } from '../world/names';
 import { creditAppetite, quoted, quoteRate, requestLoan } from './bank';
+import { noteLoss } from './credit';
 import { cancelProject } from './construction';
 import { fire, hasLevyBase } from './labor';
 import {
@@ -706,7 +711,16 @@ function meanExpectedInflation(s: SimState): number {
 function hiringUrgency(s: SimState, f: Firm, w: number, pt: PriceTable): number {
   const d = SECTORS[f.sector];
   const nW = f.workers.length;
-  if (!d || !d.producer || !(w > 0)) return 0;
+  if (!d || !(w > 0)) return 0;
+  if (!d.producer) {
+    // A carting house or a builders' yard: what a hand earns it — its profit plus what it pays its hands, a day,
+    // per hand (at the margin, SERVICE_MARGINAL_SHARE of that). A carter's wagons stand idle without drivers while
+    // the oil and the coal pile up at one end of the road; the house must not wait months to outbid the workshops.
+    if (f.sector !== 'trader' && f.sector !== 'builder') return 0;
+    if (nW <= 0) return 0;
+    const value = (SERVICE_MARGINAL_SHARE * Math.max(0, fin(f.profit) + nW * employerWageCost(s, f.town, f.sector, w))) / nW;
+    return clamp(value / Math.max(1e-9, employerWageCost(s, f.town, f.sector, w)) - WAGE_URGENCY_FROM, 0, WAGE_URGENCY_MAX);
+  }
   const g = d.out;
   const t = f.town;
   const pExp = f.pExp > 0 && Number.isFinite(f.pExp) ? f.pExp : netOf(s, f, pt, g);
@@ -720,7 +734,7 @@ function hiringUrgency(s: SimState, f: Firm, w: number, pt: PriceTable): number 
 }
 
 /** Posted-wage adjustment (all firm sectors except stateworks). */
-function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: number, hi: number, pt: PriceTable): void {
+function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: number, hi: number, pt: PriceTable, top = 0): void {
   const base = defaultWage(s, f.town);
   let w = f.wage > 0 && Number.isFinite(f.wage) ? f.wage : base;
   w *= index;
@@ -729,7 +743,13 @@ function adjustWage(s: SimState, f: Firm, index: number, unemp: number, lo: numb
   // by its daily hiring pace while plenty of people would take the job has no reason to).
   // A firm that is short of cash does not bid up pay it may not be able to pay.
   const payroll = Math.max(1, f.workers.length) * Math.max(0, w);
-  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5 && f.applicants < open && f.cash > CASH_LOW_DAYS * payroll) w *= 1 + WAGE_UP_DAY * (1 + hiringUrgency(s, f, w, pt));
+  if (f.vacancyDays > WAGE_VACANCY_DAYS && open > 0.5 && f.applicants < open && f.cash > CASH_LOW_DAYS * payroll) {
+    const u = hiringUrgency(s, f, w, pt);
+    w *= 1 + WAGE_UP_DAY * (1 + u);
+    // A hand worth several times its pay (an oil well when oil is dear): match the best pay in town, and a little
+    // more, at once — waiting months while the others outbid it would stop the realm's wagons and boats.
+    if (u >= WAGE_MATCH_URGENCY && top > w) w = Math.min(top * (1 + WAGE_MATCH_PREMIUM), w * (1 + WAGE_MATCH_MAX_STEP));
+  }
   else if (open <= 0.5 && f.distress > 0) w *= 1 - WAGE_DOWN_DAY;
   else if (open <= 0.5 && unemp > WAGE_CUT_UNEMP) {
     const slack = clamp((unemp - WAGE_CUT_UNEMP) / WAGE_CUT_SPAN, 0, 1);
@@ -988,6 +1008,12 @@ export function firmsPlan(s: SimState): void {
     }
   }
   const going = worksGoingWages(s);
+  // the best pay posted in each town by an employer with hands (yesterday's)
+  const top = new Array(nT).fill(0);
+  for (const f of s.firms) {
+    if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks' || f.workers.length === 0 || !(f.wage > 0)) continue;
+    if (f.town >= 0 && f.town < nT && f.wage > top[f.town]) top[f.town] = f.wage;
+  }
   for (const f of s.firms) {
     if (!f || !f.alive || f.status !== 'active' || f.sector === 'stateworks') continue;
     const d = SECTORS[f.sector];
@@ -999,7 +1025,7 @@ export function firmsPlan(s: SimState): void {
       if ((lo[t] ?? -1) >= 0 && w < lo[t]) w = lo[t];
       if ((hi[t] ?? -1) >= 0 && w > hi[t]) w = hi[t];
       f.wage = Math.max(WAGE_MIN_ABS, fin(w, f.wage));
-    } else adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1, pt);
+    } else adjustWage(s, f, index, unemp[t] ?? 0, lo[t] ?? -1, hi[t] ?? -1, pt, (top[t] ?? 0) * index);
     if (!d.producer) continue;
     if (!operating(s, f)) {
       f.target = 0;
@@ -1935,7 +1961,7 @@ export function closeFirm(s: SimState, f: Firm, reason: string): void {
     if (p.status === 'done' || p.status === 'cancelled') continue;
     if (p.owner === fref || (f.build && p.builder === f.id)) cancelProject(s, p.id);
   }
-  bump(s, 'closures');
+  if (f.sector !== 'stateworks') bump(s, 'closures'); // stats.bankrupt: firms that stopped trading today
   const town = s.towns[f.town]?.name ?? '';
   const why = CLOSE_REASON[reason] ?? reason;
   news(s, `${f.name}${town ? ' in ' + town : ''} has shut its doors${why ? ': ' + why : ''}.`, 'bad', f.town);
@@ -1951,6 +1977,7 @@ function finalizeClosure(s: SimState, f: Firm): void {
     ln.principal = Math.max(0, ln.principal - a);
     if (ln.principal > 0) {
       writeOff(s, ln.principal);
+      noteLoss(s, ln, ln.principal);
       lost += ln.principal;
     }
     ln.principal = 0;
