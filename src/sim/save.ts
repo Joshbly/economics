@@ -11,7 +11,7 @@
 import { LAND_HISTORY, LAND_MUL_MAX, LAND_MUL_MIN, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { G, GOODS, N_GOODS } from './goods';
 import { blankCouncil, checkLedger, councilTown, deposits, isCouncil, reconcileBank } from './ledger';
-import { FIRM_BASE, type LandPlot, type SimState } from './types';
+import { FIRM_BASE, type Bracket, type LandPlot, type SimState } from './types';
 
 /** Serialise the whole state to JSON (compact). */
 export function serialize(s: SimState): string {
@@ -518,8 +518,37 @@ function fillPlots(s: SimState): void {
   s.plots = ok;
 }
 
+/** Price brackets (policy/brackets.ts): a damaged one is dropped (its stock stays in the stores); its going prices rebuilt if damaged. */
+function fillBrackets(s: SimState): void {
+  const raw = s.policy.brackets as unknown;
+  if (raw === undefined) return;
+  if (!Array.isArray(raw)) {
+    delete s.policy.brackets;
+    return;
+  }
+  const nums = ['id', 'good', 'low', 'high', 'buyQty', 'sellQty', 'maxStock', 'rungs', 'step', 'created', 'until', 'bought', 'spent', 'sold', 'earned', 'boughtToday', 'soldToday'] as const;
+  s.policy.brackets = (raw as Bracket[]).filter(
+    (b) =>
+      isObj(b) &&
+      nums.every((k) => isNum((b as unknown as Record<string, unknown>)[k])) &&
+      (b.mode === 'fixed' || b.mode === 'local' || b.mode === 'realm') &&
+      typeof b.enabled === 'boolean' &&
+      typeof b.label === 'string' &&
+      Array.isArray(b.towns) &&
+      b.towns.every((t) => Number.isInteger(t) && s.towns[t]) &&
+      b.good >= 0 &&
+      b.good < N_GOODS,
+  );
+  const okArr = (a: unknown, pos: boolean) => Array.isArray(a) && a.length === s.towns.length && a.every((x) => isNum(x) && (!pos || x >= 0));
+  for (const b of s.policy.brackets) {
+    if (!okArr(b.ref, true)) b.ref = s.towns.map(() => 0);
+    if (!okArr(b.today, false)) b.today = s.towns.map(() => 0);
+  }
+}
+
 function fillDefaults(s: SimState): void {
   fillMeans(s);
+  fillBrackets(s);
   fillPlots(s);
   fillInvest(s);
   fillWorks(s);

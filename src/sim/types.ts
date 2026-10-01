@@ -1024,6 +1024,67 @@ export interface Policy {
   lines: FreightLine[];
   /** Standing rules carrying the Treasury's goods between its stores. */
   carries: CarryRule[];
+  /** Price brackets: buy a good below a floor and sell it above a ceiling, town by town (policy/brackets.ts); absent = none. */
+  brackets?: Bracket[];
+}
+
+/** How a bracket's floor and ceiling are set: fixed prices, each town's own going price, or the realm's. */
+export type BracketMode = 'fixed' | 'local' | 'realm';
+
+/** What the player sets of a bracket (days: how long it stands, absent/0 = until removed). */
+export interface BracketInput {
+  good: GoodId;
+  towns?: TownId[];
+  mode: BracketMode;
+  low: number;
+  high: number;
+  buyQty: number;
+  sellQty: number;
+  maxStock?: number;
+  rungs?: number;
+  step?: number;
+  days?: number;
+  label?: string;
+}
+
+/**
+ * A price bracket (policy/brackets.ts): in each of its towns the Treasury bids for `good` at the floor and offers
+ * what its store there holds at the ceiling, every day — a buffer stock that buys gluts and sells into spikes.
+ * 'fixed': `low`/`high` are prices (¤), the same everywhere; 'local': fractions below/above each town's going price
+ * (a slow average, `ref`); 'realm': fractions below/above the mean of the towns' going prices. With `rungs` > 1 the
+ * order is a ladder: rung k (0 …) bids `step` × k further below the floor (offers further above the ceiling) for
+ * (k + 1) × the quantity — more the further the price runs.
+ */
+export interface Bracket {
+  id: number; // shares s.ids.policy
+  label: string;
+  enabled: boolean;
+  good: GoodId;
+  /** Towns it trades in; empty = every town. */
+  towns: TownId[];
+  mode: BracketMode;
+  low: number;
+  high: number;
+  /** Units a day bought at the floor (each town), and offered at the ceiling (0 = that side off). */
+  buyQty: number;
+  sellQty: number;
+  /** The most it keeps in each town's store (buying stops there); −1 none. */
+  maxStock: number;
+  rungs: number;
+  step: number;
+  created: number;
+  until: number; // last day active, −1 never
+  /** Each town's going price as the bracket reckons it: a slow average of the market's (BRACKET_REF_DAYS); by town id. */
+  ref: number[];
+  /** Lifetime: units bought and ¤ spent; units sold and ¤ received. Today's units. */
+  bought: number;
+  spent: number;
+  sold: number;
+  earned: number;
+  boughtToday: number;
+  soldToday: number;
+  /** Today's units by town id: + bought, − sold. */
+  today: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1149,9 @@ export type PlayerAction =
     }
   | { type: 'updateCarry'; id: number; patch: { qty?: number; need?: boolean; enabled?: boolean; wagons?: CarryRule['wagons']; until?: number } }
   | { type: 'removeCarry'; id: number }
+  | { type: 'addBracket'; bracket: BracketInput }
+  | { type: 'updateBracket'; id: number; patch: Partial<BracketInput> & { enabled?: boolean } }
+  | { type: 'removeBracket'; id: number }
   | { type: 'addLevy'; levy: LevyInput }
   | { type: 'updateLevy'; id: number; patch: Partial<Levy> }
   | { type: 'removeLevy'; id: number }

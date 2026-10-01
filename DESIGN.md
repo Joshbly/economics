@@ -955,6 +955,35 @@ that pay ¤5 per year each, forever). Seven primitives:
      short (carry.destNeed; the Treasury's asks there cap it, or without one its average
      daily shortage alone). The carry form picks both from a town-by-town table of the good
      (what each town makes, uses, its market's balance and what the Treasury holds there).
+   * **Price brackets** (`s.policy.brackets`, policy/brackets.ts): buy a good below a floor and
+     sell it above a ceiling, every day, in each of the towns named (or every town) — a buffer
+     stock that takes in a glut and lets it out into a spike. It is no more than standing orders:
+     each morning a bracket posts, in each town, a bid at the floor (`buyQty` a day, while the
+     store there holds less than `maxStock`) and an ask at the ceiling (`sellQty` a day, from what
+     the store holds). Floor and ceiling by `mode`: `fixed` prices (the same everywhere); `local`,
+     fractions below / above each town's own going price — a slow average (EMA over
+     BRACKET_REF_DAYS of the market's smoothed price, `Bracket.ref`), so the band holds still while
+     a spike passes; `realm`, the same fractions around the mean of the towns' going prices — one
+     band, so the cheap towns' gluts are bought and the dear towns' spikes sold into (the
+     straddle across markets). A ladder (`rungs` ≤ BRACKET_MAX_RUNGS): rung k bids `step` × k further
+     below the floor and offers that much above the ceiling, for (k + 1) × the day's quantity — the
+     further the price runs, the harder it leans. The rungs are the Treasury's orders of the day
+     (playerOrders: exempt from levies, within what the Purse pays, never crossing its own orders;
+     their asks re-sized before each later session to what the store then holds, after the standing
+     sell orders' share), not kept among `s.policy.orders` (each has a negative id of its own);
+     fills are tallied on the bracket after the close (`bought`/`spent`/`sold`/`earned`, today's by
+     town in `today`). What it buys sits in the town's store with any other goods (and spoils as they
+     do); pausing or removing a bracket leaves it there — a carry rule moves it, a sell order sells
+     it. Lapses after `days`. It counts against PLAYER_MAX_RULES.
+   * **The trading desk** (ui/panels/desk.ts; Trade → "Open the trading desk", Markets → "Trading
+     desk"): a floating window over the map (the realm keeps running; drag it, resize it) on one
+     good across every town — each town's daily price on one chart with the floor and ceiling of the
+     bracket being drawn up, a table of today's price, the going price, floor, ceiling, what the
+     Treasury holds and traded there; the bracket form (band mode, floor / ceiling, quantities, stock
+     cap, ladder, towns, days) with a plain-words preview; "trade in every chosen town at once" (one
+     ordinary Treasury order per town, at the going price within a band or at a fixed price); and the
+     good's brackets with their tallies (pause, edit, remove). It only reads the state and dispatches
+     `addBracket` / `updateBracket` / `removeBracket` / `placeOrder`.
 3. **Levy** — attach a signed rate to any flow. Positive = the Treasury takes,
    negative ("give") = the Treasury pays. Bases:
    * `sale` of a good (payer: buyer or seller; % of value or ¤ per unit)
@@ -1152,7 +1181,8 @@ composing these primitives.
 
 ```
 beginDay            calendar, season, random events, reset daily accumulators
-policyBeginDay      expire orders/levies/limits/carry rules (carry allowances); freight lines' morning (wagons home, wear, fare,
+policyBeginDay      expire orders/levies/limits/carry rules/price brackets (carry allowances; brackets' going prices move a
+                    day); freight lines' morning (wagons home, wear, fare,
                     drivers wanted) and the Treasury crews (labour orders + line drivers)
 bankBeginDay        rates, interest on deposits/reserves/loans/IOUs, amortisation, window
 bondsBeginDay       what IOUs are worth today: the rate memory, the stress of coupons cut, premia (agents/bonds.ts)
@@ -1174,7 +1204,7 @@ treasuryHandouts    Treasury sell orders at 0: goods handed out free to the town
 openBooks           create all order books (with levy wedges and limits)
   householdOrders, householdPortfolioOrders, firmOrders, builderOrders,
   traderOrders (reading freight lines' fares and room), foreignOrders, bankOrders,
-  playerOrders (incl. the freight lines' bids for tools and oil)
+  playerOrders (incl. the freight lines' bids for tools and oil, and the price brackets' rungs)
 clearAll            three market sessions (MARKET_SESSIONS; SESSION_TIMES 0.3 / 0.5 / 0.7): each
                     releases SESSION_RELEASE (⅓, ½, all) of what every order still has to trade (an
                     order aimed at one session — PlayerOrder.session — all of it there), the
@@ -1186,7 +1216,7 @@ clearAll            three market sessions (MARKET_SESSIONS; SESSION_TIMES 0.3 / 
                     close each market records the day (volume-weighted price, EMA, own price,
                     history, curve with the day's quantities); orders keep the day's totals.
 tradersDispatch     filled purchases → shipments (loads on a freight line pay its fare)
-playerAfterClear    Treasury order bookkeeping (patient steps, Treasury workers, once-orders);
+playerAfterClear    Treasury order bookkeeping (patient steps, Treasury workers, once-orders; price brackets' fills);
                     freight lines: purchases into their stores, today's loads leave, accounts
 bondsAfterMarket    no IOUs in anyone's hands: the quote is what IOU_QUOTE_LOT would fetch from the bids
 householdsConsume   eating, heating, ale, furniture wear, health, contentment

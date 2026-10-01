@@ -36,7 +36,7 @@ The Purse is the money you hold. Money only enters or leaves the realm's circula
       {
         title: 'Your seven levers',
         body: `- **Mint** — create money in the Purse, or destroy money you hold.
-- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market, or shares in a business. Orders can be one-off, last a number of days, or stand until cancelled. **Carry** moves the goods you hold from your store in one town to your store in another, once or as a standing rule. Buying in one town and selling in another is simply a buy order there, a carry, and a sell order here — three rules, each listed and changed on its own.
+- **Trade** — place buy or sell orders in any market: any good in any town, the labour market of a town, the IOU market, the gold market, or shares in a business. Orders can be one-off, last a number of days, or stand until cancelled. **Carry** moves the goods you hold from your store in one town to your store in another, once or as a standing rule. Buying in one town and selling in another is simply a buy order there, a carry, and a sell order here — three rules, each listed and changed on its own. A **price bracket** buys a good below a floor and sells it above a ceiling, every day, in every town you name; the **trading desk** shows one good across every town and sets them up.
 - **Levy** — attach a rate to any flow in the economy. A positive rate means the Treasury takes a share; a negative rate means the Treasury pays out on that flow. A rule on sales of one good can instead aim at a price: its rate re-sets each morning, town by town, so that what buyers pay (or sellers receive) moves toward the price you set.
 - **Limit** — make something illegal: a price, wage or rent above or below a line; a price moving more than a set share in a day; a loan rate above or below a line; more than a set quantity crossing between towns or the border; the bank holding too few reserves or too little capital (the standing 8 % rule can be raised or lowered).
 - **Window** — set the rate you pay the bank on money it parks with you, and the rate you charge when it borrows from you.
@@ -281,6 +281,22 @@ A standing carry can also go **where it runs short**. It serves the towns where 
 The Carry form shows the good **town by town**: what each town makes and uses a day, its market over the last 14 days, and what you hold there. Mark **from** on one store, or on several: a rule then draws on each of them **equally** (a store that holds less gives what it has, and the others make up the rest). Mark **to** on the town it should go to, or pick *Where it runs short*. Besides *Everything* and *Up to* an amount a day, a carry to one town can take **what it needs**: the same measure as above, for that town alone. Bear in mind what it competes with: the trading houses carry goods to where they fetch more, and your wagons take some of their trade. Each piece stays an ordinary rule: your purchases raise the price where you buy, your offers lower it where you sell, and you can change or pause any one of them without touching the others.
 
 **Stores & wagons** (in Trade, and in the Ledger) shows what you hold in each town (a dot marks goods a carry rule takes on elsewhere), every Treasury wagon on the road with its arrival, and what freight has cost this month.`,
+      },
+      {
+        title: 'Price brackets and the trading desk',
+        body: `A **price bracket** (in the trading desk) buys a good when its price is below a floor and sells it when it is above a ceiling — every day, in each town you choose. What it buys goes into your store in that town; what it sells comes out of it. Bought cheap in a glut and sold dear in a spike, the same goods smooth the price both ways, and the store is what it has to work with: a bracket can only sell what it has bought (or what you hold there anyway).
+
+The floor and ceiling can be:
+
+- **Each town's price** — a share below and above that town's own going price. The going price is a slow average (about 90 days) of the market's, so the band holds still while a spike or a glut passes. This leans against each town's swings.
+- **The realm's price** — a share below and above the average of the towns' going prices: one band for the whole realm. It buys in the towns where the good is cheap and sells in those where it is dear.
+- **Fixed prices** — the same two prices in every town.
+
+Each day it bids for so many units at the floor, until the store there holds the most you allow, and offers so many at the ceiling. A **ladder** adds steps: each further step bids lower (and offers higher) for more, so the further the price runs, the harder the bracket leans on it. A bracket's orders are the Treasury's like any other: they pay from the Purse, are not charged by levies, and never trade with your own orders.
+
+What it does to the realm is what any order does. Its bids raise the price where it buys — good for the farmers selling into a glut, dearer for those who buy there — and its offers lower the price where it sells. Goods that spoil go on spoiling in store, so a bracket on bread loses more than one on grain. Taking in a glut in one town does nothing for another unless the goods are carried there.
+
+**The trading desk** (Trade → *Open the trading desk*, or *Trading desk* in Markets) is a window of its own: the realm keeps running while it is open, and you can drag it aside. It shows one good across every town — each town's price over the last 90 to 360 days on one chart, with the floor and ceiling you are drawing up (click a town in the table to draw its own), today's price, going price, what you hold and what you traded there. Set a bracket there; or **trade in every chosen town at once**: one ordinary buy or sell order in each, at its going price (within a band) or at a fixed price. Below it are the good's brackets with what each has bought and sold, and what it has taken in or paid out — pause, change or remove them there or in *In force*. Removing a bracket leaves what it bought in the stores.`,
       },
       {
         title: 'Freight lines',

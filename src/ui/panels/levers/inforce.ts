@@ -19,7 +19,9 @@ import { isAimed } from '../../../sim/policy/levies';
 import { aimedRatesText, describeLevy, describeLimit, describeOrder } from '../../../sim/policy/player';
 import { carryDest, carryFrom, carryHoldDays, carryOnRoad, carrySources, describeCarry, shortTargets } from '../../../sim/policy/carry';
 import { CARRY_FULL_SHARE, WAGON_CAPACITY } from '../../../sim/config';
-import type { CarryRule, Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
+import type { Bracket, CarryRule, Levy, Limit, PlayerOrder, SimState } from '../../../sim/types';
+import { bracketTowns, describeBracket } from '../../../sim/policy/brackets';
+import { openDesk } from '../desk';
 import { h, setText, setTone, show, toggleClass } from '../../dom';
 import { fmtDay, fmtPct, fmtPrice, plural } from '../../format';
 import { marketOf } from '../../../sim/market/markets';
@@ -437,6 +439,57 @@ function paintCarry(s: SimState, v: CarryRow, c: CarryRule): void {
 }
 
 // ---------------------------------------------------------------------------
+// Price brackets (policy/brackets.ts)
+// ---------------------------------------------------------------------------
+interface BracketRow {
+  el: HTMLElement;
+  sw: ReturnType<typeof toggle>;
+  title: HTMLElement;
+  desc: HTMLElement;
+  held: ReturnType<typeof stat>;
+  today: ReturnType<typeof stat>;
+  pnl: ReturnType<typeof stat>;
+}
+
+function bracketRow(b: Bracket): BracketRow {
+  const id = b.id;
+  const sw = toggle({ value: b.enabled, title: 'Pause or resume this bracket (what it holds stays in the stores)', onChange: (v) => run({ type: 'updateBracket', id, patch: { enabled: v } }, null) });
+  const title = h('div', { class: 'lv-if-t' });
+  const desc = h('div', { class: 'lv-if-d' });
+  const held = stat('Held in its stores');
+  const today = stat('Today');
+  const pnl = stat('Bought · sold in all');
+  const open = h('button', { class: 'chip lv-chip', type: 'button', title: 'Open the trading desk on this good', onClick: () => openDesk(b.good) }, 'trading desk');
+  const rm = removeBtn('Remove this bracket (what it bought stays in the stores)', () => run({ type: 'removeBracket', id }, null));
+  const el = h(
+    'div',
+    { class: 'lv-if' },
+    h('div', { class: 'lv-if-sw' }, sw.el),
+    h(
+      'div',
+      { class: 'lv-if-main' },
+      h('div', { class: 'lv-if-head' }, h('span', { class: 'lv-dir' }, 'Bracket'), title, h('span', { class: 'spacer' }), open),
+      desc,
+      h('div', { class: 'lv-if-stats' }, held.el, today.el, pnl.el),
+    ),
+    h('div', { class: 'lv-if-act' }, rm),
+  );
+  return { el, sw, title, desc, held, today, pnl };
+}
+
+function paintBracket(s: SimState, v: BracketRow, b: Bracket): void {
+  v.sw.set(b.enabled);
+  toggleClass(v.el, 'off', !b.enabled);
+  setText(v.title, b.label);
+  setText(v.desc, tersely(safe(() => describeBracket(s, b), b.label)) + (b.until >= 0 ? ` Until ${fmtDay(b.until)}.` : ''));
+  const towns = bracketTowns(s, b);
+  const held = towns.reduce((a, t) => a + fin(s.treasury.goods[t]?.[b.good]), 0);
+  setText(v.held.v, `${fmtQ(held)} ${unitsOf(b.good)}`);
+  setText(v.today.v, `+${fmtQ(b.boughtToday)} · −${fmtQ(b.soldToday)}`);
+  setText(v.pnl.v, `${fmtQ(b.bought)} for ${fmtMS(b.spent)} · ${fmtQ(b.sold)} for ${fmtMS(b.earned)}`);
+}
+
+// ---------------------------------------------------------------------------
 // The whole list
 // ---------------------------------------------------------------------------
 export interface InForce {
@@ -456,12 +509,14 @@ export function inForce(): InForce {
   const limitList = h('div', { class: 'lv-if-list' });
   const orderList = h('div', { class: 'lv-if-list' });
   const carryList = h('div', { class: 'lv-if-list' });
+  const bracketList = h('div', { class: 'lv-if-list' });
   const projects = projectList({ compact: true });
   const lines = lineList({ compact: true });
   const gLevy = group('Levies', levyList);
   const gLimit = group('Limits', limitList);
   const gOrder = group('Treasury orders', orderList);
   const gCarry = group('Carry rules', carryList);
+  const gBracket = group('Price brackets', bracketList);
   const gProj = group('Projects', projects.el);
   const gLine = group('Freight lines', lines.el);
   const empty = h(
@@ -470,17 +525,18 @@ export function inForce(): InForce {
     h('div', { class: 'lv-empty-t' }, 'Nothing is in force.'),
     h('div', null, 'The realm is running on its own. Pull any lever above — alone or in combination — and watch what the markets, the Ledger and the people do.'),
   );
-  const el = h('div', { class: 'lv-inforce' }, empty, gLevy.el, gLimit.el, gOrder.el, gCarry.el, gLine.el, gProj.el);
+  const el = h('div', { class: 'lv-inforce' }, empty, gLevy.el, gLimit.el, gOrder.el, gBracket.el, gCarry.el, gLine.el, gProj.el);
 
   const recLevy = keyedList<Levy, LevyRow>(levyList, (l) => l.id, (l) => levyRow(l), (v, l) => state && paintLevy(state, v, l));
   const recLimit = keyedList<Limit, LimitRow>(limitList, (l) => l.id, (l) => limitRow(l), (v, l) => state && paintLimit(state, v, l));
   const recOrder = keyedList<PlayerOrder, OrderRow>(orderList, (o) => o.id, (o) => orderRow(o), (v, o) => state && paintOrder(state, v, o));
   const recCarry = keyedList<CarryRule, CarryRow>(carryList, (c) => c.id, (c) => carryRow(c), (v, c) => state && paintCarry(state, v, c));
+  const recBracket = keyedList<Bracket, BracketRow>(bracketList, (b) => b.id, (b) => bracketRow(b), (v, b) => state && paintBracket(state, v, b));
 
   return {
     el,
     count(s) {
-      return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.carries?.length ?? 0) + freightLines(s).length + treasuryProjects(s).filter((p) => p.status !== 'done').length;
+      return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.carries?.length ?? 0) + (s.policy.brackets?.length ?? 0) + freightLines(s).length + treasuryProjects(s).filter((p) => p.status !== 'done').length;
     },
     update(s) {
       state = s;
@@ -490,6 +546,10 @@ export function inForce(): InForce {
       recOrder(P.orders);
       const carries = P.carries ?? [];
       recCarry(carries);
+      const brackets = P.brackets ?? [];
+      recBracket(brackets);
+      show(gBracket.el, brackets.length > 0);
+      setText(gBracket.count, brackets.length ? String(brackets.length) : '');
       const np = projects.set(s);
       const nl = lines.update(s);
       show(gLine.el, nl > 0);
@@ -507,7 +567,7 @@ export function inForce(): InForce {
       setText(gLimit.count, `${P.limits.length}${bound ? ` · ${bound} binding` : ''}`);
       setText(gOrder.count, String(P.orders.length));
       setText(gProj.count, String(np));
-      show(empty, P.levies.length + P.limits.length + P.orders.length + carries.length + np + nl === 0);
+      show(empty, P.levies.length + P.limits.length + P.orders.length + carries.length + brackets.length + np + nl === 0);
     },
   };
 }

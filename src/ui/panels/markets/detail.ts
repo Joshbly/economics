@@ -64,6 +64,7 @@ import {
   unitOf,
 } from './data';
 import { pvChart } from './pvchart';
+import { openDesk } from '../desk';
 import { byTownTable, qtyCell, townFlowRows } from './bytown';
 import { recentFlows } from '../../../sim/stats/flows';
 
@@ -157,7 +158,8 @@ export function createDetail(hooks: DetailHooks): Detail {
   const btnLevy = button({ label: 'Levy here', size: 'sm', onClick: () => doLevy(), title: 'Attach a levy (or a payment) to sales of this good here' });
   const btnLimit = button({ label: 'Limit here', size: 'sm', onClick: () => doLimit(), title: 'Set a legal maximum (or minimum) price for this good here' });
   const btnMap = button({ label: 'Show on map', kind: 'ghost', size: 'sm', onClick: () => doMap(), title: 'Colour the map by this good’s price in each town' });
-  const actions = h('div', { class: 'mk-actions' }, btnTrade, btnLevy, btnLimit, btnMap);
+  const btnDesk = button({ label: 'Trading desk', kind: 'ghost', size: 'sm', onClick: () => openDesk(good), title: 'This good in every town at once: each town’s price on one chart, orders in every town, price brackets' });
+  const actions = h('div', { class: 'mk-actions' }, btnTrade, btnLevy, btnLimit, btnMap, btnDesk);
 
   // ---- tiles (one set per mode) ----------------------------------------------------
   const px = (v: number) => fmtPrice(v);
@@ -402,6 +404,7 @@ export function createDetail(hooks: DetailHooks): Detail {
     btnLevy.disabled = inst;
     btnLimit.disabled = false;
     btnMap.disabled = inst;
+    btnDesk.disabled = inst;
     btnLevy.title = inst ? 'Levies attach to flows of goods, wages, rent… — not to this market' : 'Attach a levy (or a payment) to sales of this good' + (town >= 0 ? ' here' : ' in every town');
     btnLimit.title = inst
       ? `Set a legal maximum or minimum ${good === IOU_GOOD ? 'price of IOUs' : 'gold price'}, or how far it may move in a day`
