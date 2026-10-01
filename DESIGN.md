@@ -277,15 +277,21 @@ expected inflation (and a falling price level lowers every rent).
 
 **People of independent means** (`agents/means.ts`). Every person keeps a running average of
 their capital income (`Person.capInc`, ¤ a day, an EMA over 1/MEANS_EMA days): deposit interest
-and IOU coupons, dividends, rents received, net of levies on them. At MEANS_LEAVE × what a worker
+and IOU coupons, dividends, rents received, net of levies on them — deposit interest counted at the
+rate deposits are expected to pay over the years (bondView `expDeposit`) when today's is above it (the
+spike is paid, but nobody gives up work on it). At MEANS_LEAVE × what a worker
 takes home in their town a person stops working (`Person.means`) — quits their post, their own
 workshop's included, and seeks none: the income effect; a wage would add a few per cent to what
 they have. Below MEANS_RETURN × it they look for work again (the gap keeps them from going in and
 out with every dividend). They are out of the labour force: unemployment is jobless seekers ÷ the
 labour force (`Town.ofMeans`, stats ofMeans); they do not drift away for want of work, are not
 hands a venture could hire, nor in a levy's 'people without work'; their contentment counts them
-occupied. In a founded realm some 5–7 % of households come to live this way within a few years
-(the richest founders first), and those who leave lift the wage for the rest. Levies on interest,
+occupied. In a founded realm some 3–4 % of households come to live this way within a few years
+(the richest founders first), and those who leave lift the wage for the rest. (At 3× a wage it was
+6–7 %, and under violent swings of the reserve rate the realm's booms ran so short of hands that
+famines took hold more often; and before deposit interest was counted at its lasting rate, a reserve
+rate whipping between −10 % and 50 % every quarter sent so many out of work at the peaks that two
+realms in four collapsed — none does now.) Levies on interest,
 profits or rents reach how many do.
 
 **Demography**: births (~1.2 %/year when healthy and housed), deaths (base 1 %/

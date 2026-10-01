@@ -2,7 +2,11 @@
 // force; they are not jobless, do not look for work or drift away for want of it, and come back when it falls.
 import { describe, expect, it } from 'vitest';
 import { decayCapitalIncome, decideMeans, noteCapitalIncome, townJobless } from '../src/sim/agents/means';
-import { MEANS_LEAVE, MEANS_RETURN } from '../src/sim/config';
+import { DAYS_PER_YEAR, MEANS_EMA, MEANS_LEAVE, MEANS_RETURN } from '../src/sim/config';
+import { bondView } from '../src/sim/agents/bonds';
+import { pay } from '../src/sim/ledger';
+import { dispatch } from '../src/sim/policy/player';
+import { STATE } from '../src/sim/types';
 import { stepDay } from '../src/sim/engine';
 import { newPerson, newSimState, newTown } from '../src/sim/factory';
 import { inGroup } from '../src/sim/policy/levies';
@@ -122,6 +126,26 @@ describe('in a running realm', () => {
     p.capInc = 0;
     stepDay(s);
     expect(p.means).toBeUndefined();
+  });
+
+  it('a spike in deposit rates counts only at the rate deposits are expected to pay for good', () => {
+    const s = grown();
+    s.treasury.autoMint = true;
+    const p = newPerson(s, 0, 'Saver');
+    pay(s, STATE, p.id, 20000, 'transfer');
+    // the reserve rate jumps far above where it has been
+    expect(dispatch(s, { type: 'setWindow', reserveRate: 0.5, lendRate: 0.51 }).ok).toBe(true);
+    const cash0 = p.cash;
+    p.capInc = 0;
+    stepDay(s);
+    const dep = s.bank.depositRate;
+    const lasting = bondView(s).expDeposit;
+    expect(dep).toBeGreaterThan(0.3);
+    expect(lasting).toBeLessThan(0.6 * dep);
+    // the interest is paid in full, but counted as lasting income only at the expected rate (then a day's decay)
+    const counted = MEANS_EMA * cash0 * (Math.min(dep, lasting) / DAYS_PER_YEAR) * (1 - MEANS_EMA);
+    expect(p.capInc! / counted).toBeGreaterThan(0.9);
+    expect(p.capInc! / counted).toBeLessThan(1.1);
   });
 
   it('a save keeps who lives on their means; damaged fields are dropped', () => {

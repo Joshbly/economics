@@ -129,7 +129,7 @@ export function personView(_s0: SimState, id: number): View {
     chips.push(['', `${fmtInt(Math.floor(fin(p.age)))} years old`]);
     if (p.alive) {
       if (f) chips.push(['good', 'Working']);
-      else if (p.means) chips.push(['gold', 'Of independent means', 'Lives on what their capital brings in — interest, dividends, rents — and looks for no work. They take up work again if that falls below twice what a worker earns in their town.']);
+      else if (p.means) chips.push(['gold', 'Of independent means', 'Lives on what their capital brings in — interest, dividends, rents — and looks for no work. They take up work again if that falls below three times what a worker earns in their town.']);
       else chips.push(['warn', 'Looking for work']);
       if (!home) chips.push(['bad', 'Homeless']);
       if (hungry) chips.push(['bad', 'Hungry']);

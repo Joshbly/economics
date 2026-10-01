@@ -249,8 +249,8 @@ export const MAX_COMMUTE_TILES = 30;
  * comes back to the labour market below MEANS_RETURN × it.
  */
 export const MEANS_EMA = 1 / 90;
-export const MEANS_LEAVE = 3;
-export const MEANS_RETURN = 2;
+export const MEANS_LEAVE = 5;
+export const MEANS_RETURN = 3;
 export const RES_WAGE_START = 0.9; // reservation wage = this × last wage when newly unemployed
 export const RES_WAGE_FLOOR = 0.55; // … decaying to this after RES_WAGE_DECAY_DAYS
 export const RES_WAGE_DECAY_DAYS = 90;

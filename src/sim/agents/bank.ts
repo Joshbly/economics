@@ -663,6 +663,9 @@ function payHolders(s: SimState): void {
   const t = s.treasury;
   const rDay = fin(b.depositRate) / DAYS_PER_YEAR;
   const cDay = IOU_COUPON / DAYS_PER_YEAR;
+  // What a depositor counts on as lasting income (agents/means.ts): today's rate, or the rate deposits are expected
+  // to pay over the years (bonds.bondView) when today's is above it — a spike in rates is not a living.
+  const lastingShare = rDay > 0 ? clamp(fin(bondView(s).expDeposit) / DAYS_PER_YEAR / rDay, 0, 1) : 1;
   const levies = s.policy.levies.length > 0 && hasLevy(s, 'interest');
   let depInt = 0; // net ¤ the bank paid depositors (negative if they paid it)
   let coupons = 0;
@@ -691,6 +694,7 @@ function payHolders(s: SimState): void {
     const p = s.people[i];
     if (!p || !p.alive) continue;
     let net = 0;
+    let passing = 0; // the part of today's interest above what deposits are expected to pay for good
     // coupons (paid by the Treasury)
     if (p.iou > 0 && couponFrac > 0) {
       const c = pay(s, STATE, p.id, p.iou * cDay * couponFrac, 'coupon');
@@ -709,13 +713,15 @@ function payHolders(s: SimState): void {
       if (rDay > 0) {
         const a = pay(s, BANK, p.id, cash * rDay, 'interest');
         depInt += a;
-        net += a;
+        let kept = a;
         if (levies && a > 0) {
           _ctx.town = p.town;
           _ctx.person = p;
           _ctx.sector = undefined;
-          net -= chargeLevy(s, 'interest', p.id, 'receiver', _ctx, a, 1);
+          kept -= chargeLevy(s, 'interest', p.id, 'receiver', _ctx, a, 1);
         }
+        net += kept;
+        passing = (1 - lastingShare) * kept;
       } else {
         const a = pay(s, p.id, BANK, -cash * rDay, 'interest');
         depInt -= a;
@@ -724,7 +730,7 @@ function payHolders(s: SimState): void {
     }
     if (net) {
       p.earned += net;
-      noteCapitalIncome(p, net); // interest and coupons (agents/means.ts)
+      noteCapitalIncome(p, net - passing); // interest and coupons, at the deposit rate expected to last (agents/means.ts)
     }
   }
 

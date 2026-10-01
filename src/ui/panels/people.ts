@@ -364,7 +364,7 @@ export const peoplePanel: Panel = {
     subEl = h('div', { class: 'card-sub' });
     const k = (key: string, o: Parameters<typeof kpi>[0]) => (tiles[key] = kpi({ size: 'sm', spark: true, ...o }));
     k('pop', { label: 'Households', format: fmtInt, good: 'up', hint: 'Households living in the realm. Each has one worker — unless it lives on what its capital brings in. Changes on these tiles are over the last 30 days.' });
-    k('jobless', { label: 'Jobless', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of the households that work or look for work with no job. Those living on their means (interest, dividends, rents of three times a wage or more) look for none and are not counted.' });
+    k('jobless', { label: 'Jobless', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of the households that work or look for work with no job. Those living on their means (interest, dividends, rents of five times a wage or more) look for none and are not counted.' });
     k('hungry', { label: 'Hungry', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of households that ate too little yesterday.' });
     k('homeless', { label: 'Homeless', format: fmtInt, good: 'down', deltaFormat: (x) => (x > 0 ? '+' : x < 0 ? '−' : '') + fmtInt(Math.abs(x)), hint: 'Households with no roof. They take the cheapest vacant slot they can afford.' });
     k('health', { label: 'Health', format: (v) => fmtPct(v), good: 'up', deltaFormat: fmtPts, hint: 'Average health. It falls with hunger and cold, and lowers what a worker can make. “Weak” = below 40%.' });

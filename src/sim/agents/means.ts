@@ -6,7 +6,9 @@
 // day): deposit interest and IOU coupons (bank.ts), dividends (ownership.payHolders,
 // the bank's own), and rents received (housing.ts) — net of any levies on them. It is
 // an EMA over about 1/MEANS_EMA days, so a firm's monthly dividend counts as a steady
-// income, not a windfall.
+// income, not a windfall. Deposit interest counts at the rate deposits are expected to pay
+// over the years (bonds.bondView expDeposit) when today's is above it: a spike in rates is
+// paid in full but is not a living to give up work for.
 //
 // Once it reaches MEANS_LEAVE × what a worker takes home in their town, a person stops
 // working (Person.means): they quit their post — their own workshop's included, which

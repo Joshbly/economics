@@ -184,7 +184,7 @@ It spends first on enough food (bread or fish — it buys more of whichever is c
       },
       {
         title: 'People of independent means',
-        body: `Someone whose capital brings in three times what a worker takes home in their town — deposit interest, IOU coupons, dividends, rents — stops working and looks for no post: a wage would add little to what they have. They are not counted as jobless. If their income from capital falls below twice a wage — losses, dividends cut, empty houses, interest below zero — they look for work again. Levies on interest, profits or rents reach how many choose to live this way.`,
+        body: `Someone whose capital brings in five times what a worker takes home in their town — deposit interest, IOU coupons, dividends, rents — stops working and looks for no post: a wage would add little to what they have. Deposit interest counts at what deposits are expected to pay over the years: when the reserve rate leaps far above where it has been, savers are paid the higher interest, but nobody gives up work on it until it looks like lasting. They are not counted as jobless. If their income from capital falls below three times a wage — losses, dividends cut, empty houses, interest below zero — they look for work again. Levies on interest, profits or rents reach how many choose to live this way.`,
       },
       {
         title: 'Homes',
