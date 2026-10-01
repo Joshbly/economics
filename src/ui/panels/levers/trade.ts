@@ -16,7 +16,8 @@ import type { MarketState, OrderMarket, SimState } from '../../../sim/types';
 import { h, setText, show } from '../../dom';
 import { fmtNum, fmtPct, fmtPrice, plural } from '../../format';
 import { ui, type PrefillRequest } from '../../uiState';
-import { goodOptions, numberInput, segmented, selectInput, sparkline, townOptions } from '../../widgets';
+import { button, goodOptions, numberInput, segmented, selectInput, sparkline, townOptions } from '../../widgets';
+import { openDesk } from '../desk';
 import {
   chip,
   dynRow,
@@ -264,6 +265,12 @@ export function tradeLever(): Lever {
     'div',
     { class: 'lv-body-in' },
     h('div', { class: 'lv-row lv-row-full lv-kindrow' }, kindSeg.el),
+    h(
+      'div',
+      { class: 'lv-row lv-row-full lv-desk-row' },
+      button({ label: 'Open the trading desk', kind: 'secondary', size: 'sm', title: 'One good in every town’s market at once: a chart of each town’s price, orders in every town, and price brackets (buy below a floor, sell above a ceiling)', onClick: () => openDesk(kind === 'good' ? good : undefined) }),
+      h('span', { class: 'lv-desk-note' }, 'Every town at once · price brackets'),
+    ),
     form,
     carries.el,
     h('div', { class: 'lv-sep' }),
@@ -711,8 +718,9 @@ export function tradeLever(): Lever {
     summary(s) {
       const n = s.policy.orders.filter((o) => o.enabled).length;
       const nc = (s.policy.carries ?? []).filter((c) => c.enabled).length;
-      if (!n && !nc) return { text: 'No orders' };
-      return { text: [n ? plural(n, 'order') : '', nc ? plural(nc, 'carry rule') : ''].filter(Boolean).join(' · ') };
+      const nb = (s.policy.brackets ?? []).filter((b) => b.enabled).length;
+      if (!n && !nc && !nb) return { text: 'No orders' };
+      return { text: [n ? plural(n, 'order') : '', nb ? plural(nb, 'bracket') : '', nc ? plural(nc, 'carry rule') : ''].filter(Boolean).join(' · ') };
     },
     update(s) {
       const fresh = last !== s;

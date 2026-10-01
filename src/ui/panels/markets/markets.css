@@ -227,3 +227,6 @@
 .mk-flow-l { font-size: 10px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mk-flow-v { font: 600 14px/1.3 var(--font-display); color: var(--ink-0); font-variant-numeric: tabular-nums; }
 .mk-flow-note { margin: 2px 0 8px; }
+.mk-head-btns { margin-left: auto; display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 60%; }
+.mk-head-btns .mk-resume { margin-left: 0; max-width: none; min-width: 0; }
+.mk-head-btns .btn { flex: none; }

@@ -16,7 +16,8 @@ import type { Panel } from '../panel';
 import { h, setText } from '../dom';
 import { fmtDay } from '../format';
 import { focusMarket, on, ui, type Selection } from '../uiState';
-import { hideTip, icon } from '../widgets';
+import { button, hideTip, icon } from '../widgets';
+import { openDesk } from './desk';
 import { goodLabel, isGood, isInstrument } from './markets/data';
 import { createDetail, type Detail } from './markets/detail';
 import { createOverview, type Overview } from './markets/overview';
@@ -87,7 +88,12 @@ export const marketsPanel: Panel = {
     root = h(
       'div',
       { class: 'mk' },
-      h('div', { class: 'panel-head mk-head' }, h('div', { class: 'mk-head-titles' }, h('div', { class: 'panel-title' }, 'Markets'), subEl), resumeBtn),
+      h(
+        'div',
+        { class: 'panel-head mk-head' },
+        h('div', { class: 'mk-head-titles' }, h('div', { class: 'panel-title' }, 'Markets'), subEl),
+        h('div', { class: 'mk-head-btns' }, resumeBtn, button({ label: 'Trading desk', kind: 'ghost', size: 'sm', title: 'One good in every town at once: each town’s price on one chart, orders in every town, price brackets', onClick: () => openDesk(isGood(ui.marketGood) ? ui.marketGood : undefined) })),
+      ),
       ovWrap,
       dtWrap,
     );

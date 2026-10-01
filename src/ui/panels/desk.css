@@ -1,0 +1,44 @@
+/* The trading desk (desk.ts): one good across every town's market, in a floating window. */
+.desk { display: flex; flex-direction: column; gap: 10px; }
+.desk .note { margin: 0; }
+.desk-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desk-head-t { color: var(--ink-1); font-weight: 600; font-size: 13px; }
+.desk-head .spacer { flex: 1; }
+
+.desk-town { color: var(--ink-1); }
+.desk-town.off { color: var(--ink-3); }
+.desk-town.focus { color: var(--gold-hi); font-weight: 600; }
+
+.desk-cols { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 860px) { .desk-cols { grid-template-columns: 1fr; } }
+.desk-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-card);
+}
+.desk-card h3 { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin: 2px 0 0; font: 600 13px/1.3 var(--font-display); color: var(--ink-0); }
+.desk-card h3 + .note { margin-top: -2px; }
+.desk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.desk-row > .k { color: var(--ink-2); font-size: 11.5px; min-width: 72px; }
+.desk-row > .k + .k, .desk-row > * + .k { min-width: 0; margin-left: 4px; }
+.desk-num { display: inline-flex; align-items: center; gap: 4px; }
+.desk-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 11.5px; }
+.desk-chips { display: flex; flex-wrap: wrap; gap: 3px; flex: 1; min-width: 0; }
+.desk .lv-chip.on { color: var(--gold-hi); border-color: var(--gold); background: var(--gold-wash); }
+.desk-preview { margin: 0; padding: 7px 10px; border-radius: var(--r-sm); background: var(--gold-wash); border: 1px solid var(--gold-line); color: var(--ink-1); font-size: 12px; line-height: 1.45; }
+
+.desk-list { display: flex; flex-direction: column; gap: 6px; }
+.desk-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: var(--bg-1); }
+.desk-item.editing { border-color: var(--gold-line); }
+.desk-item.off { opacity: 0.6; }
+.desk-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.desk-item-t { color: var(--ink-0); font-weight: 600; font-size: 12px; }
+.desk-item-d { color: var(--ink-1); font-size: 11.5px; line-height: 1.4; }
+.desk-item-s { color: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.desk-item-s .good { color: var(--good); }
+.desk-item-s .bad { color: var(--bad); }

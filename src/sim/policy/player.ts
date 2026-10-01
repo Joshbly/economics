@@ -11,6 +11,7 @@
 // All player-facing text describes mechanics plainly ("The Treasury now takes
 // 10 % of the value of every bread sale in Millbrook, charged to buyers").
 // ============================================================================
+import { bracketLabel, bracketLegs, bracketsBeginDay, checkBracket, describeBracket, foldBracketFills, primeBracketRef, type BracketLeg } from './brackets';
 import {
   IOU_COUPON,
   IOU_PAR,
@@ -88,7 +89,7 @@ import { closeFirm, fairPrice } from '../agents/firms';
 import { nearestTown, townCentreTile } from '../world/layout';
 import { LINE_MARGIN_MAX, LINE_MARGIN_MIN, LINE_MAX_FARE, LINE_MAX_WAGONS, LINE_UNDER_MAX, TOOLS_PER_WAGON } from '../config';
 import { G } from '../goods';
-import type { FreightLine, LineFare } from '../types';
+import type { Bracket, FreightLine, LineFare } from '../types';
 import {
   estimateLine,
   fareFor,
@@ -754,7 +755,7 @@ function policyNews(s: SimState, text: string, town = -1): void {
 }
 
 function ruleCount(s: SimState): number {
-  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.lines?.length ?? 0) + (s.policy.carries?.length ?? 0);
+  return s.policy.levies.length + s.policy.limits.length + s.policy.orders.length + (s.policy.lines?.length ?? 0) + (s.policy.carries?.length ?? 0) + (s.policy.brackets?.length ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1131,53 @@ function dispatchInner(s: SimState, a: PlayerAction): ActionResult {
       const o = s.policy.orders[i];
       s.policy.orders.splice(i, 1);
       return { ok: true, message: `Order withdrawn (${qtyText(o.filled)} filled in all).`, id: o.id };
+    }
+    case 'addBracket': {
+      if (ruleCount(s) >= PLAYER_MAX_RULES) return fail(`There are already ${PLAYER_MAX_RULES} rules and orders; remove some first.`);
+      const c = checkBracket(s, a.bracket ?? {});
+      if (!c.ok) return fail(c.message);
+      const days = fin(a.bracket?.days ?? 0);
+      const b: Bracket = {
+        id: s.ids.policy++,
+        label: '',
+        enabled: true,
+        ...c.value,
+        created: s.day,
+        until: days > 0 ? s.day + Math.round(days) - 1 : -1,
+        ref: s.towns.map(() => 0),
+        bought: 0,
+        spent: 0,
+        sold: 0,
+        earned: 0,
+        boughtToday: 0,
+        soldToday: 0,
+        today: s.towns.map(() => 0),
+      };
+      b.label = (a.bracket?.label && String(a.bracket.label).slice(0, 80)) || bracketLabel(s, b);
+      primeBracketRef(s, b);
+      (s.policy.brackets ??= []).push(b);
+      return { ok: true, message: describeBracket(s, b), id: b.id };
+    }
+    case 'updateBracket': {
+      const b = s.policy.brackets?.find((x) => x.id === a.id);
+      if (!b) return fail('No such price bracket.');
+      const p = a.patch ?? {};
+      const c = checkBracket(s, { good: b.good, towns: b.towns, mode: b.mode, low: b.low, high: b.high, buyQty: b.buyQty, sellQty: b.sellQty, maxStock: b.maxStock, rungs: b.rungs, step: b.step, ...p });
+      if (!c.ok) return fail(c.message);
+      const sameGood = c.value.good === b.good;
+      Object.assign(b, c.value);
+      if (typeof p.enabled === 'boolean') b.enabled = p.enabled;
+      if (p.days !== undefined) b.until = fin(p.days) > 0 ? s.day + Math.round(fin(p.days)) - 1 : -1;
+      if (!sameGood) primeBracketRef(s, b);
+      b.label = (p.label && String(p.label).slice(0, 80)) || bracketLabel(s, b);
+      return { ok: true, message: b.enabled ? describeBracket(s, b) : 'Bracket paused: it neither buys nor sells; its stock stays in the stores.', id: b.id };
+    }
+    case 'removeBracket': {
+      const list = s.policy.brackets ?? [];
+      const i = list.findIndex((x) => x.id === a.id);
+      if (i < 0) return fail('No such price bracket.');
+      const [b] = list.splice(i, 1);
+      return { ok: true, message: `Bracket removed: it bought ${qtyText(b.bought)} for ${moneyText(b.spent)} and sold ${qtyText(b.sold)} for ${moneyText(b.earned)}. What it holds stays in the Treasury's stores.`, id: b.id };
     }
     case 'carry':
       return carry(s, a);
@@ -2264,6 +2312,7 @@ export function policyBeginDay(s: SimState): void {
     for (const o of P.orders) o.filledToday = 0;
   }
   carriesBeginDay(s);
+  for (const label of bracketsBeginDay(s)) policyNews(s, `The price bracket “${label}” has lapsed; what it bought stays in the Treasury's stores.`);
 
   const t = s.treasury;
   const was = t.givesSuspended;
@@ -2352,7 +2401,8 @@ export function playerOrders(s: SimState, books: Books): void {
   sub.length = 0;
   const orders = s.policy.orders;
   const t = s.treasury;
-  if (orders.length === 0) {
+  bag.bracketLegs = undefined;
+  if (orders.length === 0 && !s.policy.brackets?.length) {
     if (s.policy.lines?.length) lineOrders(s, books, t.autoMint ? 1e15 : Math.max(0, t.purse));
     return;
   }
@@ -2413,6 +2463,32 @@ export function playerOrders(s: SimState, books: Books): void {
     const opt = { exempt: true, tag: po.id, session: po.session, market: mode === 'any' };
     const ord = buy ? addBid(book, STATE, po.price, q, opt) : addAsk(book, STATE, po.price, q, opt);
     sub.push({ po, ord, open: isPatient(po) ? (po.offset ?? 0) : undefined });
+  }
+  // Price brackets: each rung in each town, as orders of the day (policy/brackets.ts) — after the
+  // standing orders, within what is left of the Purse and the stores.
+  if (s.policy.brackets?.length) {
+    const legs = bracketLegs(s);
+    bag.bracketLegs = legs;
+    for (const L of legs) {
+      const po = L.po;
+      const m = po.market;
+      if (m.kind !== 'good') continue;
+      const kk = m.town * N_GOODS + m.good;
+      const book = books.goods[kk];
+      if (!book) continue;
+      let q = po.qty;
+      if (po.side === 'buy') q = Math.min(q, budget / po.price);
+      else {
+        const have = (t.goods[m.town]?.[m.good] ?? 0) - (committed[kk] || 0);
+        q = Math.min(q, Math.max(0, have));
+        if (q > 1e-9) committed[kk] = (committed[kk] || 0) + q;
+      }
+      if (!(q > 1e-9)) continue;
+      if (po.side === 'buy') budget -= q * po.price;
+      const opt = { exempt: true, tag: po.id };
+      const ord = po.side === 'buy' ? addBid(book, STATE, po.price, q, opt) : addAsk(book, STATE, po.price, q, opt);
+      sub.push({ po, ord });
+    }
   }
   // Freight lines: the tools and oil they lack, in their depot towns (policy/lines.ts).
   if (s.policy.lines?.length) lineOrders(s, books, budget);
@@ -2548,6 +2624,18 @@ function resizeTreasurySales(s: SimState, books: Books, sub: Submitted[]): void 
       sub.push({ po, ord });
     }
   }
+  // price brackets' asks (policy/brackets.ts): what their stores hold after the standing orders' share
+  for (const x of sub) {
+    const po = x.po;
+    if (!(po.id < 0) || po.side !== 'sell' || po.market.kind !== 'good') continue;
+    const m = po.market;
+    const kk = m.town * N_GOODS + m.good;
+    const want = Math.max(0, po.qty - po.filledToday - (x.nettedDay ?? 0));
+    const have = Math.max(0, (t.goods[m.town]?.[m.good] ?? 0) - (committed[kk] || 0));
+    const q = Math.min(want, have);
+    committed[kk] = (committed[kk] || 0) + q;
+    x.ord.left = q;
+  }
 }
 
 /**
@@ -2636,6 +2724,11 @@ export function playerAfterClear(s: SimState, books: Books): void {
       } else if (x.open !== undefined) po.offset = x.open;
     }
     sub.length = 0;
+  }
+  const legs = bag.bracketLegs as BracketLeg[] | undefined;
+  if (legs) {
+    foldBracketFills(legs);
+    bag.bracketLegs = undefined;
   }
   // Treasury workforce: attribute today's workers to the labour orders of each town (in order).
   const orders = s.policy.orders;
