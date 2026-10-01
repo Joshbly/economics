@@ -7,6 +7,7 @@
 import { DAYS_PER_MONTH, DAYS_PER_YEAR, IOU_COUPON } from '../../../sim/config';
 import { CONSUMER_GOODS, G, N_GOODS, SECTORS } from '../../../sim/goods';
 import { inGroup } from '../../../sim/policy/levies';
+import { plotValue } from '../../../sim/agents/land';
 import { FIRM_BASE, STATE } from '../../../sim/types';
 import type { Firm, Group, Levy, Person, SimState } from '../../../sim/types';
 import { fmtNum, plural } from '../../format';
@@ -270,6 +271,20 @@ export function estimateLevy(s: SimState, l: LevyDraft): LevyEstimate | null {
         book += Math.max(0, c - thr);
       }
       return { baseText: `${plural(n, 'building')}${where(s, l.town)} (book value ≈ ${fmtM(book)})`, amount: pct ? (rate / DAYS_PER_YEAR) * book : rate * n, per: 'day', rough: false };
+    }
+    case 'land': {
+      let n = 0;
+      let value = 0;
+      for (const pl of s.plots ?? []) {
+        if (l.town >= 0 && pl.town !== l.town) continue;
+        const p = s.people[pl.owner];
+        if (!p || !p.alive || !personMatches(s, p, l.group)) continue;
+        const v = plotValue(s, pl.tile, pl.town);
+        if (thr > 0 && !(v > thr)) continue;
+        n++;
+        value += Math.max(0, v - thr);
+      }
+      return { baseText: `${plural(n, 'plot')} held unbuilt${where(s, l.town)} (worth ≈ ${fmtM(value)} today)`, amount: pct ? (rate / DAYS_PER_YEAR) * value : rate * n, per: 'day', rough: false };
     }
     case 'estate': {
       const deaths = fin(tailMean(s.stats?.daily?.deaths, 60));

@@ -171,6 +171,8 @@ function levyTitle(s: SimState, l: Levy): string {
       return `Buildings${where}`;
     case 'estate':
       return `Estates${where}`;
+    case 'land':
+      return `Land held unbuilt${where}`;
   }
   return l.label;
 }

@@ -24,6 +24,8 @@ import { invalidateRoutes, touchBuildings } from '../runtime';
 import { Terrain, type Building, type BuildingKind, type MapData, type Sector, type SimState, type TownId } from '../types';
 import { frontsWater, hash2, isWaterT, nearMountain } from './mapgen';
 import { planTrack } from './paths';
+import { heldIn } from './plots';
+import { LAND_HELD_SITE_PENALTY } from '../config';
 
 export type SiteWhat = Sector | 'house' | 'pier';
 
@@ -273,7 +275,9 @@ function siteScore(s: SimState, what: SiteWhat, town: TownId, x: number, y: numb
   const t = m.terrain[i];
   const terrainPen = t === Terrain.Grass ? 0 : t === Terrain.Sand ? 0.4 : t === Terrain.Forest ? 1.2 : 1.6;
   const road = roadAdjacent(m, x, y, w, h) ? 1.4 : 0;
-  return -d + road - terrainPen + 1.3 * j;
+  // land held to sell dearer costs more than the council's (agents/land.ts): only a clearly better site is worth it
+  const held = heldIn(s, x, y, w, h) * LAND_HELD_SITE_PENALTY;
+  return -d + road - terrainPen + 1.3 * j - held;
 }
 
 /**

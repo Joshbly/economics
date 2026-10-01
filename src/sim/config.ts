@@ -243,6 +243,14 @@ export const OTJ_SEARCH_PROB = 0.02; // employed people searching per day
 export const OTJ_SWITCH_GAIN = 0.08; // switch if net wage gain ≥ 8 %
 export const COMMUTE_COST_PER_TILE = 0.004; // fraction of wage lost per tile of commute
 export const MAX_COMMUTE_TILES = 30;
+/**
+ * People of independent means (agents/means.ts): capital income (interest, coupons, dividends, rents received)
+ * is kept as an EMA (MEANS_EMA a day); at MEANS_LEAVE × the town's take-home wage a person stops working, and
+ * comes back to the labour market below MEANS_RETURN × it.
+ */
+export const MEANS_EMA = 1 / 90;
+export const MEANS_LEAVE = 3;
+export const MEANS_RETURN = 2;
 export const RES_WAGE_START = 0.9; // reservation wage = this × last wage when newly unemployed
 export const RES_WAGE_FLOOR = 0.55; // … decaying to this after RES_WAGE_DECAY_DAYS
 export const RES_WAGE_DECAY_DAYS = 90;
@@ -1161,6 +1169,36 @@ export const SISTER_DAYS = 3;
 // ---- town councils and the town's land (agents/council.ts) ----
 /** Day of the month the councils meet (after the ventures of ENTRY_DAY and the market for companies). */
 export const COUNCIL_DAY = 25;
+/**
+ * Land held to sell dearer (agents/land.ts), monthly on LAND_DAY. Investors expect a town's land to gain LAND_TREND_W ×
+ * its trend over the last year (Town.landIdx, LAND_HISTORY month ends) + the rest × the inflation they expect, within
+ * LAND_EXP_MIN … LAND_EXP_MAX, and ask of it the deposit rate + LAND_PREMIUM_SHARE of their premium + LAND_HURDLE (it
+ * earns nothing while held and sells back below its price). LAND_BUYERS would-be buyers a town a month, each taking at
+ * most LAND_MAX_TILES plots and nerve × LAND_SPEC_SHARE of their spare money; no more than LAND_HELD_MAX of a core's free
+ * land is held. A holder asks a builder LAND_HOLD_MARKUP over today's price; one who stops expecting it to pay (by
+ * LAND_SELL_MARGIN) or holds less than LAND_CASH_DAYS of their income in money sells back to the council at
+ * LAND_RESALE_DISCOUNT under today's price; a council spends at most LAND_COUNCIL_BUY_SHARE of its purse a month buying
+ * land back. Held land counts as taken (× LAND_HELD_CROWD_W) in what land costs; builders count each held tile of a site
+ * as LAND_HELD_SITE_PENALTY tiles further from the centre (world/layout.siteScore).
+ */
+export const LAND_DAY = 12;
+export const LAND_HISTORY = 13;
+export const LAND_TREND_W = 0.6;
+export const LAND_EXP_MIN = -0.3;
+export const LAND_EXP_MAX = 0.6;
+export const LAND_PREMIUM_SHARE = 0.5;
+export const LAND_HURDLE = 0.03;
+export const LAND_BUYERS = 6;
+export const LAND_MAX_TILES = 3;
+export const LAND_SPEC_SHARE = 0.3;
+export const LAND_HELD_MAX = 0.25;
+export const LAND_HOLD_MARKUP = 0.15;
+export const LAND_SELL_MARGIN = 0.02;
+export const LAND_CASH_DAYS = 20;
+export const LAND_RESALE_DISCOUNT = 0.1;
+export const LAND_COUNCIL_BUY_SHARE = 0.5;
+export const LAND_HELD_CROWD_W = 0.5;
+export const LAND_HELD_SITE_PENALTY = 2.5;
 /** A mayor serves this many days before the town chooses again (sooner if they die or move away). */
 export const MAYOR_TERM_DAYS = 720;
 /** Only residents at least this old stand for mayor. */

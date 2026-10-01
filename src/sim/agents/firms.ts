@@ -186,6 +186,7 @@ import {
 import { flowIndex, flowTally, FLOW_MADE, FLOW_USED } from '../stats/flows';
 import { isWorks, payHolders, releaseHolders } from './ownership';
 import { groupMarkup } from './integration';
+import { townJobless } from './means';
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -991,7 +992,7 @@ export function firmsPlan(s: SimState): void {
   const hi: number[] = [];
   for (let t = 0; t < nT; t++) {
     const town = s.towns[t];
-    unemp.push(town && town.pop > 0 ? clamp(fin(town.unemployed) / town.pop, 0, 1) : 0);
+    unemp.push(town && town.pop > 0 ? townJobless(town) : 0);
     const b = wageBounds(s, t);
     lo.push(b && b.min >= 0 ? b.min : -1);
     hi.push(b && b.max >= 0 ? b.max : -1);

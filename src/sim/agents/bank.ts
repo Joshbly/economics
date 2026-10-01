@@ -62,6 +62,7 @@ import { clamp, ema, fin } from '../util';
 import { materialsValue } from './production';
 import { firmAssets } from './firms';
 import { creditLgd, creditMonthEnd, creditPd, creditState, noteLoss, type CreditFacts } from './credit';
+import { noteCapitalIncome, townJobless } from './means';
 
 // Local copies of constants read in hot loops (imported bindings may be getters under some loaders).
 const {
@@ -326,7 +327,7 @@ export function borrowerFacts(s: SimState, who: Ref, purpose: LoanPurpose, extra
     overdue: Math.max(0, fin(overdue)),
     distress,
     margin,
-    unemp: t && t.pop > 0 ? clamp(fin(t.unemployed) / t.pop, 0, 1) : 0.05,
+    unemp: t && t.pop > 0 ? townJobless(t) : 0.05,
     infl: clamp(fin((s.stats.latest as Record<string, number>)?.inflYoY), -0.5, 1),
   };
 }
@@ -721,7 +722,10 @@ function payHolders(s: SimState): void {
         net -= a;
       }
     }
-    if (net) p.earned += net;
+    if (net) {
+      p.earned += net;
+      noteCapitalIncome(p, net); // interest and coupons (agents/means.ts)
+    }
   }
 
   if (rDay !== 0) {
@@ -1290,6 +1294,7 @@ function payDividends(s: SimState): void {
   if (op && op.alive) {
     const paid = pay(s, BANK, op.id, div, 'dividend');
     op.earned += paid;
+    noteCapitalIncome(op, paid);
     bump(s, 'bank_dividends', paid);
   } else {
     bump(s, 'bank_dividends', pay(s, BANK, STATE, div, 'dividend')); // no owner: the Treasury holds the bank

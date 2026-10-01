@@ -2,6 +2,7 @@
 // Inspector: a household.
 // ============================================================================
 import { COLD_BELOW, HUNGRY_BELOW } from '../../../sim/config';
+import { plotValue } from '../../../sim/agents/land';
 import { GOODS, N_GOODS } from '../../../sim/goods';
 import type { SimState } from '../../../sim/types';
 import { h } from '../../dom';
@@ -50,6 +51,7 @@ export function personView(_s0: SimState, id: number): View {
   const rTenure = wk.row('In this job');
   const rCommute = wk.row('Walk to work', 'Tiles between home and work');
   const rJobless = wk.row('Without work for');
+  const rMeans = wk.row('Lives on');
   const rLast = wk.row('Last wage', 'Take-home pay of their last job — what they hope to earn again');
   const rSkill = wk.row('Skill', 'Productivity compared with an average worker');
 
@@ -59,7 +61,9 @@ export function personView(_s0: SimState, id: number): View {
   const rIou = mo.row('IOUs', 'Each pays ¤5 a year; valued at today’s IOU price');
   const rGold = mo.row('Gold', 'Valued at today’s gold price');
   const rDebt = mo.row('Owes the bank');
+  const rLandHeld = mo.row('Land held unbuilt', 'Plots of town land bought from the council to sell dearer later: what they would cost today, and what was paid for them');
   const rInc = mo.row('Income, recent average');
+  const rCapInc = mo.row('From capital, recent average');
   const rToday = mo.row('Today', 'Planned spending, spent in markets, and received');
   const rExp = mo.row('Expects prices to change', 'Their expectation of price rises over the next year — it shapes how much they keep in reserve');
 
@@ -125,6 +129,7 @@ export function personView(_s0: SimState, id: number): View {
     chips.push(['', `${fmtInt(Math.floor(fin(p.age)))} years old`]);
     if (p.alive) {
       if (f) chips.push(['good', 'Working']);
+      else if (p.means) chips.push(['gold', 'Of independent means', 'Lives on what their capital brings in — interest, dividends, rents — and looks for no work. They take up work again if that falls below twice what a worker earns in their town.']);
       else chips.push(['warn', 'Looking for work']);
       if (!home) chips.push(['bad', 'Homeless']);
       if (hungry) chips.push(['bad', 'Hungry']);
@@ -171,7 +176,9 @@ export function personView(_s0: SimState, id: number): View {
     rWage.show(working);
     rTenure.show(working);
     rCommute.show(working);
-    rJobless.show(!working && p.alive);
+    rJobless.show(!working && p.alive && !p.means);
+    rMeans.show(!working && p.alive && !!p.means);
+    if (p.means) rMeans.text(`their means: ${fmtPrice(fin(p.capInc ?? 0))} a day from capital`, 'gold');
     if (f) {
       rJob.node('f' + f.id, () => [firmLink(s, f.id), h('span', { class: 'kv-sub' }, sectorName(f.sector))]);
       rWage.text(`${fmtPrice(p.wage || f.wage)} / day`);
@@ -187,7 +194,18 @@ export function personView(_s0: SimState, id: number): View {
     rGold.text(p.gold > 0 ? `${fmtNum(p.gold)} oz · ${fmtMoneyShort(p.gold * px.gold)}` : 'none');
     const debt = debts.get(p.id) ?? 0;
     rDebt.text(debt > 0.005 ? fmtMoney(debt) : 'nothing');
+    {
+      const mine = (s.plots ?? []).filter((pl) => pl.owner === p.id);
+      rLandHeld.show(mine.length > 0);
+      if (mine.length) {
+        const worth = mine.reduce((a, pl) => a + plotValue(s, pl.tile, pl.town), 0);
+        const paid = mine.reduce((a, pl) => a + pl.paid, 0);
+        const towns = [...new Set(mine.map((pl) => s.towns[pl.town]?.name ?? ''))].join(', ');
+        rLandHeld.text(`${fmtInt(mine.length)} ${mine.length === 1 ? 'plot' : 'plots'} in ${towns} · worth ${fmtMoneyShort(worth)} (paid ${fmtMoneyShort(paid)})`, worth >= paid ? 'good' : 'warn');
+      }
+    }
     rInc.text(`${fmtPrice(p.income)} / day`);
+    rCapInc.text(fin(p.capInc ?? 0) !== 0 ? `${fmtPrice(fin(p.capInc ?? 0))} / day (interest, dividends, rents)` : 'nothing');
     rToday.text(`plan ${fmtMoneyShort(p.budget)} · spent ${fmtMoneyShort(p.spent)} · got ${fmtMoneyShort(p.earned)}`);
     rExp.text(`${fmtPctSigned(p.expInfl)} a year`);
 

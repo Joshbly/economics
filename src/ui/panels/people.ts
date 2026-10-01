@@ -363,8 +363,8 @@ export const peoplePanel: Panel = {
   mount(el) {
     subEl = h('div', { class: 'card-sub' });
     const k = (key: string, o: Parameters<typeof kpi>[0]) => (tiles[key] = kpi({ size: 'sm', spark: true, ...o }));
-    k('pop', { label: 'Households', format: fmtInt, good: 'up', hint: 'Households living in the realm. Each has one worker. Changes on these tiles are over the last 30 days.' });
-    k('jobless', { label: 'Jobless', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of households with no job.' });
+    k('pop', { label: 'Households', format: fmtInt, good: 'up', hint: 'Households living in the realm. Each has one worker — unless it lives on what its capital brings in. Changes on these tiles are over the last 30 days.' });
+    k('jobless', { label: 'Jobless', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of the households that work or look for work with no job. Those living on their means (interest, dividends, rents of three times a wage or more) look for none and are not counted.' });
     k('hungry', { label: 'Hungry', format: (v) => fmtPct(v), good: 'down', deltaFormat: fmtPts, hint: 'Share of households that ate too little yesterday.' });
     k('homeless', { label: 'Homeless', format: fmtInt, good: 'down', deltaFormat: (x) => (x > 0 ? '+' : x < 0 ? '−' : '') + fmtInt(Math.abs(x)), hint: 'Households with no roof. They take the cheapest vacant slot they can afford.' });
     k('health', { label: 'Health', format: (v) => fmtPct(v), good: 'up', deltaFormat: fmtPts, hint: 'Average health. It falls with hunger and cold, and lowers what a worker can make. “Weak” = below 40%.' });
@@ -373,7 +373,7 @@ export const peoplePanel: Panel = {
     k('median', { label: 'Savings', format: fmtMoneyShort, good: 'up', spark: false, hint: 'The median: half of households hold less than this in deposits, IOUs and gold.' });
 
     townsHost = h('div');
-    sectorBars = barChart({ format: fmtInt, rowHeight: 22, onClick: (row) => row.key && row.key !== 'none' && setSectorFilter(String(row.key)) });
+    sectorBars = barChart({ format: fmtInt, rowHeight: 22, onClick: (row) => row.key && row.key !== 'none' && row.key !== 'means' && setSectorFilter(String(row.key)) });
     wealthMode = segmented<'savings' | 'net'>({
       options: [
         { value: 'savings', label: 'Savings', title: 'Deposits, IOUs and gold' },
@@ -528,7 +528,8 @@ export const peoplePanel: Panel = {
           hint: sectorFilter === r.sector ? 'Click again to show every household' : 'Click to list these workers below',
         }))
         .sort((a, b) => b.value - a.value);
-      rows.push({ key: 'none', label: 'Without work', sub: '', value: d.jobless, color: T.ink3, hint: 'Households with no job' });
+      rows.push({ key: 'none', label: 'Without work', sub: '', value: d.jobless, color: T.ink3, hint: 'Households looking for work' });
+      if (d.ofMeans > 0) rows.push({ key: 'means', label: 'Of independent means', sub: '', value: d.ofMeans, color: T.gold, hint: 'Households living on what their capital brings in: they look for no work' });
       sectorBars.set(rows, { highlight: sectorFilter || null });
       paintDistributions(d);
       updateTop(s, d);
@@ -552,7 +553,8 @@ function paintKpis(s: SimState, d: Derived): void {
   const pop = tr('pop');
   tiles.pop.set(lat('pop', d.count), { delta: Number.isFinite(pop.rel) ? pop.rel : null, spark: D.pop, sub: n(s.towns?.length ?? 0, 'town', 'towns') });
   const un = tr('unemp');
-  tiles.jobless.set(lat('unemp', d.count ? d.jobless / d.count : NaN), { delta: un.delta, spark: D.unemp, sub: `${fmtInt(d.jobless)} of ${fmtInt(d.count)}` });
+  const force = d.count - d.ofMeans;
+  tiles.jobless.set(lat('unemp', force ? d.jobless / force : NaN), { delta: un.delta, spark: D.unemp, sub: `${fmtInt(d.jobless)} of ${fmtInt(force)}${d.ofMeans > 0 ? ` · ${fmtInt(d.ofMeans)} of means` : ''}` });
   const hu = tr('hunger');
   tiles.hungry.set(lat('hunger', d.count ? d.hungry / d.count : NaN), { delta: hu.delta, spark: D.hunger, sub: `${fmtInt(d.hungry)} of ${fmtInt(d.count)}`, tone: lat('hunger', 0) > 0.15 ? 'bad' : null });
   const ho = tr('homeless');

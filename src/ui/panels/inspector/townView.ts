@@ -1,6 +1,7 @@
 // ============================================================================
 // Inspector: a town (and the market table shared with the market hall view).
 // ============================================================================
+import { expectedLandGain, plotValue } from '../../../sim/agents/land';
 import { ALL_SECTORS, GOODS, N_GOODS } from '../../../sim/goods';
 import { STATE, type SimState } from '../../../sim/types';
 import { landTilePrice } from '../../../sim/agents/council';
@@ -109,6 +110,7 @@ export function townView(s0: SimState, id: number): View {
   const rMayor = council.row('Mayor', 'A resident the town chooses every two years (sooner if the mayor dies or moves away)');
   const rPurse = council.row('Purse', 'The council’s money: a deposit at the Bank');
   const rLand = council.row('Land at the centre', 'What a tile of the town’s land costs at the centre today. The unbuilt land within the town is the council’s: whoever builds there buys the plot. Dearer the nearer the centre and the fuller the town; beyond the town, land is free');
+  const rHeld = council.row('Land held to sell dearer', 'Plots of the town’s land bought from the council by people who expect it to rise in price, and hold it unbuilt; what investors expect it to gain a year (its trend over the last year and the inflation they expect)');
   const rSold = council.row('Plots sold', 'This year · last year');
   const rBought = council.row('Bought and cleared', 'Empty buildings bought from their owners for their plots, this year · last year');
   const rWorks = council.row('Commissioned', 'Roads and houses the council paid for (blocks of homes to let), this year · last year');
@@ -152,7 +154,8 @@ export function townView(s0: SimState, id: number): View {
     const cpiSeries = s.stats?.daily?.['cpi_' + id];
     const ctr = trend(cpiSeries, 30);
     tiles.pop.set(pop, { sub: `${fmtInt(t.employed)} in work` });
-    tiles.jobless.set(pop > 0 ? t.unemployed / pop : NaN, { sub: `${fmtInt(t.unemployed)} households` });
+    const force = pop - fin(t.ofMeans ?? 0);
+    tiles.jobless.set(force > 0 ? t.unemployed / force : NaN, { sub: `${fmtInt(t.unemployed)} households${fin(t.ofMeans ?? 0) > 0 ? ` · ${fmtInt(fin(t.ofMeans ?? 0))} of means` : ''}` });
     tiles.posts.set(t.vacancies);
     tiles.homeless.set(t.homeless, { tone: t.homeless > 0 ? 'bad' : null });
     tiles.wage.set(t.avgWage);
@@ -215,6 +218,12 @@ export function townView(s0: SimState, id: number): View {
       rLand.text(`${fmtMoneyShort(safeLand(s, id))} a tile${fin(c.landMul ?? 1) < 0.99 ? ' · cut to draw workshops in' : fin(c.landMul ?? 1) > 1.01 ? ' · raised: the town is full' : ''}`);
       const one = (v: number, n: number) => (n > 0 || fin(v) > 0.005 ? `${fmtMoneyShort(fin(v))} (${fmtInt(n)})` : 'none');
       const yl = (a: number, b: number, n: number, m2: number) => `${one(a, n)} · ${one(b, m2)}`;
+      {
+        const mine = (s.plots ?? []).filter((pl) => pl.town === id);
+        const g = expectedLandGain(s, id);
+        const worth = mine.reduce((a, pl) => a + plotValue(s, pl.tile, pl.town), 0);
+        rHeld.text(`${mine.length ? `${fmtInt(mine.length)} ${mine.length === 1 ? 'plot' : 'plots'} · worth ${fmtMoneyShort(worth)} · ` : 'none · '}expected ${g >= 0 ? '+' : '−'}${fmtPct(Math.abs(g), 0)} a year`, g < 0 ? 'warn' : undefined);
+      }
       rSold.text(yl(c.year.landSold, c.last.landSold, c.year.plots, c.last.plots));
       rBought.text(yl(c.year.landBought, c.last.landBought, c.year.deals, c.last.deals));
       const works = (y: typeof c.year) => [y.roadCount ? `${fmtInt(y.roadCount)} road ${fmtMoneyShort(fin(y.roads))}` : '', y.houseCount ? `${fmtInt(y.houseCount)} house ${fmtMoneyShort(fin(y.houses))}` : ''].filter(Boolean).join(', ') || 'nothing';

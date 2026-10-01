@@ -14,6 +14,7 @@ import { isFirm, isPerson, pay, refId } from '../ledger';
 import type { Firm, Ref, SimState } from '../types';
 import { STATE } from '../types';
 import { fin } from '../util';
+import { noteCapitalIncome } from './means';
 
 /** Shares below this are dropped (dust). */
 const DUST = 1e-6;
@@ -79,7 +80,10 @@ export function payHolders(s: SimState, f: Firm, from: Ref, amount: number, flow
     paid += a;
     if (acc && to === STATE) acc.state += a;
     if (!earned) continue;
-    if (isPerson(to)) s.people[to].earned += a;
+    if (isPerson(to)) {
+      s.people[to].earned += a;
+      if (flow === 'dividend') noteCapitalIncome(s.people[to], a); // (agents/means.ts)
+    }
     else if (isFirm(to)) s.firms[refId(to)].otherCosts -= a;
   }
   return paid;

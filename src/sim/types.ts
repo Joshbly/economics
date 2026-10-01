@@ -80,7 +80,11 @@ export interface Town {
   // ---- derived each day by stats (read by agents & UI) ----
   pop: number;
   employed: number;
-  unemployed: number;
+  unemployed: number; // in the labour force and without work
+  /** People living on their means (out of the labour force; agents/means.ts). */
+  ofMeans?: number;
+  /** What a tile at the town's centre has cost at each of the last month ends (oldest first; agents/land.ts). */
+  landIdx?: number[];
   vacancies: number;
   homeless: number;
   vacantSlots: number;
@@ -192,6 +196,10 @@ export interface Person {
   skill: number; // productivity multiplier (~1)
   owns: number[]; // firm ids owned
   houses: number[]; // house building ids owned
+  /** Capital income, ¤ a day (EMA: interest, coupons, dividends, rents received; agents/means.ts); absent = 0. */
+  capInc?: number;
+  /** Lives on their means: out of the labour force (agents/means.ts). */
+  means?: boolean;
   foodSat: number; // yesterday's food satisfaction 0..1.3
   heatSat: number; // yesterday's heat satisfaction 0..1
   commute: number; // tiles between home and job (0 if none)
@@ -443,6 +451,17 @@ export interface Bank {
   credit?: BankCredit;
 }
 
+/** A tile of a town's core bought from its council to hold (agents/land.ts): unbuilt, its holder's until sold. */
+export interface LandPlot {
+  tile: number;
+  town: TownId;
+  owner: Ref;
+  /** What it cost its holder (¤). */
+  paid: number;
+  /** Day it was bought. */
+  day: number;
+}
+
 /** agents/credit.ts: a small neural network correcting a rule of thumb for the chance a loan defaults, and what it has learned. */
 export interface BankCredit {
   /** The correction to the rule of thumb (logit of the monthly default probability): a direct weight per input (v, with
@@ -683,7 +702,9 @@ export type LevyBase =
   | 'import'
   | 'export'
   | 'building'
-  | 'estate';
+  | 'estate'
+  /** Plots of town land held unbuilt by someone other than its council (agents/land.ts): a stock base. */
+  | 'land';
 
 export type LevyUnit = 'pct' | 'perUnit' | 'flat';
 
@@ -1194,6 +1215,8 @@ export interface SimState {
   people: Person[]; // index = id
   firms: Firm[]; // index = id
   loans: Loan[]; // active loans only (inactive ones are pruned)
+  /** Plots of town land held unbuilt by people (agents/land.ts); absent = none. */
+  plots?: LandPlot[];
   shipments: Shipment[]; // in transit
   projects: Project[]; // active/queued (done ones pruned after a while)
   markets: MarketState[]; // index = town * N_GOODS + good

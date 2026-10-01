@@ -1061,6 +1061,36 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     }
   }
 
+  /** Land held unbuilt (agents/land.ts): a staked-out plot — a faint line round the tile and a post at each corner. */
+  function drawHeldLand(s: SimState, v: View): void {
+    const plots = s.plots;
+    if (!plots || plots.length === 0) return;
+    const k = v.k;
+    if (k < 6 * v.dpr) return; // too far out to tell
+    const w = s.map.w;
+    const inset = 0.14 * k;
+    const post = Math.max(1.2 * v.dpr, 0.07 * k);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(232,196,104,0.55)';
+    ctx.lineWidth = Math.max(1, 0.03 * k);
+    ctx.setLineDash([0.12 * k, 0.1 * k]);
+    ctx.fillStyle = 'rgba(120,86,40,0.9)';
+    for (const pl of plots) {
+      const sx = v.ox + (pl.tile % w) * k;
+      const sy = v.oy + Math.floor(pl.tile / w) * k;
+      if (sx < -k || sy < -k || sx > v.vw + k || sy > v.vh + k) continue;
+      ctx.strokeRect(sx + inset, sy + inset, k - 2 * inset, k - 2 * inset);
+      for (const [cx, cy] of [
+        [sx + inset, sy + inset],
+        [sx + k - inset, sy + inset],
+        [sx + inset, sy + k - inset],
+        [sx + k - inset, sy + k - inset],
+      ])
+        ctx.fillRect(cx - post / 2, cy - post / 2, post, post);
+    }
+    ctx.restore();
+  }
+
   function footprintRing(v: View, x: number, y: number, w: number, h: number, color: string, width: number, pulse: number): void {
     const k = v.k;
     const cx = v.ox + (x + w / 2) * k;
@@ -1387,6 +1417,7 @@ export function createMapViewImpl(container: HTMLElement): MapView & { debug: Ma
     if (!skip.borders) drawBorders(s, v);
     drawPlacementArea(s, v);
     drawRoadWorks(s, v);
+    drawHeldLand(s, v);
     drawRoadPlan(s, v);
     drawSelection(s, v, true);
     const infos = blds.list();

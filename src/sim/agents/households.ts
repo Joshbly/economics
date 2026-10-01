@@ -32,6 +32,7 @@ import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { bufferTarget, foodIndex, goodsBudget } from './demandModel';
 import { hasLevyBase, netWage, wageCtx } from './labor';
+import { decayCapitalIncome, townJobless } from './means';
 import { flowIndex, flowTally, FLOW_USED } from '../stats/flows';
 import { householdIouYield, postIouSchedule } from './bonds';
 import { goldTarget } from './gold';
@@ -205,7 +206,7 @@ export function householdsBeginDay(s: SimState): void {
     const qf = fi.shareFish / row[G.fish];
     c.breadShare[t] = qb + qf > 0 ? qb / (qb + qf) : FOOD_W_BREAD_FALLBACK;
     const town = s.towns[t];
-    c.unemp[t] = town.pop > 0 ? clamp(fin(town.unemployed) / Math.max(1, town.pop), 0, 1) : 0.05;
+    c.unemp[t] = town.pop > 0 ? townJobless(town) : 0.05;
   }
 
   const lat = s.stats.latest;
@@ -235,6 +236,7 @@ export function householdsBeginDay(s: SimState): void {
     // (net wages, dividends, rent received, interest, Treasury payments; stock levies
     // such as per-head takes are booked negative by levies.stockLevies).
     p.income = Math.max(0, ema(fin(p.income), fin(p.earned), INCOME_EMA));
+    decayCapitalIncome(p);
     if (p.job >= 0 && p.job < firmNet.length && s.firms[p.job]?.alive) p.lastWage = firmNet[p.job];
     p.expInfl = clamp(ema(fin(p.expInfl), infl, INFL_EXP_EMA), -0.5, 1.5);
 
@@ -782,7 +784,7 @@ export function householdsConsume(s: SimState): void {
     p.health = clamp(ema(fin(p.health, 0.8), ht, HEALTH_EMA), 0, 1);
 
     // ---- contentment ----
-    const working = p.job >= 0 || p.owns.length > 0 || p.houses.length > 0;
+    const working = p.job >= 0 || !!p.means || p.owns.length > 0 || p.houses.length > 0;
     const cpi = t >= 0 && t < s.towns.length && s.towns[t].cpi > 1 ? s.towns[t].cpi : 100;
     const real = Math.max(1e-6, p.income / (cpi / 100));
     const peer = c.realIncome[t] > 0 ? c.realIncome[t] : base;

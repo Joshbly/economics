@@ -275,6 +275,19 @@ empty slots elsewhere the homeless who could pay would move there); a room that
 stands empty is cut deeper the longer it stays empty; only let houses pass on
 expected inflation (and a falling price level lowers every rent).
 
+**People of independent means** (`agents/means.ts`). Every person keeps a running average of
+their capital income (`Person.capInc`, ¤ a day, an EMA over 1/MEANS_EMA days): deposit interest
+and IOU coupons, dividends, rents received, net of levies on them. At MEANS_LEAVE × what a worker
+takes home in their town a person stops working (`Person.means`) — quits their post, their own
+workshop's included, and seeks none: the income effect; a wage would add a few per cent to what
+they have. Below MEANS_RETURN × it they look for work again (the gap keeps them from going in and
+out with every dividend). They are out of the labour force: unemployment is jobless seekers ÷ the
+labour force (`Town.ofMeans`, stats ofMeans); they do not drift away for want of work, are not
+hands a venture could hire, nor in a levy's 'people without work'; their contentment counts them
+occupied. In a founded realm some 5–7 % of households come to live this way within a few years
+(the richest founders first), and those who leave lift the wage for the rest. Levies on interest,
+profits or rents reach how many do.
+
 **Demography**: births (~1.2 %/year when healthy and housed), deaths (base 1 %/
 year + hunger mortality), immigration (monthly, while a town is hiring, its job
 seekers number fewer than its vacancies + IMMIGRATION_QUEUE_SHARE of its people —
@@ -723,6 +736,38 @@ return a venture expects and in the equity its owner must put up (`entry.launch`
 crowded centre sends land-hungry workshops to the edge and beyond, and the town grows
 outward.
 
+*Land held to sell dearer* (`agents/land.ts`, `SimState.plots`, `world/plots.ts` the tile index).
+People may buy plots of a town's core from its council and hold them unbuilt. Monthly on LAND_DAY:
+1. plots whose holder is gone go back to the council (estates pass them to the heir first:
+   `demography.passAssets → passPlots`); a plot a road has been laid across the council buys back
+   at today's price, as far as its purse allows;
+2. each town records what a tile at its centre costs (`Town.landIdx`, LAND_HISTORY month ends).
+   Investors expect its land to gain LAND_TREND_W × its trend over the last year + the rest × the
+   inflation they expect (a house will cost that much more to build) — extrapolation, so a rise
+   draws buyers in and a fall drives them out — seen through each one's optimism; they ask of it
+   the deposit rate (what their money would earn) + LAND_PREMIUM_SHARE of their premium +
+   LAND_HURDLE (it earns nothing while held, and sells back below its price);
+3. holders who no longer expect that (by LAND_SELL_MARGIN), or whose money has run below
+   LAND_CASH_DAYS of their income, sell back to the council at LAND_RESALE_DISCOUNT under today's
+   price — while the council can spare LAND_COUNCIL_BUY_SHARE of its purse a month: in a slump
+   land is hard to sell;
+4. up to LAND_BUYERS would-be holders a town — people with money beyond what they live on
+   (`entry.investableCash` as a landlord reckons it), weighted by it, the town's own and people of
+   independent means twice — buy where they expect it to pay: at most LAND_MAX_TILES plots each
+   and nerve × LAND_SPEC_SHARE of their spare money, the free tiles a house could stand on nearest
+   the centre, while no more than LAND_HELD_MAX of the core's free land is held.
+Held land counts as taken (× LAND_HELD_CROWD_W) in what land costs: buying up land raises its price
+for everyone else, and the council's own policy reads the town as fuller. Builders count each held
+tile of a site as LAND_HELD_SITE_PENALTY tiles further out (`layout.siteScore`), so they take held
+land only where it is the clearly better site; then `buyPlot → takePlots` buys it for them — the
+council pays the holder their ask (today's price + LAND_HOLD_MARKUP), and the builder pays the
+council for the whole plot as usual (what the council's purse cannot front, the builder pays the
+holder directly). Land held counts in its holder's wealth at today's price (estates, statistics,
+the inspector), shows on the map as a staked-out plot, and a Levy on `land` (per plot a day, or a
+share a year of its value today) charges its holders. What the councils take for it they spend as
+they do any money: on roads and houses. Statistics: landHeld, landHeldValue; stats.acc
+land_held_bought / _buys / _sold / _back / _gain / _loss.
+
 *Monthly* (COUNCIL_DAY), each council:
 1. sets its land policy: with more than LAND_JOBLESS_HIGH of its households out of work
    it asks LAND_MUL_STEP less for its land (to draw workshops in); with fewer than
@@ -918,6 +963,7 @@ that pay ¤5 per year each, forever). Seven primitives:
    * `import` / `export` through the port
    * `building` owned (¤ per day, by kind/sector)
    * `estate` of the deceased (% above threshold)
+   * `land` held unbuilt (agents/land.ts: ¤ per plot a day, or an annual % of what it would cost today; payer: its holder)
    Filters: good, town, sector, group (all / employed / unemployed / homeless /
    owners / non-owners / hungry), threshold, expiry.
    *Targeted sale levies.* A `sale` rule with a trade or a group applies only to

@@ -53,6 +53,8 @@ export interface Derived {
   towns: TownDerived[];
   sectors: SectorRow[];
   jobless: number;
+  /** Living on their means (out of the labour force). */
+  ofMeans: number;
   hungry: number;
   weak: number;
   unhappy: number;
@@ -87,6 +89,7 @@ export function derive(s: SimState): Derived {
   const towns: TownDerived[] = (s.towns ?? []).map((t) => ({ id: t.id, pop: 0, hungry: 0, jobless: 0, homeless: 0 }));
   const wealthy: { p: Person; w: Wealth }[] = [];
   let jobless = 0;
+  let ofMeans = 0;
   let hungryN = 0;
   let weak = 0;
   let unhappy = 0;
@@ -101,7 +104,8 @@ export function derive(s: SimState): Derived {
     const home: PersonRow['home'] = !hb ? 'none' : hb.owner === p.id ? 'owns' : 'rents';
     const townName = s.towns[p.town]?.name ?? '';
     const sectorLabel = hasJob ? (SECTORS[f!.sector]?.name ?? f!.sector) : '';
-    const work = hasJob ? sectorLabel : 'Looking for work';
+    const means = !hasJob && !!p.means;
+    const work = hasJob ? sectorLabel : means ? 'Of independent means' : 'Looking for work';
     rows.push({
       id: p.id,
       name: p.name,
@@ -118,7 +122,7 @@ export function derive(s: SimState): Derived {
       health: fin(p.health),
       home,
       hungry,
-      jobless: !hasJob,
+      jobless: !hasJob && !means,
       unempDays: fin(p.unempDays),
       search: (p.name + ' ' + townName + ' ' + work + ' ' + (hasJob ? f!.name : '')).toLowerCase(),
     });
@@ -127,7 +131,8 @@ export function derive(s: SimState): Derived {
     income.push(fin(p.income));
     health.push(fin(p.health));
     wealthy.push({ p, w });
-    if (!hasJob) jobless++;
+    if (!hasJob && !means) jobless++;
+    if (means) ofMeans++;
     if (hungry) hungryN++;
     if (fin(p.health) < 0.4) weak++;
     if (fin(p.contentment, 1) < 0.3) unhappy++;
@@ -135,7 +140,7 @@ export function derive(s: SimState): Derived {
     if (td) {
       td.pop++;
       if (hungry) td.hungry++;
-      if (!hasJob) td.jobless++;
+      if (!hasJob && !means) td.jobless++;
       if (!hb) td.homeless++;
     }
   }
@@ -163,6 +168,7 @@ export function derive(s: SimState): Derived {
     towns,
     sectors,
     jobless,
+    ofMeans,
     hungry: hungryN,
     weak,
     unhappy,

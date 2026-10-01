@@ -69,6 +69,8 @@ import {
   LAND_CROWD_BASE,
   LAND_CROWDED,
   LAND_EDGE_SHARE,
+  LAND_HELD_CROWD_W,
+  LAND_HOLD_MARKUP,
   LAND_JOBLESS_HIGH,
   LAND_JOBLESS_LOW,
   LAND_MUL_MAX,
@@ -98,6 +100,9 @@ import { builderFor, estimateCost, needCost, roadNeed, startProject } from './co
 import { realScreenRate, vacantPrice } from './entry';
 import { temperament, type Temperament } from './temperament';
 import { freightPerUnit } from './traders';
+import { landStep, takePlots } from './land';
+import { heldIn, isHeld } from '../world/plots';
+import { townJobless } from './means';
 
 // ---------------------------------------------------------------------------
 // Land
@@ -106,6 +111,8 @@ import { freightPerUnit } from './traders';
 interface LandCache {
   day: number;
   ver: number;
+  /** Version of the held plots (world/plots.touchPlots): land held counts as taken. */
+  pver: number;
   /** What a house costs to build in each town today (¤). */
   house: number[];
   /** Share of each town's core land already built on (0 … 1). */
@@ -115,10 +122,12 @@ interface LandCache {
 function landCache(s: SimState): LandCache {
   const r = rt(s);
   let c = r.bag.land as LandCache | undefined;
-  if (c && c.day === s.day && c.ver === r.buildingVersion && c.house.length === s.towns.length) return c;
+  const pver = ((r.bag.plotsVer as number | undefined) ?? 0) * 100003 + (s.plots?.length ?? 0);
+  if (c && c.day === s.day && c.ver === r.buildingVersion && c.pver === pver && c.house.length === s.towns.length) return c;
   const m = s.map;
   const house: number[] = [];
   const crowd: number[] = [];
+  const held = (s.plots?.length ?? 0) > 0;
   for (const t of s.towns) {
     house.push(Math.max(0, fin(estimateCost(s, 'house', t.id))));
     const R = Math.max(3, t.radius) + BELONG_CORE;
@@ -132,11 +141,12 @@ function landCache(s: SimState): LandCache {
         if (tr === Terrain.Water || tr === Terrain.DeepWater) continue;
         land++;
         if (m.occ[i] >= 0) built++;
+        else if (held && isHeld(s, i)) built += LAND_HELD_CROWD_W; // land held off the market is taken too (agents/land.ts)
       }
     }
     crowd.push(land > 0 ? built / land : 0);
   }
-  c = { day: s.day, ver: r.buildingVersion, house, crowd };
+  c = { day: s.day, ver: r.buildingVersion, pver, house, crowd };
   r.bag.land = c;
   return c;
 }
@@ -163,8 +173,7 @@ export function crowding(s: SimState, town: TownId): number {
 function landPolicy(s: SimState, town: TownId): void {
   const t = s.towns[town];
   const c = councilOf(s, town)!;
-  const pop = Math.max(1, fin(t.pop));
-  const jobless = fin(t.unemployed) / pop;
+  const jobless = townJobless(t);
   let m = fin(c.landMul, 1);
   if (jobless > LAND_JOBLESS_HIGH) m *= 1 - LAND_MUL_STEP;
   else if (jobless < LAND_JOBLESS_LOW && crowding(s, town) > LAND_CROWDED) m *= 1 + LAND_MUL_STEP;
@@ -178,7 +187,10 @@ export function plotPrice(s: SimState, x: number, y: number, w: number, h: numbe
   const cy = y + h / 2;
   const town = coreTown(s, cx, cy);
   if (town < 0) return { town: -1, price: 0 };
-  return { town, price: landTilePrice(s, town, cx, cy) * w * h };
+  const tile = landTilePrice(s, town, cx, cy);
+  // held tiles under it are bought from their holders at their ask (agents/land.ts)
+  const held = heldIn(s, x, y, w, h);
+  return { town, price: tile * (w * h + held * LAND_HOLD_MARKUP) };
 }
 
 /** Pay (part of) a plot's price to the council `to`; its accounts count it. Returns ¤ paid. */
@@ -199,10 +211,14 @@ export function payForPlot(s: SimState, from: Ref, to: Ref, amount: number): num
  * nobody's (beyond every core) or the council's own.
  */
 export function buyPlot(s: SimState, owner: Ref, b: Building): { to: Ref; paid: number; due: number } | null {
-  const { town, price } = plotPrice(s, b.x, b.y, b.w, b.h);
-  if (town < 0 || !(price > 0.01)) return null;
+  const { town, price: full } = plotPrice(s, b.x, b.y, b.w, b.h);
+  if (town < 0 || !(full > 0.01)) return null;
   const to = councilRef(town);
-  if (owner === to) return null;
+  // held tiles under it change hands first: the council buys them from their holders (what it cannot pay, the
+  // owner pays the holder directly, and owes the council that much less)
+  const direct = takePlots(s, owner, b);
+  const price = Math.max(0, full - direct);
+  if (owner === to || !(price > 0.01)) return null;
   const paid = payForPlot(s, owner, to, price);
   councilOf(s, town)!.year.plots += 1;
   return { to, paid, due: Math.max(0, price - paid) };
@@ -493,6 +509,7 @@ export function councilStep(s: SimState): void {
     councilHouses(s, t);
     councilRoads(s, t);
   }
+  landStep(s); // (monthly, on its own day) land held to sell dearer: agents/land.ts
 }
 
 function bump(s: SimState, key: string, v: number): void {

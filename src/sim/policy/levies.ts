@@ -58,6 +58,7 @@ import {
 import { N_GOODS } from '../goods';
 import { BANK, FIRM_BASE, STATE } from '../types';
 import { pay } from '../ledger';
+import { plotValue } from '../agents/land';
 import type { BuildingKind, Group, Levy, LevyBase, LevyPayer, Person, Ref, Sector, SimState, TownId, Wedge } from '../types';
 
 export interface LevyCtx {
@@ -170,7 +171,7 @@ export function inGroup(s: SimState, p: Person, group: Group): boolean {
     case 'employed':
       return p.job >= 0;
     case 'unemployed':
-      return p.job < 0;
+      return p.job < 0 && !p.means; // looking for work (not those living on their means)
     case 'homeless':
       return p.home < 0;
     case 'owners':
@@ -622,6 +623,7 @@ const sMoney: Levy[] = [];
 const sGoods: Levy[] = [];
 const sHead: Levy[] = [];
 const sBuilding: Levy[] = [];
+const sLand: Levy[] = [];
 const sGoodsPersons: Levy[] = [];
 
 /** Charge one stock-levy rule on one agent; books the rule, person.earned / firm.otherCosts. */
@@ -674,7 +676,8 @@ function chargeGoods(s: SimState, levies: Levy[], inv: number[], town: number, r
  * Daily stock levies: 'money' (every person/firm balance; group filter applies to
  * persons, 'firms' group to firms), 'goods' (inventories of firms, traders,
  * people; not the Treasury), 'head' (every living person matching group/town),
- * 'building' (owners of active buildings matching kind/sector/town).
+ * 'building' (owners of active buildings matching kind/sector/town), 'land' (holders of
+ * plots of town land held unbuilt, agents/land.ts: per plot, or a share a year of its value today).
  * Each base is only iterated if an enabled levy of that base exists.
  * Books person.earned (takes −, gives +) and firm.otherCosts (takes +, gives −).
  * Buildings used by an active firm are charged to that firm; others to the owner.
@@ -686,6 +689,7 @@ export function stockLevies(s: SimState): void {
   sGoods.length = 0;
   sHead.length = 0;
   sBuilding.length = 0;
+  sLand.length = 0;
   sGoodsPersons.length = 0;
   const susp = s.treasury.givesSuspended;
   for (const l of levies) {
@@ -695,6 +699,7 @@ export function stockLevies(s: SimState): void {
     else if (l.base === 'goods') sGoods.push(l);
     else if (l.base === 'head') sHead.push(l);
     else if (l.base === 'building') sBuilding.push(l);
+    else if (l.base === 'land') sLand.push(l);
   }
   for (const l of sGoods) if (l.group !== 'firms' && (!l.sector || l.sector === 'any')) sGoodsPersons.push(l);
   const ctx: LevyCtx = {};
@@ -785,6 +790,28 @@ export function stockLevies(s: SimState): void {
         if (l.unit === 'pct') amt = (l.rate / DAYS_PER_YEAR) * Math.max(0, (b.cost || 0) - thr);
         else amt = thr > 0 && !((b.cost || 0) > thr) ? 0 : l.rate;
         chargeStock(s, l, ref, amt, person, firmIdx);
+      }
+    }
+  }
+
+  // ---- land held unbuilt (agents/land.ts) ----
+  if (sLand.length && s.plots && s.plots.length) {
+    for (const pl of s.plots.slice()) {
+      const person = pl.owner >= 0 && pl.owner < FIRM_BASE ? (s.people[pl.owner] ?? null) : null;
+      if (!person || !person.alive) continue;
+      ctx.person = person;
+      ctx.town = pl.town;
+      ctx.sector = undefined;
+      ctx.good = undefined;
+      ctx.kind = undefined;
+      let value = -1;
+      for (const l of sLand) {
+        if (l.town >= 0 && l.town !== pl.town) continue;
+        if (!groupMatches(s, l, ctx) || l.group === 'firms') continue;
+        if (value < 0) value = plotValue(s, pl.tile, pl.town);
+        const thr = l.threshold > 0 ? l.threshold : 0;
+        const amt = l.unit === 'pct' ? (l.rate / DAYS_PER_YEAR) * Math.max(0, value - thr) : thr > 0 && !(value > thr) ? 0 : l.rate;
+        chargeStock(s, l, pl.owner, amt, person, -1);
       }
     }
   }

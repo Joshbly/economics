@@ -54,6 +54,7 @@ export const BASES: BaseDef[] = [
   B('money', 'money held', 'Holdings', ['pct', 'flat'], ['holder'], { town: true, sector: true, group: true, stock: true }, 'Charged daily on bank balances. A percentage is per year (a 360th each day).'),
   B('goods', 'goods in store', 'Holdings', ['perUnit', 'pct', 'flat'], ['holder'], { good: true, town: true, sector: true, group: true, stock: true }, 'Charged daily on inventories held by firms, traders and households (not the Treasury’s own).'),
   B('building', 'buildings', 'Holdings', ['flat', 'pct'], ['owner'], { town: true, sector: true, kind: true, stock: true }, 'Charged daily to the owner (or the firm using it) of every matching building. A percentage is per year of its book value.'),
+  B('land', 'land held unbuilt', 'Holdings', ['pct', 'flat'], ['holder'], { town: true, group: true, stock: true }, 'Charged daily to whoever holds a plot of town land without building on it (bought from the council to sell dearer later). A percentage is per year of what the plot would cost today; a sum is per plot a day.'),
   B('shipment', 'shipments', 'Movement', ['perUnit', 'pct'], ['owner'], { good: true, town: true, toTown: true }, 'Charged on goods carried by wagon between towns, paid by the shipper.'),
 ];
 
@@ -92,6 +93,8 @@ function unitLabelRaw(base: LevyBase, unit: LevyUnit, good: number): string {
       return unit === 'perUnit' ? `¤ per ${u} a day` : unit === 'pct' ? '% of value a year' : '¤ a day per good held';
     case 'building':
       return unit === 'pct' ? '% of value a year' : '¤ a day each';
+    case 'land':
+      return unit === 'pct' ? '% of value a year' : '¤ a day per plot';
     default:
       return unit === 'pct' ? '%' : '¤';
   }

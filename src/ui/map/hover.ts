@@ -7,6 +7,8 @@ import { GOODS, N_GOODS, SECTORS } from '../../sim/goods';
 import { isFirm, isPerson, refId } from '../../sim/ledger';
 import { STATE, Terrain, type Building, type SimState } from '../../sim/types';
 import { tileResource } from '../../sim/world/mapgen';
+import { plotAt } from '../../sim/world/plots';
+import { plotValue } from '../../sim/agents/land';
 import { h, type Child } from '../dom';
 import { fmtMoney, fmtNum, fmtPct, fmtPrice, plural } from '../format';
 import { tipKV, tipNote, tipTitle } from '../widgets/tooltip';
@@ -256,6 +258,11 @@ function tileTip(s: SimState, i: number, extra?: string): Child[] {
   const g = tileResource(m, i);
   if (g >= 0 && (m.deposit[i] ?? 0) > 0.05) out.push(tipKV(RESOURCE_WORDS[g] ? RESOURCE_WORDS[g][0].toUpperCase() + RESOURCE_WORDS[g].slice(1) : GOODS[g].name, fmtPct(m.deposit[i], 0)));
   if (t === Terrain.Grass && (m.fert[i] ?? 0) > 0) out.push(tipKV('Fertility', fmtPct(m.fert[i], 0)));
+  const pl = plotAt(s, i);
+  if (pl) {
+    out.push(tipKV('Held unbuilt by', s.people[pl.owner]?.name ?? 'someone'));
+    out.push(tipKV('Paid · worth today', `${fmtMoney(pl.paid)} · ${fmtMoney(plotValue(s, pl.tile, pl.town))}`));
+  }
   if (extra) out.push(tipNote(extra));
   return out;
 }

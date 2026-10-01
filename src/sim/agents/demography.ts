@@ -33,6 +33,7 @@ import { noteLoss } from './credit';
 import { firmAssets } from './firms';
 import { findHome, leaveHome } from './housing';
 import { hasLevyBase, leaveJob, netWage, wageCtx } from './labor';
+import { landWealth, passPlots } from './land';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -99,7 +100,7 @@ function tallies(s: SimState): Tallies {
   for (const p of s.people) {
     if (!p || !p.alive || p.town < 0 || p.town >= nT) continue;
     t.pop[p.town]++;
-    if (p.job < 0) t.unemployed[p.town]++;
+    if (p.job < 0 && !p.means) t.unemployed[p.town]++; // (people of means are out of the labour force)
     else if (heads) {
       t.head[p.town] -= fin(levyAmount(s, 'head', 'receiver', { person: p, town: p.town }, 0, 0));
       hn[p.town]++;
@@ -175,7 +176,7 @@ export function demographyStep(s: SimState): void {
 
     // ---- emigration: push factors ----
     let push = 0;
-    if (p.job < 0 && p.unempDays > EMIGRATE_UNEMP_DAYS) push += 1;
+    if (p.job < 0 && !p.means && p.unempDays > EMIGRATE_UNEMP_DAYS) push += 1;
     if (p.contentment < UNREST_CONTENT) push += 1;
     if (p.foodSat < HUNGRY_BELOW && p.health < 0.5) push += 1;
     if (push > 0) {
@@ -187,7 +188,7 @@ export function demographyStep(s: SimState): void {
     }
 
     // ---- internal migration of the long unemployed ----
-    if (p.job < 0 && p.unempDays > MIGRATE_UNEMP_DAYS && rand(s) < MIGRATE_PROB_DAY) {
+    if (p.job < 0 && !p.means && p.unempDays > MIGRATE_UNEMP_DAYS && rand(s) < MIGRATE_PROB_DAY) {
       if (!tl) tl = tallies(s);
       let best = -1;
       let bestPull = pull(tl, p.town) + MIGRATE_MIN_GAIN;
@@ -335,6 +336,7 @@ export function estateValue(s: SimState, p: Person): number {
     const gross = assets > 0 ? assets : Math.max(0, f.cash) + (f.building >= 0 ? Math.max(0, fin(s.buildings[f.building]?.cost ?? 0)) : 0);
     v += Math.max(0, gross - Math.max(0, fin(debtOf(s, firmRef(f.id)))));
   }
+  v += landWealth(s, me); // land held unbuilt, at today's price (agents/land.ts)
   return fin(v);
 }
 
@@ -369,6 +371,8 @@ function passAssets(s: SimState, p: Person, heir: Person | null): void {
   }
   // Firms: every stake (whole or part) passes to the heir (agents/ownership.ts; scans all firms).
   passStakes(s, me, to);
+  // Land held unbuilt: to the heir, or back to its councils (agents/land.ts).
+  passPlots(s, me, to);
   for (const f of s.firms) if (f && !f.alive && f.owner === me) f.owner = to; // closed firms' records
   // Buildings (houses and any other building the person held).
   for (const b of s.buildings) {

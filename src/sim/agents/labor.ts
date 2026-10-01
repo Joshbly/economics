@@ -30,6 +30,7 @@ import { wageBounds } from '../policy/limits';
 import * as RNG from '../rng';
 import type { Firm, Person, SimState } from '../types';
 import * as UTIL from '../util';
+import { decideMeans } from './means';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -316,6 +317,14 @@ export function laborMarket(s: SimState): void {
     p.wage = Math.max(0, fin(f.wage));
   }
 
+  // ---- 1b. people of independent means leave (or rejoin) the labour force (agents/means.ts) ----
+  const typical = typicalNet(s, wc);
+  for (const p of decideMeans(s, typical)) {
+    p.lastWage = p.wage > 0 ? netWage(s, wc, firms[p.job]) : p.lastWage;
+    leaveJob(s, p);
+    bump(s, 'quits_means');
+  }
+
   // ---- 2. layoffs ------------------------------------------------------------
   for (let i = 0; i < nF; i++) {
     const f = firms[i];
@@ -380,7 +389,6 @@ export function laborMarket(s: SimState): void {
   }
 
   const headLevies = hasLevyBase(s, 'head');
-  const typical = typicalNet(s, wc);
 
   // Sample JOB_SAMPLE vacancies for p; result in _bestFirm/_bestValue. Counts applicants whose
   // reservation value (resW) the offer meets.
@@ -427,7 +435,7 @@ export function laborMarket(s: SimState): void {
   const seekers: number[] = [];
   for (let i = 0; i < nP; i++) {
     const p = people[i];
-    if (p && p.alive && p.job < 0) seekers.push(i);
+    if (p && p.alive && p.job < 0 && !p.means) seekers.push(i);
   }
   if (anyVacancy && seekers.length > 0) {
     shuffle(s, seekers);
@@ -480,7 +488,7 @@ export function laborMarket(s: SimState): void {
   }
   for (let i = 0; i < nP; i++) {
     const p = people[i];
-    if (p && p.alive && p.job < 0) p.unempDays += 1;
+    if (p && p.alive && p.job < 0 && !p.means) p.unempDays += 1;
   }
 }
 

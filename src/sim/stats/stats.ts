@@ -21,7 +21,9 @@
 //            cons_<good> (units bought by households), vol_<good> (units traded),
 //            shortage_<good> (units of demand rationed away), imp_<good>, exp_<good>
 //            (port trade, tradable goods only), imports, exports, tradeBal (¤ at base)
-//   Labour   unemp (rate: jobless / population — every household is a worker),
+//   Labour   unemp (rate: jobless / labour force — everyone but those living on
+//            their means, ofMeans: agents/means.ts), landHeld / landHeldValue (plots of
+//            town land held unbuilt and what they would cost today: agents/land.ts),
 //            employed, unemployed, vacancies, wage (employment-weighted posted wage),
 //            realWage (wage / CPI × 100), wageNet (take-home after worker-side wage
 //            levies), wagesPaid (¤ paid in wages today), hires, fires, quits
@@ -64,6 +66,7 @@
 // loans_new, interest_loans, interest_deposits, dividends.
 // ============================================================================
 import { stakeOf } from '../agents/ownership';
+import { landWealthByOwner, plotValue } from '../agents/land';
 import * as CFG from '../config';
 import * as GOODS_M from '../goods';
 import { deposits, mint } from '../ledger';
@@ -146,6 +149,7 @@ interface StatsCache {
   // per-town scratch
   pop: Float64Array;
   employed: Float64Array;
+  means: Float64Array;
   homeless: Float64Array;
   content: Float64Array;
   health: Float64Array;
@@ -173,6 +177,7 @@ function statsCache(s: SimState): StatsCache {
       prevDay: -2,
       pop: z(),
       employed: z(),
+      means: z(),
       homeless: z(),
       content: z(),
       health: z(),
@@ -458,6 +463,8 @@ export function takeHomeWage(s: SimState, fallback = 0): number {
 interface Tally {
   pop: number;
   employed: number;
+  /** Living on their means (out of the labour force). */
+  means: number;
   homeless: number;
   hungry: number;
   cold: number;
@@ -484,10 +491,11 @@ interface Tally {
  */
 function tallyTowns(s: SimState, c: StatsCache): Tally {
   const nT = s.towns.length;
-  for (const a of [c.pop, c.employed, c.homeless, c.content, c.health, c.vac, c.wageSum, c.wageN, c.slots, c.vacSlots, c.occRent, c.occN, c.askRent]) a.fill(0);
+  for (const a of [c.pop, c.employed, c.means, c.homeless, c.content, c.health, c.vac, c.wageSum, c.wageN, c.slots, c.vacSlots, c.occRent, c.occN, c.askRent]) a.fill(0);
   const tl: Tally = {
     pop: 0,
     employed: 0,
+    means: 0,
     homeless: 0,
     hungry: 0,
     cold: 0,
@@ -519,12 +527,14 @@ function tallyTowns(s: SimState, c: StatsCache): Tally {
     tl.health += h;
     tl.content += ct;
     if (p.job >= 0) tl.employed++;
+    else if (p.means) tl.means++;
     if (p.home < 0) tl.homeless++;
     if (p.foodSat < HUNGRY_BELOW) tl.hungry++;
     if (p.heatSat < COLD_BELOW) tl.cold++;
     if (t < 0 || t >= nT) continue;
     c.pop[t]++;
     if (p.job >= 0) c.employed[t]++;
+    else if (p.means) c.means[t]++;
     if (p.home < 0) c.homeless[t]++;
     c.content[t] += ct;
     c.health[t] += h;
@@ -593,7 +603,9 @@ function tallyTowns(s: SimState, c: StatsCache): Tally {
     const pop = c.pop[t];
     town.pop = pop;
     town.employed = c.employed[t];
-    town.unemployed = pop - c.employed[t];
+    town.unemployed = pop - c.employed[t] - c.means[t];
+    if (c.means[t] > 0) town.ofMeans = c.means[t];
+    else delete town.ofMeans;
     town.vacancies = c.vac[t];
     town.homeless = c.homeless[t];
     town.vacantSlots = c.vacSlots[t];
@@ -840,8 +852,17 @@ function computeDaily(s: SimState, c: StatsCache, v: Record<string, number>): Re
   const pop = tl.pop;
   v.pop = pop;
   v.employed = tl.employed;
-  v.unemployed = pop - tl.employed;
-  v.unemp = pop > 0 ? (pop - tl.employed) / pop : 0;
+  // the labour force: everyone but those who live on their means (agents/means.ts)
+  const force = pop - tl.means;
+  v.unemployed = force - tl.employed;
+  v.unemp = force > 0 ? (force - tl.employed) / force : 0;
+  v.ofMeans = tl.means;
+  // land held unbuilt (agents/land.ts): plots, and what they would cost today
+  const plots = s.plots ?? [];
+  v.landHeld = plots.length;
+  let landV = 0;
+  for (const pl of plots) landV += plotValue(s, pl.tile, pl.town);
+  v.landHeldValue = landV;
   v.vacancies = tl.vacancies;
   const wage = tl.wageN > 0 ? tl.wageSum / tl.wageN : num(lat.wage) || st.baseWage;
   v.wage = wage;
@@ -1186,9 +1207,11 @@ export function distributionStats(s: SimState): { gini: number; giniIncome: numb
   };
   const wealth: number[] = [];
   const income: number[] = [];
+  const land = (s.plots?.length ?? 0) > 0 ? landWealthByOwner(s) : null; // land held unbuilt (agents/land.ts)
   for (const p of s.people) {
     if (!p || !p.alive) continue;
     let w = Math.max(0, fin(p.cash)) + Math.max(0, fin(p.iou)) * iouP + Math.max(0, fin(p.gold)) * goldP;
+    if (land) w += land.get(p.id) ?? 0;
     for (const id of p.owns) w += firmValue(id, p.id);
     for (const hid of p.houses) {
       const h = s.buildings[hid];

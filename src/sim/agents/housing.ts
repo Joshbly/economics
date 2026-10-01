@@ -29,6 +29,7 @@ import * as TYPES from '../types';
 import * as UTIL from '../util';
 import { commuteTiles, hasLevyBase, workX, workY } from './labor';
 import { creditAppetite, quoted, quoteRate, requestLoan } from './bank';
+import { noteCapitalIncome } from './means';
 
 // Leaf-module constants and helpers (config, goods, util, calendar, types, rng, ledger — no
 // import cycles back into agents) bound once at load: hot loops then read locals instead of
@@ -199,7 +200,10 @@ function payRent(s: SimState, p: Person, b: Building, levies: boolean): boolean 
   const to = landlordOf(s, b);
   const me = personRef(p.id);
   const paid = pay(s, me, to, rent, 'rent');
-  if (isPerson(to)) s.people[to].earned += paid;
+  if (isPerson(to)) {
+    s.people[to].earned += paid;
+    noteCapitalIncome(s.people[to], paid); // rents received (agents/means.ts)
+  }
   if (levies && paid > 0) {
     // chargeLevy leaves agent bookkeeping to the caller: a take lowers what the payer
     // earned today, a give (the Treasury paying part of the rent) raises it.
@@ -210,7 +214,10 @@ function payRent(s: SimState, p: Person, b: Building, levies: boolean): boolean 
       const lp = isPerson(to) ? s.people[to] : undefined;
       const lctx = lp ? { town: b.town, person: lp, kind: b.kind } : { town: b.town, kind: b.kind };
       const netL = chargeLevy(s, 'rent', to, 'landlord', lctx, paid, 1);
-      if (lp) lp.earned -= netL;
+      if (lp) {
+        lp.earned -= netL;
+        noteCapitalIncome(lp, -netL);
+      }
       else if (isFirm(to)) {
         const f = s.firms[refId(to)];
         if (f) f.otherCosts += netL;

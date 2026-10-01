@@ -8,10 +8,10 @@
 // bank balance-sheet drift. Problems are reported in plain words.
 // Runtime caches (runtime.ts) are never saved; modules rebuild them on demand.
 // ============================================================================
-import { LAND_MUL_MAX, LAND_MUL_MIN, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
+import { LAND_HISTORY, LAND_MUL_MAX, LAND_MUL_MIN, LOAN_FLOATING_PURPOSES, SIM_VERSION } from './config';
 import { G, GOODS, N_GOODS } from './goods';
 import { blankCouncil, checkLedger, councilTown, deposits, isCouncil, reconcileBank } from './ledger';
-import type { SimState } from './types';
+import { FIRM_BASE, type LandPlot, type SimState } from './types';
 
 /** Serialise the whole state to JSON (compact). */
 export function serialize(s: SimState): string {
@@ -469,6 +469,9 @@ function fillCouncils(s: SimState): void {
     if (t.bumperDays !== undefined && !(isNum(t.bumperDays) && t.bumperDays > 0)) delete t.bumperDays;
     if (t.housingWait !== undefined && !(isNum(t.housingWait) && t.housingWait > 0)) delete t.housingWait;
     if (t.pull !== undefined && !(isNum(t.pull) && t.pull >= 0 && t.pull <= 1)) delete t.pull;
+    if (t.ofMeans !== undefined && !(isNum(t.ofMeans) && t.ofMeans > 0)) delete t.ofMeans;
+    if (t.landIdx !== undefined && !(Array.isArray(t.landIdx) && t.landIdx.every((x) => isNum(x) && x >= 0))) delete t.landIdx;
+    else if (t.landIdx && t.landIdx.length > LAND_HISTORY) t.landIdx = t.landIdx.slice(-LAND_HISTORY);
     const c = t.council as unknown;
     if (!isObj(c)) {
       t.council = blankCouncil();
@@ -481,7 +484,43 @@ function fillCouncils(s: SimState): void {
   }
 }
 
+/** People of independent means (agents/means.ts): a damaged capital income or flag is dropped (they are judged afresh). */
+function fillMeans(s: SimState): void {
+  for (const p of s.people) {
+    if (!p) continue;
+    if (p.capInc !== undefined && !isNum(p.capInc)) delete p.capInc;
+    if (p.means !== undefined && p.means !== true) delete p.means;
+  }
+}
+
+/** Land held unbuilt (agents/land.ts): a damaged or impossible plot (off the map, built on, its holder gone, a tile held twice) goes back to its council. */
+function fillPlots(s: SimState): void {
+  const raw = s.plots as unknown;
+  if (raw === undefined) return;
+  if (!Array.isArray(raw)) {
+    delete s.plots;
+    return;
+  }
+  const n = s.map.w * s.map.h;
+  const seen = new Set<number>();
+  const ok: LandPlot[] = [];
+  for (const p of raw as unknown[]) {
+    if (!isObj(p)) continue;
+    const q = p as unknown as LandPlot;
+    if (!(Number.isInteger(q.tile) && q.tile >= 0 && q.tile < n) || seen.has(q.tile)) continue;
+    if (!(Number.isInteger(q.town) && s.towns[q.town])) continue;
+    if (!(Number.isInteger(q.owner) && q.owner >= 0 && q.owner < FIRM_BASE && s.people[q.owner]?.alive)) continue;
+    if (!(isNum(q.paid) && q.paid >= 0) || !isNum(q.day)) continue;
+    if (s.map.occ[q.tile] >= 0) continue;
+    seen.add(q.tile);
+    ok.push({ tile: q.tile, town: q.town, owner: q.owner, paid: q.paid, day: q.day });
+  }
+  s.plots = ok;
+}
+
 function fillDefaults(s: SimState): void {
+  fillMeans(s);
+  fillPlots(s);
   fillInvest(s);
   fillWorks(s);
   fillCouncils(s);

@@ -112,7 +112,7 @@ import {
 // ---------------------------------------------------------------------------
 // Vocabulary & validation tables
 // ---------------------------------------------------------------------------
-const LEVY_BASES: LevyBase[] = ['sale', 'wage', 'profit', 'money', 'goods', 'head', 'rent', 'interest', 'shipment', 'import', 'export', 'building', 'estate'];
+const LEVY_BASES: LevyBase[] = ['sale', 'wage', 'profit', 'money', 'goods', 'head', 'rent', 'interest', 'shipment', 'import', 'export', 'building', 'estate', 'land'];
 const LEVY_UNITS: LevyUnit[] = ['pct', 'perUnit', 'flat'];
 const GROUPS: Group[] = ['all', 'employed', 'unemployed', 'homeless', 'owners', 'nonowners', 'hungry', 'persons', 'firms'];
 const BUILDING_KINDS: BuildingKind[] = ['house', 'firm', 'market', 'bank', 'palace', 'port'];
@@ -151,6 +151,7 @@ const UNITS_FOR: Record<LevyBase, LevyUnit[]> = {
   export: ['pct', 'perUnit'],
   building: ['flat', 'pct'],
   estate: ['pct', 'flat'],
+  land: ['pct', 'flat'],
 };
 
 /** Payer roles for each base (first = default). */
@@ -168,6 +169,7 @@ const PAYERS_FOR: Record<LevyBase, LevyPayer[]> = {
   export: ['seller'],
   building: ['owner'],
   estate: ['receiver'],
+  land: ['holder'],
 };
 
 /**
@@ -189,10 +191,11 @@ const FILTERS_FOR: Record<LevyBase, { good: boolean; town: boolean; toTown: bool
   export: { good: true, town: false, toTown: false, sector: false, group: false, kind: false },
   building: { good: false, town: true, toTown: false, sector: true, group: false, kind: true },
   estate: { good: false, town: true, toTown: false, sector: false, group: true, kind: false },
+  land: { good: false, town: true, toTown: false, sector: false, group: true, kind: false },
 };
 
 /** Stock bases: percentage rates are per YEAR. */
-const STOCK_BASES: Partial<Record<LevyBase, true>> = { money: true, goods: true, building: true };
+const STOCK_BASES: Partial<Record<LevyBase, true>> = { money: true, goods: true, building: true, land: true };
 
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 const isInt = (x: unknown): x is number => isNum(x) && Math.floor(x) === x;
@@ -447,6 +450,8 @@ function levyObject(s: SimState, l: Levy): string {
       return pct ? `a year of the value of every ${kindText(l)}` : `a day for every ${kindText(l)}`;
     case 'estate':
       return pct ? 'of every estate left by those who die' : 'from every estate left by those who die';
+    case 'land':
+      return pct ? 'a year of the value of every plot of town land held unbuilt' : 'a day for every plot of town land held unbuilt';
     default:
       return 'of the flow';
   }
@@ -541,6 +546,9 @@ export function levyShortLabel(s: SimState, l: Levy): string {
       break;
     case 'estate':
       what = 'estates';
+      break;
+    case 'land':
+      what = 'land held unbuilt';
       break;
     default:
       what = l.base;
