@@ -502,7 +502,9 @@ export function councilStep(s: SimState): void {
       c.last = c.year;
       c.year = blankCouncil().year;
     }
-    if (c.mayor < 0 || meet) chooseMayor(s, t);
+    // a new mayor at the term's end (checked when the council meets), or the evening after the last one died or moved away
+    const m = c.mayor >= 0 ? s.people[c.mayor] : undefined;
+    if (meet || !m || !m.alive || m.town !== t) chooseMayor(s, t);
     if (!meet) continue;
     landPolicy(s, t);
     clearPlots(s, t);
